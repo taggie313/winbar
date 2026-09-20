@@ -200,6 +200,7 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
         form.submitted = true
         guard let plan = form.plan else { return }
         let password = form.password
+        let productKey = form.normalizedProductKey
         form.forgetPassword()
         cancelNote = nil
         CreateWindowController.claimJob()
@@ -208,7 +209,7 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
                              shown: [], failure: nil, mediaDir: nil, logPath: nil, watched: true))
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try CreateJob.start(plan: plan, password: password) { state in
+                try CreateJob.start(plan: plan, password: password, productKey: productKey) { state in
                     CreateWindowController.shared.jobChanged(state)
                 }
             } catch {
@@ -635,6 +636,7 @@ struct CreateFormView: View {
             check(.skipPrivacy)
             installRow
             if let warning = model.homeWarning { caption(warning, bad: false, orange: true, indent: 22) }
+            productKeyRow
             check(.noBitLocker)
             if let note = model.bitLockerNote { caption(note, indent: 22) }
             check(.qol)
@@ -707,6 +709,31 @@ struct CreateFormView: View {
             .accessibilityHint(CreateCopy.installTooltip)
             Spacer()
             alwaysOn
+        }
+    }
+
+    /// Under the edition, because a key is for an edition: Windows Setup refuses one that isn't for the
+    /// edition being installed, and Winbar can't tell which edition a key is for. Empty by default, which
+    /// is what Winbar has always done, so the field asks for nothing by being there.
+    ///
+    /// A plain TextField, not a SecureField: unlike the password, the key ends up in the answer file as
+    /// plain text anyway, and hiding it on screen would suggest Winbar protects it somewhere it doesn't.
+    /// The caption under it says exactly where it goes.
+    private var productKeyRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(CreateCopy.lProductKey)
+                TextField(CreateCopy.lProductKeyPlaceholder, text: $model.productKey)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 230)
+                    .help(CreateCopy.productKeyTooltip)
+                    .accessibilityLabel(CreateCopy.lProductKey)
+                    .accessibilityHint(CreateCopy.productKeyTooltip)
+                Spacer()
+            }
+            .padding(.leading, 22)
+            caption(model.productKeyError, bad: true, indent: 22)
+            caption(CreateCopy.nProductKeyShort, indent: 22)
         }
     }
 

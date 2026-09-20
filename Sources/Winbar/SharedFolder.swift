@@ -15,6 +15,15 @@ import Foundation
 /// - Windows is given the folder UTM's registry held at the *previous* start, so one start after a
 ///   change is never enough (see `settle`). Winbar proves what Windows ended up with instead of
 ///   counting restarts.
+/// - A working share dies as soon as UTM itself restarts, with nothing re-set: Z: comes back empty
+///   and every write fails. Winbar restarts UTM for every display change (utmapp/UTM#7882), so it
+///   writes the folder again on its way through and checks the result (see `reestablish`).
+///
+/// UTM's own source says why: `update registry` (UTMScriptingRegistryEntryImpl) resolves the path
+/// into a *remote* bookmark inside a helper process — with the VM stopped, a throwaway `UTMProcess()`
+/// — and stores that. It is not the durable security-scoped bookmark UTM's own file picker makes,
+/// which is why it survives neither the start it was written for nor a relaunch of UTM. Anyone who
+/// wants a folder that simply stays should pick it in UTM itself; `durableAdvice` says so.
 ///
 /// And the path must have no space in it: see `hasSpace`.
 ///
@@ -116,9 +125,39 @@ enum SharedFolder {
         case needsRestart
     }
 
-    static func decide(current: String?, wanted: Setting, running: Bool) -> Decision {
-        if matches(current, wanted) { return .alreadySet }
+    /// `needsRewrite` is what keeps a dead share from looking like a finished one: the registry still
+    /// names the folder, so only this says the bookmark behind it is no longer any good. Two things
+    /// raise it — UTM has restarted since Winbar's own folder was last seen working, or Windows says
+    /// the mount has nothing behind it (`GuestView.looksDead`) — and either way the answer is to
+    /// write it again, not to call it done.
+    static func decide(current: String?, wanted: Setting, running: Bool,
+                       needsRewrite: Bool = false) -> Decision {
+        let stillGood = wanted == .off || !needsRewrite
+        if matches(current, wanted), stillGood { return .alreadySet }
         return running ? .needsRestart : .setNow
+    }
+
+    /// Whether the share died when UTM restarted: it was seen working under UTM processes that are
+    /// not the ones running now. Pure. An empty `seenUnder` (never seen working) or no UTM at all
+    /// says nothing, and claims nothing.
+    static func brokenByUTMRestart(seenUnder: [Int], utmNow: [Int]) -> Bool {
+        guard !seenUnder.isEmpty, !utmNow.isEmpty else { return false }
+        return !seenUnder.contains { utmNow.contains($0) }
+    }
+
+    /// Whether the folder UTM reports is still the one Winbar wrote. A different path means someone
+    /// else set it — UTM's own details screen — and that one has a durable bookmark Winbar must
+    /// neither rewrite nor blame UTM's restart for. Pure.
+    static func stillOurs(read: String?, remembered: String?, wasOurs: Bool) -> Bool {
+        guard wasOurs, let read, let remembered else { return false }
+        return trimmingSlash(read) == trimmingSlash(remembered)
+    }
+
+    /// The same question, asked of this Mac. Only ever about a folder Winbar wrote: one picked in
+    /// UTM survives UTM restarting, which is the whole of this problem.
+    static func brokenByUTMRestart(vm: String) -> Bool {
+        guard vm == Config.vmName, Config.sharedFolderByWinbar, Config.sharedFolder != nil else { return false }
+        return brokenByUTMRestart(seenUnder: Config.sharedFolderUTM, utmNow: UTM.processIDs.map(Int.init))
     }
 
     // MARK: - The Mac folder
@@ -218,6 +257,14 @@ enum SharedFolder {
         /// What the marker file on the Mac holds, as Windows read it back (see `verify`).
         var marker: String?
         var entryCount: Int?
+        /// The share holds nothing but spice-webdavd's own `.spice-clipboard`. nil when nothing was
+        /// listed.
+        var onlySpiceFile: Bool?
+        /// The drive letter in the signed-in person's own session, and what it showed there — a
+        /// different question from everything above, which the agent answered about session 0.
+        var userDrive: String?
+        var userState: String?
+        var userRemapped = false
         var error: String?
 
         var webdavdRunning: Bool { webdavd.hasPrefix("Running") }
@@ -228,6 +275,43 @@ enum SharedFolder {
         /// Windows is looking at UTM's stand-in, which means UTM has no folder for this VM *yet* —
         /// either none is set, or one was set while the VM was running and it never took.
         var seesPlaceholder: Bool { isPlaceholder(readme) }
+
+        /// A mount with nothing behind it: the share answers, it isn't UTM's placeholder, and all it
+        /// holds is spice-webdavd's own file. That is what a bookmark UTM can no longer resolve looks
+        /// like from Windows — proven live, alongside "A device attached to the system is not
+        /// functioning" on every write. Only ever asked once the marker has already said Windows
+        /// isn't serving the folder we mean.
+        var looksDead: Bool { reachable == true && !seesPlaceholder && onlySpiceFile == true }
+    }
+
+    /// What the signed-in person's own drive letter needs. Their letter is not the share: it can
+    /// hold a dead handle while the endpoint behind it is perfectly healthy (seen live, right after
+    /// a repair), because the Guest Tools map it at sign-in and that can race the share coming up.
+    ///
+    /// Only meaningful once the share itself is live — which is why a letter showing some other
+    /// folder's files counts as stale here: with the endpoint proven good, the letter is what is out
+    /// of step.
+    enum DriveState: Equatable {
+        case working
+        case stale
+        case missing
+        case unknown(String)
+
+        /// Whether replacing the mapping is the thing to try.
+        var needsMapping: Bool { self == .stale || self == .missing }
+    }
+
+    static func driveState(_ view: GuestView) -> DriveState {
+        switch view.userState {
+        case "ok": return .working
+        case "empty", "other": return .stale
+        case "none": return .missing
+        case "nosession": return .unknown("nobody is signed in to Windows")
+        case "noanswer": return .unknown("the signed-in session didn't answer")
+        case "error": return .unknown(view.error ?? "Windows couldn't check it")
+        case nil: return .unknown("not checked")
+        case let other?: return .unknown(other)
+        }
     }
 
     static func isPlaceholder(_ readmeFirstLine: String?) -> Bool {
@@ -254,7 +338,11 @@ enum SharedFolder {
         view.readme = out["SF_README"]
         view.marker = out["SF_MARKER"].flatMap { $0.isEmpty ? nil : $0 }
         view.entryCount = out.int("SF_COUNT")
-        view.error = out["SF_ERROR"] ?? out["SF_UNREACHABLE"]
+        view.onlySpiceFile = out.bool("SF_ONLY_SPICE")
+        view.userDrive = out["SF_USER_DRIVE"].flatMap { $0.isEmpty ? nil : $0 }
+        view.userState = out["SF_USER_STATE"].flatMap { $0.isEmpty ? nil : $0 }
+        view.userRemapped = out["SF_USER_REMAPPED"] == "1"
+        view.error = out["SF_ERROR"] ?? out["SF_UNREACHABLE"] ?? out["SF_USER_ERROR"]
         return view
     }
 
@@ -268,6 +356,15 @@ enum SharedFolder {
     static let restartCost = "Windows only picks up a shared folder when the VM starts, and UTM hands it the folder from "
         + "the start before that, so this can take two restarts. Winbar checks from inside Windows and does the second "
         + "one only if it is needed."
+
+    /// Why a share that was working is suddenly empty, and what to do about it.
+    static let diedWhenUTMRestarted = "UTM restarted, and a shared folder set by script doesn't survive that: what UTM "
+        + "stores is a bookmark that only lives as long as the UTM that made it."
+
+    /// The honest limit of what Winbar can automate, said wherever a share has had to be rewritten.
+    /// UTM's own placeholder README gives the same advice in the guest.
+    static let durableAdvice = "The way to have one that simply stays is to pick it in UTM itself: shut the VM down and "
+        + "choose a Shared Directory on its details screen. That one is a bookmark UTM can always open again."
 
     /// Said wherever a folder is offered or set: what it is good for, and what it isn't.
     static let worthKnowing = "It's fine for documents; very large files are slow over it, and the path must have no "
@@ -331,18 +428,78 @@ enum SharedFolder {
     }
 
     /// Asks Windows whether it is serving `setting`, with a marker file for the folder case.
-    static func verify(_ setting: Setting, vm: String, user: String?) -> Result<Checked, WinbarError> {
+    ///
+    /// `remapDrive` also replaces the mapping in the signed-in person's session. It belongs in the
+    /// same call because the marker only exists while this runs, and the remap has to be judged by
+    /// the same marker.
+    static func verify(_ setting: Setting, vm: String, user: String?,
+                       remapDrive: Bool = false) -> Result<Checked, WinbarError> {
         guard case .folder(let path) = setting else {
-            return ask(vm: vm, user: user).map { Checked(verification: judge(setting, view: $0, token: nil), view: $0) }
+            return ask(vm: vm, user: user, remap: remapDrive)
+                .map { Checked(verification: judge(setting, view: $0, token: nil), view: $0) }
         }
         guard inspect(path) == .folder else { return .success(.unknown("\(abbreviate(path)) isn't on this Mac any more")) }
         let token = writeMarker(in: path)
         defer { removeMarker(in: path) }
-        return ask(vm: vm, user: user).map { Checked(verification: judge(setting, view: $0, token: token), view: $0) }
+        return ask(vm: vm, user: user, remap: remapDrive).map { view in
+            let verification = judge(setting, view: view, token: token)
+            // Which UTM it was working under is the only way to know later that a relaunch killed it.
+            if verification == .live { Config.rememberSharedFolderWorking(under: UTM.processIDs.map(Int.init), for: vm) }
+            return Checked(verification: verification, view: view)
+        }
     }
 
-    private static func ask(vm: String, user: String?) -> Result<GuestView, WinbarError> {
-        GuestAgent.run(vm: vm, GuestScripts.sharedFolder(user: user, marker: markerName), timeout: 150).map(guestView)
+    private static func ask(vm: String, user: String?, remap: Bool = false) -> Result<GuestView, WinbarError> {
+        // The part that runs in the person's own session is a file of its own; put it there first.
+        GuestAgent.push(vm: vm, path: GuestScripts.userDrivePath, text: GuestScripts.userDriveChild)
+        let script = GuestScripts.sharedFolder(user: user, marker: markerName, userDrive: true, remap: remap)
+        defer { GuestAgent.remove(vm: vm, path: GuestScripts.userDrivePath) }
+        return GuestAgent.run(vm: vm, script, timeout: 210).map { out in
+            // The session-crossing half is the part that can quietly do nothing, so it is the part
+            // WINBAR_DEBUG shows.
+            Debug.log("shared folder: " + out.pairs.filter { $0.key.hasPrefix("SF_") }
+                .map { "\($0.key)=\($0.value)" }.joined(separator: " "))
+            return guestView(out)
+        }
+    }
+
+    /// Replaces the mapping in the signed-in person's session, for the doctor row's fix.
+    static func remapUserDrive(vm: String, user: String?, folder: String) -> Result<Void, WinbarError> {
+        verify(.folder(folder), vm: vm, user: user, remapDrive: true).flatMap { checked in
+            switch driveState(checked.view ?? GuestView()) {
+            case .working:
+                return .success(())
+            case .stale, .missing:
+                return .failure(WinbarError("Windows still can't list the drive",
+                                            "The mapping was made again and still shows nothing. Signing out of Windows "
+                                                + "and back in remakes it from scratch."))
+            case .unknown(let why):
+                return .failure(WinbarError("Couldn't check the drive in Windows", why))
+            }
+        }
+    }
+
+    /// Puts the share back on its feet for the moment after UTM has been restarted and the VM is
+    /// still stopped — the only moment it can be written.
+    ///
+    /// UTM's relaunch invalidates the bookmark behind a scripted share, so a folder that was working
+    /// is dead from that moment, and writing it again is the only thing that brings it back. Winbar
+    /// only writes the one it wrote itself: a folder picked on UTM's own details screen holds a
+    /// durable bookmark that survives by itself, and a scripted rewrite would quietly downgrade it.
+    ///
+    /// Returns the folder that is shared, whether or not it was rewritten, so the caller can ask
+    /// Windows what became of it either way; nil when nothing is shared or UTM wouldn't say. A
+    /// failure here is never worth failing a display change over.
+    @discardableResult
+    static func reestablish(vm: String, progress: (String) -> Void = { _ in }) -> String? {
+        guard case .success(let folder?) = current(vm: vm) else { return nil }
+        guard vm == Config.vmName,
+              stillOurs(read: folder, remembered: Config.sharedFolder, wasOurs: Config.sharedFolderByWinbar)
+        else { return folder }   // not Winbar's to rewrite; the caller still checks it
+        progress("Writing \(vm)'s shared folder again: restarting UTM invalidates it…")
+        guard case .success = setWhileStopped(.folder(folder), vm: vm) else { return folder }
+        Config.rememberSharedFolderWritten(folder, for: vm)
+        return folder
     }
 
     /// Finishes a change `Reconfigure` has already made and the VM has already restarted for: wait for
@@ -361,7 +518,8 @@ enum SharedFolder {
         guard UTM.waitForGuestAgent(vm, timeout: 240) else { return .success(.unknown("Windows didn't answer in time")) }
         switch verify(setting, vm: vm, user: user) {
         case .failure(let error): return .failure(error)
-        case .success(let checked) where checked.verification != .stale: return .success(checked)
+        case .success(let checked) where checked.verification != .stale:
+            return .success(fixUserDrive(checked, vm: vm, user: user, setting, interaction))
         case .success: break
         }
         interaction.progress("Windows is still serving the folder it had before; restarting \(vm) once more…")
@@ -369,26 +527,19 @@ enum SharedFolder {
         if case .failure(let error) = UTM.start(vm) { return .failure(error) }
         interaction.progress("Waiting for Windows…")
         guard UTM.waitForGuestAgent(vm, timeout: 240) else { return .success(.unknown("Windows didn't answer in time")) }
-        return verify(setting, vm: vm, user: user)
+        return verify(setting, vm: vm, user: user).map { fixUserDrive($0, vm: vm, user: user, setting, interaction) }
     }
 
-    /// Maps the drive in the signed-in user's session. A mapping made by the guest agent would belong
-    /// to SYSTEM in session 0 and the person would never see it, so this goes through the same
-    /// scheduled task the other desktop actions use. Normally the Guest Tools have done it already.
-    static func mapDrive(vm: String, user: String?, drive: String = defaultDrive,
-                         remotePath: String = defaultRemotePath) -> Result<Void, WinbarError> {
-        let script = GuestScripts.openOnDesktop(user: user, executable: "net.exe",
-                                                arguments: mapArguments(drive: drive, remotePath: remotePath),
-                                                elevated: false)
-        return GuestAgent.run(vm: vm, script, timeout: 120).flatMap { out in
-            if let error = out.error { return .failure(WinbarError("Windows couldn't map \(drive)", error)) }
-            return .success(())
-        }
-    }
-
-    /// `net use Z: \\localhost@9843\DavWWWRoot /persistent:yes`, minus the `net`.
-    static func mapArguments(drive: String, remotePath: String) -> String {
-        "use \(drive) \(remotePath) /persistent:yes"
+    /// The last step, and the one the person actually experiences: their own drive letter. It can be
+    /// a dead handle while the share behind it is healthy, and only a session of their own can
+    /// replace the mapping. One remap, then whatever it says — a letter that still shows nothing is
+    /// reported, never retried in a loop.
+    static func fixUserDrive(_ checked: Checked, vm: String, user: String?, _ setting: Setting,
+                             _ interaction: Interaction) -> Checked {
+        guard checked.verification == .live, let view = checked.view, driveState(view).needsMapping else { return checked }
+        interaction.progress("Mapping the drive again in Windows: the share works, the drive letter doesn't…")
+        guard case .success(let remapped) = verify(setting, vm: vm, user: user, remapDrive: true) else { return checked }
+        return remapped
     }
 
     // MARK: - Scripts

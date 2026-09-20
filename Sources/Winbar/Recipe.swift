@@ -10,11 +10,9 @@ enum Recipe {
 
     static let host: [Check] = [
         Check(id: "H1", section: .host, title: "UTM installed",
-              why: "Winbar drives UTM's own tools; it doesn't replace UTM.",
-              evaluate: { _ in
-                  guard UTM.isInstalled else { return .manual("UTM isn't installed", how: "brew install --cask utm") }
-                  return .ok("UTM \(UTM.version ?? "(unknown version)")")
-              }),
+              why: "Winbar drives UTM's own tools; it doesn't replace UTM. Setup offers to install it — through "
+                  + "Homebrew if you have it, otherwise from UTM's own notarized download.",
+              evaluate: { _ in Recipe.dependencyStatus(.utm) }),
 
         Check(id: "H2", section: .host, title: "VM",
               why: "Everything else concerns one VM, chosen by its name in UTM.",
@@ -23,6 +21,13 @@ enum Recipe {
                   let list: [VMInfo]
                   switch ctx.vms {
                   case .failure(let error) where error.automationDenied: return .manual(error.title, how: error.detail)
+                  case .failure(let error) where error.timedOut:
+                      // Nothing came back. On a Mac that has just installed UTM that is H9's state,
+                      // not a problem with the VM list, and "AppleEvent timed out (-1712)" is the
+                      // first thing anybody sees — so it says what H9 says.
+                      return .manual("UTM didn't answer when Winbar asked for its VMs",
+                                     how: UTMFirstUse.how(consent: Automation.consent(bundleID: Config.utmBundleID),
+                                                          quarantined: Quarantine.isMarked(UTM.appURL?.path)))
                   case .failure(let error): return .error("couldn't ask UTM for its VMs: \(error)")
                   case .success(let vms): list = vms
                   }
@@ -45,8 +50,9 @@ enum Recipe {
               },
               apply: { ctx in
                   guard ctx.vmName == nil, ctx.candidates.count == 1 else { return .failure(WinbarError("No single VM to choose")) }
-                  let name = ctx.candidates[0].name
-                  Config.selectVM(name)
+                  let chosen = ctx.candidates[0]
+                  let name = chosen.name
+                  Config.selectVM(name, id: chosen.id)
                   ctx.vmName = name
                   ctx.refreshAll()
                   return .success(())
@@ -96,7 +102,7 @@ enum Recipe {
               needsRestart: true,
               evaluate: { ctx in
                   guard let vm = ctx.vm else { return .info("needs a VM (H2)") }
-                  guard let headless = vm.headless ?? ctx.process?.headless ?? Config.consoleEnabled.map({ !$0 }) else {
+                  guard let headless = vm.headless ?? ctx.process?.headless ?? ctx.consoleEnabled.map({ !$0 }) else {
                       return .info("unknown")
                   }
                   if headless { return .ok("headless") }
@@ -173,6 +179,21 @@ enum Recipe {
                   default:
                       return .manual("\(vm.networkMode)", how: "With the VM stopped, in UTM: select it → Edit → Network → Network Mode: Shared Network.")
                   }
+              }),
+
+        Check(id: "H9", section: .host, title: "UTM answers Winbar",
+              why: "Everything Winbar asks of UTM — utmctl and AppleScript alike — is an Apple Event, and macOS holds "
+                  + "the first one to a newly installed UTM until you allow it. While it waits, utmctl sits there and "
+                  + "says nothing, which looks exactly like a broken Winbar; this row says which of the two it is.",
+              evaluate: { ctx in
+                  guard UTM.isInstalled else { return .info("needs UTM (H1)") }
+                  let answer = ctx.utmctl
+                  // Both of these are only worth asking for once utmctl has already disappointed us,
+                  // and `consent` is bounded because the call behind it hasn't always come back.
+                  guard !answer.isAnswered else { return Recipe.utmctlStatus(answer, consent: .decided, quarantined: false) }
+                  return Recipe.utmctlStatus(answer,
+                                             consent: Automation.consent(bundleID: Config.utmBundleID),
+                                             quarantined: Quarantine.isMarked(UTM.appURL?.path))
               }),
     ]
 
@@ -285,7 +306,7 @@ enum Recipe {
                       return .fixable("\(wrong.count) of \(Tuning.visualEffects.count) differ: \(wrong.joined(separator: ", "))")
                   }
               },
-              apply: { ctx in applyInGuest(ctx, GuestScripts.applyVisualEffects(user: Config.rdpUser)) }),
+              apply: { ctx in applyInGuest(ctx, GuestScripts.applyVisualEffects(user: ctx.configuredUser)) }),
 
         Check(id: "G5", section: .guest, title: "Account and password",
               why: "Remote Desktop needs a real password. A Windows Hello PIN never works over it, and Windows can't give a "
@@ -385,8 +406,7 @@ enum Recipe {
                   guard let host = ctx.rdpHost, Config.isValidHostName(host) else {
                       return .failure(WinbarError("No valid RDP host name", "Set one with winbar config --host <name>."))
                   }
-                  let mac = ctx.vm?.mac ?? ctx.process?.mac ?? Config.vmMAC
-                  return applyInGuest(ctx, GuestScripts.applyCertificate(host: host, ip: RDP.leasedIP(mac: mac)))
+                  return applyInGuest(ctx, GuestScripts.applyCertificate(host: host, ip: RDP.leasedIP(mac: ctx.vmMAC)))
               }),
 
         Check(id: "G8", section: .guest, title: "Sign in at boot",
@@ -457,14 +477,17 @@ enum Recipe {
                   case .success(let path): folder = path
                   }
                   return sharedFolderStatus(folder: folder, guest: ctx.guestOutput.map(SharedFolder.guestView),
-                                            running: ctx.process != nil, token: ctx.sharedFolderMarker)
+                                            running: ctx.process != nil, token: ctx.sharedFolderMarker,
+                                            utmRestarted: SharedFolder.brokenByUTMRestart(vm: ctx.vmName ?? ""))
               },
               apply: { ctx in
                   guard let vm = ctx.vmName else { return .failure(WinbarError("No VM chosen")) }
-                  let view = ctx.guestOutput.map(SharedFolder.guestView)
-                  return SharedFolder.mapDrive(vm: vm, user: Config.rdpUser,
-                                               drive: view?.drive ?? SharedFolder.defaultDrive,
-                                               remotePath: view?.remotePath ?? SharedFolder.defaultRemotePath)
+                  guard case .success(let folder?) = ctx.sharedFolder else {
+                      return .failure(WinbarError("\(ctx.vmName ?? "The VM") shares no folder"))
+                  }
+                  // In the person's own session: a drive letter belongs to a logon session, and
+                  // theirs is the one they open.
+                  return SharedFolder.remapUserDrive(vm: vm, user: ctx.configuredUser, folder: folder)
               }),
     ]
 
@@ -472,11 +495,10 @@ enum Recipe {
 
     static let client: [Check] = [
         Check(id: "C1", section: .client, title: "Windows App",
-              why: "Microsoft's Remote Desktop client for the Mac, which Connect opens.",
-              evaluate: { _ in
-                  guard WindowsApp.appURL != nil else { return .manual("not installed", how: "brew install --cask windows-app") }
-                  return .ok("Windows App \(WindowsApp.version ?? "")".trimmingCharacters(in: .whitespaces))
-              }),
+              why: "Microsoft's Remote Desktop client for the Mac, which Connect opens. Setup offers to install it "
+                  + "with Homebrew, or to open its App Store page: Microsoft ships it through the App Store, and an "
+                  + "App Store app can't be installed for you.",
+              evaluate: { _ in Recipe.dependencyStatus(.windowsApp) }),
 
         Check(id: "C2", section: .client, title: "Saved PC",
               why: "Only a saved PC uses Windows App's stored password; a one-off connection asks every time. Winbar still "
@@ -487,7 +509,7 @@ enum Recipe {
                   guard WindowsApp.appURL != nil else { return .info("needs Windows App (C1)") }
                   switch ctx.savedPC(for: host) {
                   case .success(let found?):
-                      Recipe.rememberSavedPC(found, host: host)
+                      Recipe.rememberSavedPC(found, host: host, for: ctx)
                       return .ok(found.name.caseInsensitiveCompare(host) == .orderedSame ? host : "\(found.name) (\(host))")
                   case .success(nil):
                       // Windows App answered, and it hasn't got one. Winbar can write it, unless the
@@ -501,7 +523,7 @@ enum Recipe {
                                          + WindowsAppBookmarks.Copy.byHand(host: host, user: ctx.rdpUser))
                   case .failure(let failure):
                       // Windows App wouldn't say. Fall back to what 0.1.0 had: the person's word.
-                      if Config.savedPCHost?.caseInsensitiveCompare(host) == .orderedSame {
+                      if ctx.isConfiguredVM, Config.savedPCHost?.caseInsensitiveCompare(host) == .orderedSame {
                           return .ok("\(Config.savedPCName ?? host) (your word; Windows App didn't answer)")
                       }
                       return .manual("couldn't ask Windows App whether there's one for \(host) (\(failure))",
@@ -516,9 +538,10 @@ enum Recipe {
                   // Ask Windows App itself: it knows what the person called the PC, and the tile is
                   // matched on that name. Only when it won't say does Winbar fall back to asking.
                   if let found = try? WindowsAppBookmarks.savedPC(for: host) {
-                      Recipe.rememberSavedPC(found, host: host)
+                      Recipe.rememberSavedPC(found, host: host, for: ctx)
                       return
                   }
+                  guard ctx.isConfiguredVM else { return }
                   if Term.stdinIsTTY {
                       print("What is the saved PC called in Windows App? [\(Config.savedPCName ?? host)] ", terminator: "")
                       fflush(stdout)
@@ -561,6 +584,58 @@ enum Recipe {
 
     // MARK: - Helpers
 
+    /// H1 and C1 read the same way: where an app Winbar needs but doesn't ship stands, and what
+    /// `winbar setup` would do about it. Fixable means setup takes it on (asks Homebrew, fetches the
+    /// signed download, or opens the App Store and waits); manual means only the person can.
+    static func dependencyStatus(_ dependency: Dependency) -> Status {
+        let state = Dependencies.state(of: dependency)
+        let where_ = dependencyDetail(dependency, state: state)
+        switch Dependencies.plan(for: dependency, state: state, brew: Homebrew.path) {
+        case nil:
+            return .ok(where_)
+        case .brew:
+            return .fixable(where_ + "; setup can ask Homebrew to install it")
+        case .brewUpgrade:
+            return .fixable(where_ + "; setup can ask Homebrew to update it")
+        case .download:
+            return .fixable(where_ + "; setup can download it from \(dependency.vendor) and install it")
+        case .appStore:
+            return .fixable(where_ + "; setup can open its App Store page")
+        case .manual(let advice):
+            return .manual(where_, how: advice)
+        }
+    }
+
+    /// H9's row from the three facts it needs, so every outcome can be checked without a Mac. Pure.
+    static func utmctlStatus(_ answer: UTM.CtlAnswer, consent: Automation.Consent, quarantined: Bool) -> Status {
+        switch answer {
+        case .answered:
+            return .ok("utmctl answers")
+        case .denied:
+            let denied = Automation.deniedError()
+            return .manual(denied.title, how: denied.detail)
+        case .silent(let seconds):
+            return .manual(UTMFirstUse.silentDetail(seconds: seconds),
+                           how: UTMFirstUse.how(consent: consent, quarantined: quarantined))
+        case .failed(let detail):
+            return .error("utmctl: \(detail)")
+        }
+    }
+
+    /// The row's own words for a dependency's state. Pure.
+    static func dependencyDetail(_ dependency: Dependency, state: DependencyState) -> String {
+        switch state {
+        case .installed(let version):
+            return "\(dependency.name) \(version ?? "(unknown version)")"
+        case .missing:
+            return "not installed"
+        case .tooOld(let version, let minimum):
+            return "\(version); Winbar needs \(minimum) or later"
+        case .wrongSignature(let detail):
+            return detail
+        }
+    }
+
     /// The survey found a local account that signs in with an empty password: LogonUser accepted
     /// '' (ok) or refused it only by policy (1327, ERROR_ACCOUNT_RESTRICTION).
     static func blankPassword(_ out: GuestOutput) -> Bool {
@@ -574,7 +649,7 @@ enum Recipe {
     /// Sharing nothing is informational, never a failure: most people never want a shared folder, and
     /// doctor must still exit 0 for them.
     static func sharedFolderStatus(folder: String?, guest: SharedFolder.GuestView?, running: Bool,
-                                   token: String? = nil) -> Status {
+                                   token: String? = nil, utmRestarted: Bool = false) -> Status {
         guard let folder else {
             return .info("nothing shared (winbar share <folder> sets one up)")
         }
@@ -589,6 +664,11 @@ enum Recipe {
         guard let guest, !guest.webdavd.isEmpty else {
             return running ? .ok("\(name) (Windows didn't say how it sees it; G0)")
                            : .ok("\(name); Windows sees it as a drive once the VM is running")
+        }
+        if guest.seesPlaceholder || (token != nil && guest.marker != token), utmRestarted {
+            return .manual("\(name) is set, but the share died when UTM restarted",
+                           how: SharedFolder.diedWhenUTMRestarted + " Write it again with: winbar share \(name) — that "
+                               + "restarts the VM. " + SharedFolder.durableAdvice)
         }
         if guest.seesPlaceholder {
             return .manual("\(name) is set, but Windows is still showing UTM's placeholder",
@@ -610,6 +690,14 @@ enum Recipe {
         }
         // The folder is mounted — but is it this one? UTM gives Windows the folder its registry held
         // at the previous start, so the marker the survey left is the only thing that can say.
+        // A drive with nothing behind it: whatever UTM stored can't be opened any more, so another
+        // start changes nothing. `winbar share` offers the one repair there is.
+        if let token, guest.marker != token, guest.looksDead {
+            return .manual("\(name) is set, but Windows has a drive for it with nothing behind it",
+                           how: "Whatever UTM stored for this folder can't be opened any more. Run winbar share: it "
+                               + "offers to write the folder again, which restarts the VM. That rewrite is the scripted "
+                               + "kind and dies at the next UTM restart too. " + SharedFolder.durableAdvice)
+        }
         if let token, guest.marker != token {
             return .manual("\(name) is set, but Windows is still serving the folder it had before",
                            how: "Windows is given the folder UTM held at the start before this one, so a change needs a "
@@ -619,7 +707,23 @@ enum Recipe {
         // A probe that couldn't read the share is worth saying, but it isn't a failure: the guest
         // agent runs as SYSTEM, which doesn't always get to walk another session's WebDAV mount.
         let unconfirmed = guest.reachable == false ? " (Windows didn't manage to read it from the guest agent)" : ""
-        return .ok("\(name) ↔ \(drive) in Windows\(unconfirmed)")
+        // The share is live. What the person opens is a different thing: a drive letter belongs to a
+        // logon session, and theirs can be a dead handle while this one is fine — their experience
+        // is "the folder is empty", and the remedy is to map the letter again, not to touch the share.
+        guard guest.userState != nil else {
+            return .ok("\(name) ↔ \(drive) in Windows\(unconfirmed)")   // their session wasn't asked
+        }
+        switch SharedFolder.driveState(guest) {
+        case .working:
+            return .ok("\(name) ↔ \(guest.userDrive ?? drive) in Windows\(unconfirmed)")
+        case .stale:
+            return .fixable("\(name) is shared and Windows can reach it, but \(guest.userDrive ?? drive) is stale in "
+                            + "your Windows session: it lists nothing")
+        case .missing:
+            return .fixable("\(name) is shared and Windows can reach it, but your Windows session has no drive mapped to it")
+        case .unknown(let why):
+            return .ok("\(name) ↔ \(drive) in Windows\(unconfirmed); your own drive letter wasn't checked (\(why))")
+        }
     }
 
     /// Guest checks read the survey; without one they defer to G0, which says why.
@@ -638,7 +742,7 @@ enum Recipe {
 
     static func openOnWindowsDesktop(_ ctx: Context, executable: String, arguments: String, elevated: Bool) {
         guard let vm = ctx.vmName else { return }
-        let script = GuestScripts.openOnDesktop(user: Config.rdpUser, executable: executable, arguments: arguments, elevated: elevated)
+        let script = GuestScripts.openOnDesktop(user: ctx.configuredUser, executable: executable, arguments: arguments, elevated: elevated)
         switch GuestAgent.run(vm: vm, script, timeout: 90) {
         case .failure(let error):
             Term.error("Couldn't open it in Windows: \(error)")
@@ -658,7 +762,10 @@ enum Recipe {
         return (host, bookmark.name.caseInsensitiveCompare(host) == .orderedSame ? nil : bookmark.name)
     }
 
-    static func rememberSavedPC(_ bookmark: WindowsAppBookmarks.Bookmark?, host: String) {
+    /// Nothing is written for a VM these settings don't describe: `doctor --vm` can be pointed at
+    /// another VM, and the saved PC it finds is that VM's, not this one's.
+    static func rememberSavedPC(_ bookmark: WindowsAppBookmarks.Bookmark?, host: String, for ctx: Context) {
+        guard ctx.isConfiguredVM else { return }
         let settings = savedPCSettings(bookmark, host: host)
         Config.savedPCHost = settings.host
         Config.savedPCName = settings.name

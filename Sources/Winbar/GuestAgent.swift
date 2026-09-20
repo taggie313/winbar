@@ -92,6 +92,25 @@ enum GuestAgent {
         return .success(output)
     }
 
+    /// Puts a script into the guest for something else to run: a scheduled task can only point at a
+    /// file, and a script that builds another script inside itself proved too fragile to trust.
+    /// Same encoding rules as `run`'s own script.
+    @discardableResult
+    static func push(vm: String, path: String, text: String) -> Result<Void, WinbarError> {
+        var data = Data([0xEF, 0xBB, 0xBF])
+        data.append(Data(text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: "\r\n").utf8))
+        let push = UTM.ctl(["file", "push", vm, path], input: data, timeout: 60)
+        guard push.ok else {
+            return .failure(Automation.explain(push.output, else: WinbarError("Couldn't copy a script into Windows", push.output)))
+        }
+        return .success(())
+    }
+
+    /// Takes a pushed script away again. Best effort.
+    static func remove(vm: String, path: String) {
+        _ = UTM.ctl(["exec", vm, "--cmd", "cmd.exe", "/c", "del /f /q \(path)"], timeout: 30)
+    }
+
     /// Deletes the script and its .tmp/.out. Best effort: a script that timed out may still write its
     /// .out later and leave it behind in C:\Windows\Temp.
     private static func cleanUp(vm: String, base: String) {

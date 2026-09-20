@@ -229,9 +229,16 @@ import Testing
         #expect(view.drive == nil && view.remotePath == nil && view.reachable == nil && view.port == nil)
     }
 
-    @Test func theMappingCommandIsTheOneUTMsToolsUse() {
-        #expect(SharedFolder.mapArguments(drive: "Z:", remotePath: #"\\localhost@9843\DavWWWRoot"#)
-                == #"use Z: \\localhost@9843\DavWWWRoot /persistent:yes"#)
+    /// The mapping is remade in the person's own session, by dropping the handle first: a letter
+    /// that is already there but dead can't be mapped over.
+    @Test func theMappingIsDroppedBeforeItIsMadeAgain() {
+        #expect(GuestScripts.userDriveChild.contains("net.exe use $letter /delete /y"))
+        #expect(GuestScripts.userDriveChild.contains("net.exe use $letter $unc /persistent:yes"))
+        // It runs in their session, through the task, with what it needs on its own command line.
+        let body = GuestScripts.sharedFolder(user: "Joshua", marker: ".winbar-share-check", userDrive: true, remap: true).body
+        #expect(body.contains("New-ScheduledTaskPrincipal") && body.contains("LogonType Interactive"))
+        #expect(body.contains("$wbUserDrivePath") && body.contains("$wbUserDriveAnswer"))
+        #expect(GuestScripts.userDriveChild.hasPrefix("param("))
     }
 
     /// The drive mapping is per-user and the guest agent is SYSTEM in session 0, so the survey reads
@@ -456,5 +463,246 @@ import Testing
         #expect(SharedFolder.judge(.folder("/tmp/f"), view: view, token: "abc")
                 == .unknown("Windows couldn't read the share"))
         #expect(SharedFolder.judge(.off, view: view, token: nil) == .unknown("Windows couldn't read the share"))
+    }
+}
+
+/// UTM's `update registry` stores a bookmark resolved inside a helper process, not the durable one
+/// its own file picker makes (UTMScriptingRegistryEntryImpl). So a share set by script dies the
+/// moment UTM itself restarts — with nothing re-set, Z: comes back empty — and Winbar restarts UTM
+/// for every display change. The registry still names the folder, so only "which UTM was running
+/// when it last worked" can tell a dead share from a good one.
+@Suite struct SharedFolderAfterUTMRestarts {
+    @Test func adifferentUTMMeansTheShareIsDead() {
+        #expect(SharedFolder.brokenByUTMRestart(seenUnder: [42], utmNow: [77]))
+        #expect(!SharedFolder.brokenByUTMRestart(seenUnder: [42], utmNow: [42]))
+        #expect(!SharedFolder.brokenByUTMRestart(seenUnder: [42, 43], utmNow: [43]))
+    }
+
+    /// Never a claim out of thin air: a share that was never seen working, or no UTM to compare
+    /// against, says nothing either way.
+    @Test func nothingToCompareClaimsNothing() {
+        #expect(!SharedFolder.brokenByUTMRestart(seenUnder: [], utmNow: [77]))
+        #expect(!SharedFolder.brokenByUTMRestart(seenUnder: [42], utmNow: []))
+        #expect(!SharedFolder.brokenByUTMRestart(seenUnder: [], utmNow: []))
+    }
+
+    /// The registry still names the folder after UTM restarts, so "already set" is exactly the wrong
+    /// answer: it has to be written again.
+    @Test func aDeadShareIsNeverAlreadySet() {
+        let same = SharedFolder.Setting.folder("/tmp/f")
+        #expect(SharedFolder.decide(current: "/tmp/f", wanted: same, running: true) == .alreadySet)
+        #expect(SharedFolder.decide(current: "/tmp/f", wanted: same, running: true, needsRewrite: true) == .needsRestart)
+        #expect(SharedFolder.decide(current: "/tmp/f", wanted: same, running: false, needsRewrite: true) == .setNow)
+        // Stopping the sharing needs no bookmark, so that one is still already done.
+        #expect(SharedFolder.decide(current: nil, wanted: .off, running: true, needsRewrite: true) == .alreadySet)
+    }
+
+    /// Two failures that look identical in Windows, told apart and answered differently.
+    @Test func theRowSaysWhichFailureItIs() {
+        var view = SharedFolder.GuestView()
+        view.webdavd = "Running:Automatic"
+        view.webClient = "Running:Automatic"
+        view.drive = "Z:"
+        view.remotePath = SharedFolder.defaultRemotePath
+        view.reachable = true
+
+        let waiting = Recipe.sharedFolderStatus(folder: "/tmp/f", guest: view, running: true, token: "abc")
+        #expect(waiting.isManual && waiting.detail.contains("placeholder") == false)
+        #expect(waiting.detail.contains("still serving the folder it had before"))
+
+        let dead = Recipe.sharedFolderStatus(folder: "/tmp/f", guest: view, running: true, token: "abc", utmRestarted: true)
+        #expect(dead.isManual)
+        #expect(dead.detail.contains("died when UTM restarted"))
+        if case .manual(_, let how) = dead {
+            #expect(how.contains("winbar share"))
+            #expect(how.contains("Shared Directory"))   // UTM's own wording for the durable way
+        } else {
+            Issue.record("not manual")
+        }
+    }
+
+    /// Winbar says what it can and can't do about it, rather than implying the script way is as good.
+    @Test func theCopyIsHonestAboutTheLimit() {
+        #expect(SharedFolder.diedWhenUTMRestarted.contains("doesn't survive"))
+        #expect(SharedFolder.durableAdvice.contains("pick it in UTM itself"))
+        #expect(SharedFolder.durableAdvice.contains("details screen"))
+    }
+
+    @Test func whichUTMItWorkedUnderIsKeptPerVM() {
+        #expect(Config.Key.all.contains(Config.Key.sharedFolderUTM))
+        #expect(Config.Key.perVM.contains(Config.Key.sharedFolderUTM))
+    }
+}
+
+@Suite struct SharedFolderOwnership {
+    /// A folder picked on UTM's own details screen holds a durable bookmark: it survives UTM
+    /// restarting by itself, and a scripted rewrite would quietly downgrade it to one that doesn't.
+    /// So Winbar only ever rewrites what Winbar wrote.
+    @Test func onlyAFolderWinbarWroteIsWinbarsToRewrite() {
+        #expect(SharedFolder.stillOurs(read: "/tmp/f", remembered: "/tmp/f", wasOurs: true))
+        #expect(SharedFolder.stillOurs(read: "/tmp/f/", remembered: "/tmp/f", wasOurs: true))
+        // Someone picked a different folder in UTM since.
+        #expect(!SharedFolder.stillOurs(read: "/tmp/other", remembered: "/tmp/f", wasOurs: true))
+        // Winbar never wrote this one.
+        #expect(!SharedFolder.stillOurs(read: "/tmp/f", remembered: "/tmp/f", wasOurs: false))
+        #expect(!SharedFolder.stillOurs(read: nil, remembered: "/tmp/f", wasOurs: true))
+        #expect(!SharedFolder.stillOurs(read: "/tmp/f", remembered: nil, wasOurs: true))
+    }
+
+    @Test func whoWroteItIsKeptPerVM() {
+        #expect(Config.Key.all.contains(Config.Key.sharedFolderByWinbar))
+        #expect(Config.Key.perVM.contains(Config.Key.sharedFolderByWinbar))
+    }
+}
+
+/// A share Winbar didn't write can die too — and it is the normal case for anyone who took the
+/// README's advice and picked the folder in UTM. Winbar still may not rewrite it behind their back,
+/// so the way out is an offer: the decision table is what makes that offer reachable.
+@Suite struct SharedFolderRepairingOneWeDidNotWrite {
+    func view(onlySpice: Bool, readme: String? = nil, reachable: Bool? = true) -> SharedFolder.GuestView {
+        var view = SharedFolder.GuestView()
+        view.webdavd = "Running:Automatic"
+        view.webClient = "Running:Automatic"
+        view.drive = "Z:"
+        view.remotePath = SharedFolder.defaultRemotePath
+        view.reachable = reachable
+        view.onlySpiceFile = onlySpice
+        view.readme = readme
+        view.entryCount = onlySpice ? 1 : 3
+        return view
+    }
+
+    /// spice-webdavd's own file and nothing else means a mount with no folder behind it. UTM's
+    /// placeholder (a folder was never chosen) and a share serving someone else's files are not that.
+    @Test func aMountWithNothingBehindIt() {
+        #expect(view(onlySpice: true).looksDead)
+        #expect(!view(onlySpice: false).looksDead)
+        #expect(!view(onlySpice: true, readme: "You have not selected a shared directory.").looksDead)
+        #expect(!view(onlySpice: true, reachable: false).looksDead)
+        #expect(!SharedFolder.GuestView().looksDead)   // nothing was asked
+    }
+
+    /// Dead, not ours, same folder: the repair has to be reachable, so this must not be "already set".
+    @Test func deadAndUnownedWithTheSameFolderIsOfferedNotDismissed() {
+        let same = SharedFolder.Setting.folder("/tmp/f")
+        #expect(!SharedFolder.stillOurs(read: "/tmp/f", remembered: "/tmp/f", wasOurs: false))
+        #expect(SharedFolder.decide(current: "/tmp/f", wanted: same, running: true, needsRewrite: true) == .needsRestart)
+        #expect(SharedFolder.decide(current: "/tmp/f", wanted: same, running: false, needsRewrite: true) == .setNow)
+    }
+
+    /// Dead, not ours, a different folder: that was always an ordinary change, and stays one.
+    @Test func deadAndUnownedWithADifferentFolderIsAnOrdinaryChange() {
+        let other = SharedFolder.Setting.folder("/tmp/other")
+        #expect(SharedFolder.decide(current: "/tmp/f", wanted: other, running: true, needsRewrite: true) == .needsRestart)
+        #expect(SharedFolder.decide(current: "/tmp/f", wanted: other, running: true) == .needsRestart)
+    }
+
+    /// Healthy and not ours: nothing to offer, nothing to rewrite. A folder picked in UTM keeps its
+    /// durable bookmark precisely because Winbar leaves this case alone.
+    @Test func healthyAndUnownedStaysAlreadySet() {
+        let same = SharedFolder.Setting.folder("/tmp/f")
+        #expect(SharedFolder.decide(current: "/tmp/f", wanted: same, running: true, needsRewrite: false) == .alreadySet)
+        #expect(SharedFolder.decide(current: "/tmp/f/", wanted: same, running: false) == .alreadySet)
+    }
+
+    /// Saying no changes nothing: the only thing that writes the registry is the rewrite flag, and a
+    /// request without it is dropped as already set — which is what "nothing changed" means here.
+    @Test func decliningWritesNothing() {
+        let changes = ConfigChanges(sharedFolder: .folder("/tmp/f"))
+        #expect(!changes.rewriteSharedFolder)
+        #expect(SharedFolder.decide(current: "/tmp/f", wanted: .folder("/tmp/f"), running: true,
+                                    needsRewrite: changes.rewriteSharedFolder) == .alreadySet)
+        // And the accepted one carries the flag that makes Reconfigure write it anyway.
+        #expect(ConfigChanges(sharedFolder: .folder("/tmp/f"), rewriteSharedFolder: true).rewriteSharedFolder)
+    }
+
+    /// The row says which failure it is, and the offer is in the "how".
+    @Test func theRowPointsAtTheOffer() {
+        let dead = Recipe.sharedFolderStatus(folder: "/tmp/f", guest: view(onlySpice: true), running: true, token: "abc")
+        #expect(dead.isManual)
+        #expect(dead.detail.contains("nothing behind it"))
+        if case .manual(_, let how) = dead {
+            #expect(how.contains("winbar share"))
+            #expect(how.contains("Shared Directory"))
+        } else {
+            Issue.record("not manual")
+        }
+        // A share that is merely a start behind still gets the milder answer.
+        let waiting = Recipe.sharedFolderStatus(folder: "/tmp/f", guest: view(onlySpice: false), running: true, token: "abc")
+        #expect(waiting.detail.contains("still serving the folder it had before"))
+    }
+
+    @Test func theGuestCountsItsOwnFileWithoutNamingAnyone() {
+        let body = GuestScripts.sharedFolder(user: "Joshua").body
+        #expect(body.contains("SF_ONLY_SPICE") && body.contains(".spice-clipboard"))
+        // A count, never the names in the person's own folder.
+        #expect(body.contains("-eq 0)"))
+    }
+}
+
+/// The share and the drive letter are two different things, and only the second is what the person
+/// opens. A letter belongs to a logon session; Winbar's scripts run as SYSTEM in session 0, so
+/// theirs is asked in their own session. It can be a dead handle while the endpoint behind it is
+/// perfectly healthy — seen live right after a repair — and then the answer is to map the letter
+/// again, not to touch the share.
+@Suite struct SharedFolderTheirDriveLetter {
+    func view(_ state: String?, drive: String? = "Z:", remapped: Bool = false) -> SharedFolder.GuestView {
+        var view = SharedFolder.GuestView()
+        view.webdavd = "Running:Automatic"
+        view.webClient = "Running:Automatic"
+        view.drive = "Z:"
+        view.remotePath = SharedFolder.defaultRemotePath
+        view.reachable = true
+        view.marker = "abc"
+        view.userState = state
+        view.userDrive = drive
+        view.userRemapped = remapped
+        return view
+    }
+
+    @Test func endpointHealthyAndTheirLetterWorks() {
+        #expect(SharedFolder.driveState(view("ok")) == .working)
+        #expect(!SharedFolder.driveState(view("ok")).needsMapping)
+        let row = Recipe.sharedFolderStatus(folder: "/tmp/f", guest: view("ok"), running: true, token: "abc")
+        #expect(row.isOK && row.detail.contains("Z:"))
+    }
+
+    /// Their letter lists nothing, or lists some other folder, while the endpoint is proven good.
+    @Test func endpointHealthyAndTheirLetterStale() {
+        #expect(SharedFolder.driveState(view("empty")) == .stale)
+        #expect(SharedFolder.driveState(view("other")) == .stale)
+        #expect(SharedFolder.driveState(view("empty")).needsMapping)
+        let row = Recipe.sharedFolderStatus(folder: "/tmp/f", guest: view("empty"), running: true, token: "abc")
+        #expect(row.isFixable, "setup can map it again")
+        #expect(row.detail.contains("stale in your Windows session"))
+    }
+
+    @Test func endpointHealthyAndNoMappingAtAll() {
+        #expect(SharedFolder.driveState(view("none", drive: nil)) == .missing)
+        #expect(SharedFolder.driveState(view("none", drive: nil)).needsMapping)
+        let row = Recipe.sharedFolderStatus(folder: "/tmp/f", guest: view("none", drive: nil), running: true, token: "abc")
+        #expect(row.isFixable && row.detail.contains("no drive mapped"))
+    }
+
+    /// Nobody signed in, no answer, an error: unknown, and never a failure — the share itself is fine.
+    @Test func whatTheirSessionCouldNotSay() {
+        #expect(SharedFolder.driveState(view("nosession")) == .unknown("nobody is signed in to Windows"))
+        #expect(SharedFolder.driveState(view("noanswer")) == .unknown("the signed-in session didn't answer"))
+        #expect(!SharedFolder.driveState(view("noanswer")).needsMapping)
+        let row = Recipe.sharedFolderStatus(folder: "/tmp/f", guest: view("nosession"), running: true, token: "abc")
+        #expect(row.isOK && row.detail.contains("wasn't checked"))
+        // A survey that never asked says nothing at all about it, rather than hedging in the row.
+        let unasked = Recipe.sharedFolderStatus(folder: "/tmp/f", guest: view(nil), running: true, token: "abc")
+        #expect(unasked.isOK && !unasked.detail.contains("wasn't checked"))
+    }
+
+    /// The remap is one drop and one map, in their session, and it is judged by the same marker.
+    @Test func theRemapIsBoundedAndJudgedTheSameWay() {
+        #expect(GuestScripts.userDriveChild.contains("$Remap -eq '1' -and $state -ne 'ok'"))
+        #expect(GuestScripts.userDriveChild.contains("net.exe use $letter /delete /y"))
+        #expect(GuestScripts.userDriveChild.contains("net.exe use $letter $unc /persistent:yes"))
+        // Remapped and working again is a different sentence from remapped and still empty.
+        #expect(SharedFolder.driveState(view("ok", remapped: true)) == .working)
+        #expect(SharedFolder.driveState(view("empty", remapped: true)) == .stale)
     }
 }

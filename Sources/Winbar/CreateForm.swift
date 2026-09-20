@@ -37,6 +37,13 @@ extension CreateCopy {
     static let lPassword = "Password"
     static let lConfirm = "Confirm"
     static let lComputer = "Computer name"
+    static let lProductKey = "Product key"
+    static let lProductKeyPlaceholder = "optional"
+    /// Under the field, the way N_PW_SHORT sits under the password ones: the two things someone deciding
+    /// whether to type a key needs on screen, with the rest in the tooltip.
+    static let nProductKeyShort = "Optional. Without one Windows installs unactivated, and you can activate it "
+        + "later in Settings. With one, it goes into Windows' answer file in plain text, on the setup disk "
+        + "Winbar deletes when the install finishes."
     static let lAlwaysOn = "Always on"
     static let lNotOnHome = "Not available on Home"
     static let lSelect = "Use this VM in Winbar's menu"
@@ -224,7 +231,17 @@ extension CreateCopy {
 
     static let installTooltip = "Always on. Rufus warns that this erases a disk without asking; here the only disk is "
         + "the VM's new, empty one, so nothing of yours can be erased. Choose the edition to install: Pro is the "
-        + "default, and what Winbar needs for Remote Desktop."
+        + "default, and what Winbar needs for Remote Desktop. " + productKeyTooltip
+
+    /// The product-key field's tooltip, and the rest of what the checklist's one-line version can't say.
+    /// Honest about the three things that matter: optional, plain text, and Setup's own edition check.
+    static let productKeyTooltip = "A product key is optional. Leave it empty and Windows installs unactivated, "
+        + "which is what Winbar has always done; you can activate it later in Settings > System > Activation, or "
+        + "reinstall. Type one and Winbar puts it in Windows' answer file, in plain text: a product key has no "
+        + "scrambled form the way the password does, so what protects it is the setup disk itself, readable only "
+        + "by you, kept out of Time Machine and deleted as soon as Windows has finished installing. The edition "
+        + "above is what gets installed; Windows Setup refuses a key that isn't for it, and then asks for one "
+        + "on screen."
     static let vmNameTooltip = "The name UTM shows for the VM, and what winbar commands call it (--vm)."
     static func coresTooltip(topTier: Int) -> String {
         "Winbar suggests your Mac's top-tier core count (\(topTier) here), kept between 4 and 8: in testing, more "
@@ -325,6 +342,16 @@ extension CreateCopy {
     }
     static let nNotActivated = "Windows isn't activated: it installed without a product key. Activate it in Windows "
         + "under Settings > System > Activation."
+    /// N_PRODUCT_KEY, raised while the answer file is being written — the moment the key is committed to
+    /// disk and the last moment Winbar still has it. It says where the key is and what takes it away again;
+    /// it never carries the key, because notes go to the log and to state.json.
+    static let nProductKey = "Your product key is in Windows' answer file on the setup disk, in plain text (a "
+        + "product key has no scrambled form). The disk is readable only by you and kept out of Time Machine, "
+        + "and Winbar deletes it when Windows has finished installing."
+    /// The ending's line when a key was used. Windows can only activate once it has a network, which is after
+    /// the Guest Tools are in, so this says where to look rather than claiming it is already done.
+    static let nActivating = "Windows installed with your product key. It activates itself once it has a network, "
+        + "which is a minute or two after it starts; check under Settings > System > Activation."
     static let nUpdates = "Windows now has a network and will download updates for a while, so the VM may be busy for "
         + "the next half hour."
     /// N_NEXT_SETUP, as the window says it. The CLI frames the same sentence with "Next:
@@ -395,7 +422,8 @@ extension CreateCopy {
     static let eUTMMissing = eUTMMissingTitle + " " + eUTMMissingNext
     /// The job reports the same thing as a failure, which has a title and a next step (E_UTM_MISSING).
     static let eUTMMissingTitle = "UTM isn't installed."
-    static let eUTMMissingNext = "Install it (brew install --cask utm), then run this again."
+    static let eUTMMissingNext = "winbar create in Terminal offers to install UTM for you. Or install it yourself "
+        + "(brew install --cask utm, or getutm.app), then run this again."
     static func eSpace(freeGB: Int, volume: String) -> String {
         eSpaceTitle(freeGB: freeGB, volume: volume) + " " + eSpaceNext
     }
@@ -497,6 +525,10 @@ final class CreateFormModel: ObservableObject {
     @Published var userName: String { didSet { if userName != oldValue { followComputerName() } } }
     @Published var password = ""
     @Published var confirmation = ""
+    /// What the person typed in the Product key field, as they typed it. Empty is the default and means
+    /// no key, which is what Winbar has always done. It is never part of `plan` — the plan is written to
+    /// state.json — and `forgetPassword` clears it along with the password fields.
+    @Published var productKey = ""
     @Published var computerName = "" { didSet { if computerName != oldValue { computerNameEdited = true } } }
     @Published var edition: WindowsEdition? = nil { didSet { editionChanged(from: oldValue) } }
     @Published var options = CreateOption.defaults
@@ -595,6 +627,16 @@ final class CreateFormModel: ObservableObject {
         return problem.description
     }
 
+    /// An empty field is no error: the key is optional. A half-typed one is, once there's enough of it to
+    /// be wrong, which is how the other fields behave too.
+    var productKeyError: String? { CreateChoices.productKeyProblem(productKey)?.description }
+
+    /// What goes into the answer file: the key in its canonical form, or nil when the field is empty.
+    var normalizedProductKey: String? {
+        productKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? nil : CreateChoices.normalizedProductKey(productKey)
+    }
+
     /// Only after Confirm has lost focus or Create was pressed, so it doesn't shout while
     /// the second password is still being typed.
     var confirmationError: String? {
@@ -672,6 +714,7 @@ final class CreateFormModel: ObservableObject {
         if password.isEmpty { return .blocked(CreateCopy.fNeedPassword(user: userName)) }
         if let error = passwordError { return .blocked(error) }
         if confirmation != password { return .blocked(ChoiceProblem.passwordMismatch.description) }
+        if let error = productKeyError { return .blocked(error) }
         if let error = computerNameError { return .blocked(error) }
         if let free = facts.freeGB, free < CreateFormFacts.minimumFreeGB {
             return .blocked(CreateCopy.eSpace(freeGB: free, volume: facts.volumeName))
@@ -707,10 +750,12 @@ final class CreateFormModel: ObservableObject {
                           keepConsole: false)
     }
 
-    /// Both fields, emptied. Called when the window closes and as soon as the job has the password.
+    /// Both password fields and the product key, emptied. Called when the window closes and as soon as the
+    /// job has them. The key goes too: it is a licence, and the job has its own copy by then.
     func forgetPassword() {
         password = ""
         confirmation = ""
         confirmationBlurred = false
+        productKey = ""
     }
 }

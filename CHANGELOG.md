@@ -39,10 +39,18 @@ generalised so it works on any Apple silicon Mac and any Windows 11 VM in UTM.
   Folder** / **Share a Folder…** in the menu, an offer of `~/Shared-with-Windows` in `winbar setup`,
   and a row in `winbar doctor` (informational when nothing is shared — nobody needs one). It uses
   the WebDAV share the UTM Guest Tools already install, so nothing new goes into Windows.
-  Two things Winbar says out loud instead of letting you discover them: a change needs the VM to
+  Three things Winbar says out loud instead of letting you discover them: a change needs the VM to
   restart — sometimes twice, because UTM hands Windows the folder it had at the *previous* start, so
-  Winbar checks from inside Windows and restarts again only if it has to — and the folder's path
-  must have no spaces in it, or Windows mounts an empty drive that fails every write.
+  Winbar checks from inside Windows and restarts again only if it has to; the folder's path must
+  have no spaces in it, or Windows mounts an empty drive that fails every write; and a folder set
+  this way doesn't survive UTM itself restarting, which Winbar has to do for every display change —
+  so it writes the folder again on its way through, checks Windows really got it, and says so. It
+  never overwrites a folder you picked in UTM yourself; when one of those stops working it says so
+  and offers to write it again, explaining that its rewrite is the weaker kind. For a folder that
+  simply stays, pick it in UTM's own VM details screen. The drive letter in your own Windows session
+  is checked there too, in your session rather than the agent's, because it can be a stale handle
+  while the share behind it is healthy — Winbar tells the two apart, says which it found, and maps
+  the letter again when that is the only thing wrong.
 - The tuning recipe: vCPUs matched to the Mac's top-tier cores (4 to 8), memory by the Mac's RAM,
   headless display, Balanced power plan with fast ramp-up and core parking, power button = Shut
   down, SysMain / Windows Search / DiagTrack off, visual effects off (`--no-visual-tweaks` to
@@ -85,5 +93,83 @@ generalised so it works on any Apple silicon Mac and any Windows 11 VM in UTM.
   established by reading Rufus 4.15's `wue.c` (Rufus is GPL-3.0; none of its code is here), plus
   the pinned UTM Guest Tools installer `create` downloads at run time and never redistributes, and
   the CLDR-derived time zone table.
+
+[0.1.0]: https://github.com/taggie313/winbar/releases/tag/v0.1.0
+
+
+- An optional **Windows product key** for `winbar create`. Without one, nothing changes: Windows
+  installs unactivated, exactly as before, and you can activate it later under Settings > System >
+  Activation. With one, Windows activates itself once it has a network. `--product-key` asks for
+  the key at a hidden prompt after the password, `--product-key-stdin` reads it from a pipe for
+  scripted runs, and the **New Windows VM** window has a **Product key** field under the edition.
+  Hyphens are optional and case doesn't matter. **The key is never a flag value** and there is no
+  environment variable for it, for the same reason as the password: arguments are visible to every
+  program on your Mac and end up in your shell history.
+  Two honest notes. The key goes into Windows' answer file **in plain text** — a product key has no
+  scrambled form the way the account password does — so what protects it is the setup disk itself:
+  readable only by your Mac account, kept out of Time Machine, and deleted as soon as Windows has
+  finished installing. And Winbar can't tell which edition a key is for, so it doesn't guess:
+  Windows Setup refuses a key that isn't for the edition being installed.
+- `winbar config --forget NAME` drops everything Winbar remembers about a VM, which is now the only
+  way to lose it. `winbar create --cancel` does it for the VM it deletes.
+- `winbar setup` and `winbar create` offer to install the two apps Winbar needs but doesn't ship —
+  **UTM** and Microsoft's **Windows App** — instead of printing a Homebrew command for you to type.
+  With Homebrew, Winbar asks it (`brew install --cask utm` / `windows-app`) and shows its output as
+  it goes; without Homebrew it fetches UTM's own disk image, checks that Apple notarized it and
+  that UTM's developer signed it before opening it, and copies UTM to /Applications, and for
+  Windows App it opens the Mac App Store page, because Microsoft ships it there and nobody can
+  press Get for you. Every path says what it will download, how big it is and where from, installs
+  nothing without a yes, verifies the bundle id, signature, team and version afterwards, and never
+  runs anything as an administrator. Homebrew is never installed for you.
+
+### Changed
+
+- Settings are kept per VM. Choosing another VM used to delete everything remembered about the one
+  you were leaving — its Remote Desktop host and user, its saved PC, its MAC, its BitLocker state —
+  so switching to a second VM and back meant typing them all in again. Each VM now has its own,
+  filed under the id UTM gave it, and choosing between them changes nothing else. Existing settings
+  move to the VM they describe the first time this version runs; with one VM nothing looks any
+  different.
+- Doctor's **H1 UTM installed** and **C1 Windows App** rows now say where each app stands —
+  installed, missing, too old for Winbar, or signed by somebody else — and count as rows setup can
+  fix rather than rows that need you.
+- A new **H9 UTM answers Winbar** row, and a wait after UTM is installed. Everything Winbar asks of
+  UTM is an Apple Event, and macOS holds the first one to a newly installed UTM until someone
+  answers "… wants to control UTM" — a prompt that can open behind another window, and that a
+  locked Mac never gets. While it waits, `utmctl` says nothing at all, which reads as a broken
+  Winbar. The install now says the prompt is coming, waits up to a minute for utmctl to answer,
+  and, if it doesn't, says whether the prompt is still outstanding or macOS already has an answer
+  on file. The VM listing in `winbar setup`, `winbar doctor`'s H2 row and `winbar create`'s
+  preflight say the same when they time out, instead of showing the raw "AppleEvent timed out
+  (-1712)".
+
+
+- Doctor's **H1 UTM installed** and **C1 Windows App** rows now say where each app stands —
+  installed, missing, too old for Winbar, or signed by somebody else — and count as rows setup can
+  fix rather than rows that need you.
+- A new **H9 UTM answers Winbar** row, and a wait after UTM is installed. Everything Winbar asks of
+  UTM is an Apple Event, and macOS holds the first one to a newly installed UTM until someone
+  answers "… wants to control UTM" — a prompt that can open behind another window, and that a
+  locked Mac never gets. While it waits, `utmctl` says nothing at all, which reads as a broken
+  Winbar. The install now says the prompt is coming, waits up to a minute for utmctl to answer,
+  and, if it doesn't, says whether the prompt is still outstanding or macOS already has an answer
+  on file. The VM listing in `winbar setup`, `winbar doctor`'s H2 row and `winbar create`'s
+  preflight say the same when they time out, instead of showing the raw "AppleEvent timed out
+  (-1712)".
+
+### Fixed
+
+- Asking macOS whether Winbar may control UTM (`AEDeterminePermissionToAutomateTarget`) can block
+  for as long as it likes, despite being told not to prompt: on a Mac waiting on that first
+  permission, it blocked for twenty minutes and `winbar doctor` printed no row after the one that
+  asked. It is now asked on another thread with a three-second deadline, and "macOS didn't say" is
+  an answer in its own right. `winbar create` asked the same question the same way.
+
+
+- Asking macOS whether Winbar may control UTM (`AEDeterminePermissionToAutomateTarget`) can block
+  for as long as it likes, despite being told not to prompt: on a Mac waiting on that first
+  permission, it blocked for twenty minutes and `winbar doctor` printed no row after the one that
+  asked. It is now asked on another thread with a three-second deadline, and "macOS didn't say" is
+  an answer in its own right. `winbar create` asked the same question the same way.
 
 [0.1.0]: https://github.com/taggie313/winbar/releases/tag/v0.1.0

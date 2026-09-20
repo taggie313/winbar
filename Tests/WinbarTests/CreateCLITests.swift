@@ -155,10 +155,51 @@ struct CreateArgumentTests {
         #expect(refusal(["--iso-sha256", "nope"])?.code == "E_USAGE")
     }
 
+    /// The product key gets the password's treatment: a switch that asks, or a pipe, and never a value.
+    @Test("--product-key is a switch, and --product-key-stdin names a pipe")
+    func productKeyFlags() throws {
+        #expect(try parsed(["--product-key"]).productKey)
+        #expect(try parsed(["--product-key-stdin"]).productKeyStdin)
+        let none = try parsed([])
+        #expect(!none.productKey && !none.productKeyStdin)
+        // A name that isn't a key is still a name.
+        #expect(try parsed(["--product-key", "My VM"]).positional == "My VM")
+        #expect(try parsed(["--product-key", "My VM"]).productKey)
+    }
+
+    /// The one that matters: a key on the command line is visible to every process on the Mac and lands in
+    /// the shell's history, so both ways of writing it are refused rather than quietly obeyed.
+    @Test("A product key can never be a flag value")
+    func productKeyIsNeverAValue() throws {
+        let key = "VK7JG-NPHTM-C97JM-9MPGT-3V66T"
+        for arguments in [["--product-key", key], ["--product-key=" + key], ["--product-key", key.lowercased()],
+                          ["--product-key", key.replacingOccurrences(of: "-", with: "")],
+                          ["--product-key-value", key], ["--product-key=x"]] {
+            let refused = try #require(refusal(arguments), "\(arguments)")
+            #expect(refused.code == "E_KEY_FLAG", "\(arguments)")
+            #expect(refused.exit == 64)
+            // The refusal never repeats the key back, which would put it on screen and in the log.
+            #expect(!refused.message.contains(key) && !refused.message.lowercased().contains(key.lowercased()))
+            #expect(refused.message.contains("shell history"))
+        }
+    }
+
+    @Test("The two ways of giving a key, and the two pipes, don't contradict each other")
+    func productKeyCombinations() throws {
+        #expect(refusal(["--product-key", "--product-key-stdin"])?.code == "E_USAGE")
+        let bothPipes = try #require(refusal(["--password-stdin", "--product-key-stdin"]))
+        #expect(bothPipes.code == "E_USAGE")
+        #expect(bothPipes.message.contains("standard input"))
+        // A password from the pipe and a key from the prompt is the scripted case that does work.
+        let mixed = try parsed(["--yes", "--password-stdin", "--product-key"])
+        #expect(mixed.passwordStdin && mixed.productKey)
+    }
+
     @Test("Every refusal says something, and names the command or the flag")
     func refusalsAreUsageErrors() {
         let arguments = [["--frobnicate"], ["--no-guest-tools"], ["--memory", "x"], ["--cancel"], ["--iso"],
-                         ["--password"], ["A", "B"], ["--answer-file-out", "/tmp"]]
+                         ["--password"], ["A", "B"], ["--answer-file-out", "/tmp"],
+                         ["--product-key", "VK7JG-NPHTM-C97JM-9MPGT-3V66T"]]
         for argument in arguments {
             let refused = refusal(argument)
             #expect(refused != nil, "\(argument)")
@@ -191,6 +232,22 @@ struct CreateHelpTests {
         #expect(!text.contains("--password ") && !text.contains("--password="))
         #expect(!text.contains("--password PASSWORD") && !text.contains("WINBAR_PASSWORD"))
         #expect(text.contains("--password-stdin"))
+    }
+
+    /// The same rule for the product key, and the help has to say the three things that matter about it:
+    /// optional, plain text, and what happens without one.
+    @Test("It offers the key as a switch, never as a value, and says what it costs")
+    func productKeyHelp() {
+        let text = CreateCLI.help(mac: mac)
+        #expect(text.contains("  --product-key         ask for a Windows product key, hidden"))
+        #expect(text.contains("--product-key-stdin"))
+        #expect(!text.contains("--product-key KEY") && !text.contains("--product-key=")
+                && !text.contains("WINBAR_PRODUCT_KEY"))
+        #expect(text.contains("Optional"))
+        #expect(text.contains("unactivated"))
+        #expect(text.contains("Settings > System > Activation"))
+        #expect(text.contains("plain text"))
+        #expect(text.contains("refuses a key that isn't for the edition"))
     }
 }
 
@@ -238,6 +295,32 @@ struct ChecklistTests {
         #expect(text.contains("  10 [x] Turn on Remote Desktop (with Network Level Authentication)"))
         #expect(text.contains("  13     Computer name: Windows-11 (your Mac reaches it as windows-11.local)"))
         #expect(text.hasSuffix("Type a number or letter to change it, ? and a number for why (?7), Enter to go, q to quit:"))
+    }
+
+    /// Under the edition, because the key belongs to the edition: it says whether there will be one,
+    /// never which one, since the screen is reprinted after every change.
+    @Test("The edition row says where the product key stands")
+    func productKeyLine() {
+        let without = screen().render()
+        #expect(without.contains("         Product key: none, so Windows installs unactivated (--product-key uses one)"))
+        let asked = Checklist(plan: testPlan(), image: testImage(), mac: mac, reading: nil,
+                              productKeyWanted: true)
+        #expect(asked.render().contains("         Product key: asked for after the password, in plain text in the "
+                                        + "answer file"))
+        #expect(!asked.render().contains("installs unactivated"))
+        // Still one line per row plus the one caption: no row was added, and nothing says "always on".
+        #expect(!without.contains("14 "))
+        #expect(!Checklist.productKeyLine(wanted: false).contains("always on"))
+    }
+
+    /// ?6 carries what the one-line version can't: optional, plain text, and Setup's own edition check.
+    @Test("?6 explains the product key as well as the edition")
+    func productKeyTooltip() throws {
+        let tooltip = try #require(Checklist.tooltip("6", plan: testPlan(), mac: mac))
+        #expect(tooltip.contains("A product key is optional"))
+        #expect(tooltip.contains("plain text"))
+        #expect(tooltip.contains("Settings > System > Activation"))
+        #expect(tooltip.contains("refuses a key that isn't for it"))
     }
 
     @Test("A row that's off shows an empty box")
@@ -349,10 +432,22 @@ struct DryRunTests {
     private func text(plan: CreatePlan = testPlan(), reading: Regional.Reading? = nil,
                       guestTools: GuestTools.Copy? = nil, onBattery: Bool = false,
                       space: CreatePreflight.Space = .init(volume: "Macintosh HD", freeBytes: 412 << 30),
-                      warnings: [String] = []) -> String {
+                      warnings: [String] = [], hasProductKey: Bool = false) -> String {
         CreateCLI.dryRunText(plan: plan, image: testImage(), mac: mac, reading: reading, utmVersion: "4.7.5",
                              space: space, fileVault: true, onBattery: onBattery, guestTools: guestTools,
-                             warnings: warnings)
+                             warnings: warnings, hasProductKey: hasProductKey)
+    }
+
+    /// The dry run is what people paste into bug reports, so it says whether there is a key and never
+    /// which one. The dry run itself asks for the key before printing this, so both lines are truthful.
+    @Test("It says where the product key stands, never what it is")
+    func productKey() {
+        #expect(text().contains("  Product key none. Windows installs unactivated"))
+        #expect(text().contains("--product-key"))
+        #expect(text(hasProductKey: true).contains("  Product key the one you typed, written into the answer file "
+                                                   + "in plain text"))
+        #expect(!text(hasProductKey: true).contains("installs unactivated"))
+        #expect(text(hasProductKey: true).split(separator: "\n").allSatisfy { $0.count <= 100 })
     }
 
     @Test("It lays out the plan and the checks, and fits 100 columns")

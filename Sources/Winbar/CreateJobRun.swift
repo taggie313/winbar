@@ -325,13 +325,14 @@ final class CreateRun {
     // MARK: - The run
 
     /// The whole install, from preflight to a headless, finished VM.
-    func install(password: String) throws {
+    func install(password: String, productKey: String? = nil) throws {
         var secret: String? = password
+        var key: String? = productKey
         defer { releaseEverything() }
         do {
             try preflight()
             try fetchGuestTools()
-            try buildMedia(password: &secret)
+            try buildMedia(password: &secret, productKey: &key)
             try createVM()
             try runInstall()
             try finishUp()
@@ -423,7 +424,13 @@ final class CreateRun {
                                                  "Turn on UTM under \(Automation.host.name) in System Settings > "
                                                      + "Privacy & Security > Automation, then run this again.")
             }
-            throw CreateJobError.unavailable("E_UTM_LIST", "Couldn't ask UTM which VMs it has", error.description)
+            // A UTM installed a moment ago hasn't been allowed to be driven yet, and while macOS
+            // holds that first Apple Event nothing comes back at all (see UTMFirstUse).
+            let consent = Automation.consent(bundleID: Config.utmBundleID)
+            throw CreateJobError.unavailable("E_UTM_LIST", "Couldn't ask UTM which VMs it has", error.description,
+                                             nextStep: consent == .decided ? nil
+                                                 : UTMFirstUse.how(consent: consent,
+                                                                   quarantined: Quarantine.isMarked(UTM.appURL?.path)))
         }
         if list.contains(where: { $0.name.compare(vmName, options: .caseInsensitive) == .orderedSame }) {
             throw CreateJobError.input("E_NAME_TAKEN", ChoiceProblem.nameTaken(vmName).description)
@@ -504,7 +511,12 @@ final class CreateRun {
 
     /// Renders the answer file with the password and burns WINBAR_SETUP. The password is taken
     /// `inout` and cleared the moment the ISO is verified: this is the only place it is ever used.
-    private func buildMedia(password: inout String?) throws {
+    ///
+    /// The optional product key goes the same way, and is nil unless the person asked for one. It is
+    /// **not** obscured in the answer file — there is no obscured form for a product key — so it is the
+    /// setup disk's own life (0600, out of Time Machine, deleted in stage 10) that protects it. N_PRODUCT_KEY
+    /// says so where the person can still see it, and the note carries no key.
+    private func buildMedia(password: inout String?, productKey: inout String?) throws {
         enter(.media)
         try checkInterrupt()
         guard let image, let guestTools else {
@@ -515,9 +527,10 @@ final class CreateRun {
         }
         let files: [SetupFile]
         do {
-            files = try AnswerFile.render(plan: plan, image: image, password: secret)
+            files = try AnswerFile.render(plan: plan, image: image, password: secret, productKey: productKey)
         } catch let failure as AnswerFile.Failure {
             password = nil
+            productKey = nil
             throw CreateJobError.input("E_ANSWER_FILE", "Winbar couldn't make Windows' answer file", failure.description)
         }
         do {
@@ -525,10 +538,13 @@ final class CreateRun {
             log.write("✓ \(CreateStage.media.doneTitle): \(iso.path)")
         } catch {
             password = nil
+            productKey = nil
             throw CreateJobError.unavailable("E_MEDIA", "Couldn't make the setup disk", "\(error)")
         }
         saveWindowsAppPC(password: secret)
+        if productKey != nil { message("N_PRODUCT_KEY", CreateCopy.nProductKey) }
         password = nil   // the answer file is written; nothing needs it again
+        productKey = nil
         detail(nil)
     }
 
@@ -611,12 +627,13 @@ final class CreateRun {
 
     /// What create records in Winbar's settings once the install has worked, so `winbar setup` and
     /// the menu look after the new VM and don't re-ask what the checklist already answered.
-    /// `Config.selectVM` clears the previous VM's per-VM settings, so this runs at the end of
-    /// stage 10 and nowhere else — and not at all with `--no-select`.
+    /// Written under the new VM's own id, so the VM Winbar looked after before keeps everything it
+    /// had; this still runs at the end of stage 10 and nowhere else, and not at all with
+    /// `--no-select`.
     private func select(created: CreatedVM, bitLockerOn: Bool?, headless: Bool) {
         guard let selection = CreateRun.selection(plan: plan, created: created, bitLockerOn: bitLockerOn,
                                                   headless: headless) else { return }
-        _ = Config.selectVM(selection.vmName)
+        _ = Config.selectVM(selection.vmName, id: created.vmID)
         Config.vmMAC = selection.mac
         Config.rdpHost = selection.rdpHost
         Config.rdpUser = selection.rdpUser
@@ -626,7 +643,7 @@ final class CreateRun {
         Config.declinedRemoteDesktop = selection.declinedRemoteDesktop
         Config.declinedTuning = selection.declinedTuning
         Config.consoleEnabled = selection.consoleEnabled
-        if let on = selection.bitLockerOn { Config.recordBitLocker(on: on) }
+        if let on = selection.bitLockerOn { Config.recordBitLocker(on: on, for: selection.vmName) }
         log.write("Winbar now looks after “\(selection.vmName)”")
     }
 
@@ -1105,10 +1122,11 @@ final class CreateRun {
 
         awake?.release()
         awake = nil
-        // Only now, with Windows installed and the disks off it, does Winbar switch to the new VM:
-        // `Config.selectVM` clears every per-VM setting the previous VM had (its Remote Desktop
-        // host and user, its saved PC, its BitLocker choice), and a create that failed half an hour
-        // in must not have thrown those away: they are what create sets when it finishes.
+        // Only now, with Windows installed and the disks off it, does Winbar switch to the new VM.
+        // Switching keeps the VM it was looking after (each VM's settings are its own), but what the
+        // checklist answered — the Remote Desktop host and user, the saved PC, the BitLocker choice —
+        // is written here and nowhere else, so a create that failed half an hour in leaves the new
+        // VM unchosen rather than half described.
         select(created: created, bitLockerOn: bitLockerOn, headless: headless)
 
         if let result, !result.ok {
@@ -1396,7 +1414,10 @@ final class CreateRun {
                     throw CreateJobError.unavailable("E_CANCEL_DELETE", "UTM couldn't delete \(vm.name)", result.output)
                 }
                 done.deletedVM = true
-                log.write("✓ deleted the VM in UTM")
+                // The VM is gone, so its settings describe nothing. This is the one place other than
+                // `winbar config --forget` that throws a record away.
+                let forgotten = Config.forget(vm.name, id: vmID)
+                log.write("✓ deleted the VM in UTM" + (forgotten.isEmpty ? "" : " (and forgot \(forgotten.count) setting(s) for it)"))
             } else if let created = state.created {
                 if case .failure(let error) = CreateScripts.finish(vmID: vmID, diskID: created.systemDiskID) {
                     throw CreateJobError.install("E_DETACH", "Couldn't remove the install disks from the VM "

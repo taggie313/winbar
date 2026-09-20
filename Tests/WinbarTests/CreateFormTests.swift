@@ -200,6 +200,26 @@ private func readyModel(_ given: CreateFormFacts = facts(), build: Int = 26200,
         #expect(model.status == .blocked(ChoiceProblem.diskRange.description))
     }
 
+    /// The key is optional, so an empty field never blocks; a wrong one does, before the computer name,
+    /// which is where the field sits on screen.
+    @Test func aProductKeyThatIsntOneBlocksCreate() {
+        let model = readyModel()
+        #expect(model.productKey.isEmpty)
+        #expect(model.status == .ready)
+        #expect(model.productKeyError == nil)
+
+        model.productKey = "  "
+        #expect(model.status == .ready)
+
+        model.productKey = "not a key"
+        #expect(model.productKeyError == ChoiceProblem.productKeyShape.description)
+        #expect(model.status == .blocked(ChoiceProblem.productKeyShape.description))
+
+        model.productKey = "VK7JG-NPHTM-C97JM-9MPGT-3V66T"
+        #expect(model.productKeyError == nil)
+        #expect(model.status == .ready)
+    }
+
     @Test func mismatchOnlyGetsACaptionOnceConfirmHasLostFocus() {
         let model = readyModel()
         model.confirmation = "hunter"
@@ -283,14 +303,33 @@ private func readyModel(_ given: CreateFormFacts = facts(), build: Int = 26200,
         #expect(try #require(model.plan).regional == nil)
     }
 
-    @Test func forgettingThePasswordEmptiesBothFields() {
+    @Test func forgettingThePasswordEmptiesBothFieldsAndTheKey() {
         let model = readyModel()
         model.confirmationBlurred = true
+        model.productKey = "VK7JG-NPHTM-C97JM-9MPGT-3V66T"
         model.forgetPassword()
         #expect(model.password.isEmpty)
         #expect(model.confirmation.isEmpty)
         #expect(!model.confirmationBlurred)
+        #expect(model.productKey.isEmpty)
         #expect(model.plan == nil)
+    }
+
+    /// The key never rides along in the plan, for the same reason the password doesn't: the plan is
+    /// written to state.json and quoted in the log. `create()` reads `normalizedProductKey` instead.
+    @Test func thePlanNeverCarriesTheProductKey() throws {
+        let model = readyModel()
+        model.productKey = " vk7jg-nphtm c97jm 9mpgt 3v66t "
+        #expect(model.normalizedProductKey == "VK7JG-NPHTM-C97JM-9MPGT-3V66T")
+        let plan = try #require(model.plan)
+        let json = try String(data: JSONEncoder().encode(plan), encoding: .utf8) ?? ""
+        #expect(!json.uppercased().contains("VK7JG"))
+        #expect(!json.lowercased().contains("productkey"))
+
+        model.productKey = ""
+        #expect(model.normalizedProductKey == nil)
+        model.productKey = "   "
+        #expect(model.normalizedProductKey == nil)
     }
 
     /// The row only exists when Winbar already looks after another VM; without one, create always
@@ -324,6 +363,22 @@ private func message(_ code: String, _ text: String, at: Date = Date()) -> Creat
 }
 
 @Suite struct CreateProgressWording {
+    /// Both endings read the same flag, so neither tells someone who has just used a licence that
+    /// Windows isn't activated. The flag is a note the job raised, not the key.
+    @Test func theActivationLineFollowsWhetherThereWasAKey() {
+        let now = Date()
+        let plain = state(stage: .finish, outcome: .done, started: now, updated: now)
+        #expect(!plain.usedProductKey)
+        #expect(CreateCopy.nNotActivated.contains("isn't activated"))
+
+        let keyed = state(stage: .finish, outcome: .done, started: now, updated: now,
+                          messages: [message("N_PRODUCT_KEY", CreateCopy.nProductKey, at: now)])
+        #expect(keyed.usedProductKey)
+        #expect(CreateCopy.nActivating.contains("installed with your product key"))
+        #expect(CreateCopy.nActivating.contains("Settings > System > Activation"))
+        #expect(!CreateCopy.nActivating.contains("isn't activated"))
+    }
+
     @Test func elapsedReadsAsAClockOrAsMinutes() {
         #expect(CreateElapsed.clock(0) == "0:00")
         #expect(CreateElapsed.clock(9 * 60 + 48) == "9:48")

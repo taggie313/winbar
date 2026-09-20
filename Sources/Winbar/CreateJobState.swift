@@ -103,6 +103,12 @@ struct CreateJobState: Codable, Equatable, Sendable {
     /// person still has to save the PC, so the ending has to keep saying so.
     var wroteSavedPC: Bool { messages.contains { $0.code == "N_PC_SAVED" } }
 
+    /// Whether this run put a product key in the answer file, read from the note the job raised for the same
+    /// reason `wroteSavedPC` is. The key itself is never here — only that there was one — and it decides which
+    /// of the two activation lines the ending shows, so neither front-end tells the person Windows isn't
+    /// activated when they have just paid for it to be.
+    var usedProductKey: Bool { messages.contains { $0.code == "N_PRODUCT_KEY" } }
+
     enum Outcome: String, Codable, Sendable { case done, failed, cancelled }
 
     /// The job is over: nothing is watching it, and neither front-end should still show it as an

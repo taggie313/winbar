@@ -12,8 +12,17 @@ enum Setup {
         let ctx = Context(options: options)
         print("Winbar \(AppBundle.version) setup")
 
+        // UTM first: every other row asks something of a VM, and without UTM there is none. Winbar
+        // offers to install it rather than handing out a command to go and type (H1).
+        if !Dependencies.state(of: .utm).isInstalled, DependencySetup.offer(.utm, assumeYes: options.assumeYes) {
+            // Everything below asks LaunchServices where UTM is, and it can take a moment to notice
+            // an app that has just been copied in.
+            waitUntil(timeout: 15, every: 1) { UTM.isInstalled }
+        }
+
         guard UTM.isInstalled else {
-            print("UTM isn't installed. Install it (brew install --cask utm), create a Windows 11 VM, then run this again.")
+            print("\nWinbar needs UTM to go on: it drives UTM's own tools. " + DependencyCopy.byHand(.utm))
+            print("Then create a Windows 11 VM (winbar create does it for you) and run this again.")
             return 1
         }
         guard chooseVM(ctx), let vm = ctx.vmName else { return 1 }
@@ -57,7 +66,17 @@ enum Setup {
         // H7 trusts the certificate G7 may just have made, so it comes after.
         offer("H7", ctx)
 
-        for id in ["G8", "G11", "H6", "H8", "C1", "C2", "C3"] where declined(id, ctx) == nil {
+        // H9 first: a utmctl that isn't answering is the reason every row below it would fail, and
+        // it is the one a person can otherwise only read as "Winbar is broken".
+        for id in ["H9", "G8", "G11", "H6", "H8", "C1", "C2", "C3"] where declined(id, ctx) == nil {
+            // C1 is an app Microsoft ships, not a setting: setup offers to install it (with
+            // Homebrew, or by opening its App Store page) instead of printing a command. It comes
+            // before C2, which has nowhere to save a PC until Windows App is there.
+            if id == "C1", let check = Recipe.check(id), !ctx.status(of: check).isOK,
+               DependencySetup.offer(.windowsApp, assumeYes: ctx.options.assumeYes) {
+                waitUntil(timeout: 15, every: 1) { WindowsApp.appURL != nil }   // as above (H1)
+                ctx.refresh(after: check)
+            }
             // C2 is the one client check Winbar can now do itself, and it has its own conversation
             // (it needs a password setup wasn't given). Declining leaves the manual step `walk` shows.
             if id == "C2", let check = Recipe.check(id), offerSavedPC(ctx) { ctx.refresh(after: check) }
@@ -82,21 +101,34 @@ enum Setup {
         switch ctx.vms {
         case .failure(let error):
             Term.error("Couldn't ask UTM for its VMs: \(error)")
+            // The likeliest reason right after UTM is installed, and nothing on screen says so:
+            // macOS is holding the first Apple Event until somebody allows it (H9).
+            if !error.automationDenied {
+                let consent = Automation.consent(bundleID: Config.utmBundleID)
+                if consent != .decided {
+                    Term.error(CreateCopy.wrap(UTMFirstUse.how(consent: consent,
+                                                               quarantined: Quarantine.isMarked(UTM.appURL?.path)),
+                                               width: CreateCopy.width))
+                }
+            }
             return false
         case .success(let vms): list = vms
         }
-        func select(_ name: String) {
-            let cleared = Config.selectVM(name)
-            if !cleared.isEmpty { print("Switched to \(name); forgot what was remembered about the previous VM.") }
-            ctx.vmName = name
+        // The id goes in with the name: UTM lets a VM be renamed, and its settings are filed under
+        // the id wherever Winbar knows one.
+        func select(_ vm: VMInfo) {
+            if let previous = Config.selectVM(vm.name, id: vm.id) {
+                print("Switched to \(vm.name). What Winbar remembers about \(previous) is kept for it.")
+            }
+            ctx.vmName = vm.name
             ctx.refreshAll()
         }
         if let wanted = ctx.options.vmOverride {
-            guard list.contains(where: { $0.name == wanted }) else {
+            guard let vm = list.first(where: { $0.name == wanted }) else {
                 Term.error("UTM has no VM named \(wanted). It has: \(list.map(\.name).joined(separator: ", "))")
                 return false
             }
-            select(wanted)
+            select(vm)
             return true
         }
         if let name = ctx.vmName {
@@ -110,7 +142,7 @@ enum Setup {
             return false
         case 1:
             guard Term.confirm("Use \(candidates[0].name)?", assumeYes: ctx.options.assumeYes, defaultYes: true) else { return false }
-            select(candidates[0].name)
+            select(candidates[0])
             return true
         default:
             print("Which VM should Winbar look after?")
@@ -118,13 +150,13 @@ enum Setup {
                 print("Choose one with: winbar setup --vm <name>")
                 return false
             }
-            select(candidates[index].name)
+            select(candidates[index])
             return true
         }
     }
 
-    /// `--keep-bitlocker` and `--no-visual-tweaks` stick to the VM (after choosing it: switching VMs
-    /// forgets them), so doctor honours them and a later `setup --yes` doesn't undo the choice.
+    /// `--keep-bitlocker` and `--no-visual-tweaks` stick to the VM (after choosing it: they are
+    /// filed under it), so doctor honours them and a later `setup --yes` doesn't undo the choice.
     private static func rememberOptOuts(_ options: Context.Options) {
         if options.keepBitLocker && !Config.keepBitLocker {
             Config.keepBitLocker = true
@@ -295,10 +327,10 @@ enum Setup {
                                                      friendlyName: ctx.vmName, passwordVerified: false)
             switch saved {
             case .created(let pc):
-                Recipe.rememberSavedPC(pc, host: host)
+                Recipe.rememberSavedPC(pc, host: host, for: ctx)
                 print("   " + Term.paint("✓", .green) + " saved in Windows App as “\(pc.name)”")
             case .alreadyThere(let pc):
-                Recipe.rememberSavedPC(pc, host: host)
+                Recipe.rememberSavedPC(pc, host: host, for: ctx)
                 print("   " + Term.paint("✓", .green) + " Windows App already had one (“\(pc.name)”); left alone")
             }
             return true
@@ -506,6 +538,7 @@ enum Setup {
             case .stale:
                 print("   " + Term.paint("✗", .red) + " Windows is still serving the folder it had before. "
                       + "Restart \(vm) once more (winbar restart), then winbar share to check.")
+                print("   " + SharedFolder.durableAdvice)
             case .unknown(let why):
                 print("   · Set, but Winbar couldn't check it from inside Windows (\(why)). Run winbar share once Windows is up.")
             }

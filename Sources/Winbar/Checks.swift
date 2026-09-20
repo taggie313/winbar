@@ -115,6 +115,17 @@ final class Context {
     /// Live, and cheap: a process-table scan.
     var process: VMProcess? { VMProcesses.find(vmName) }
 
+    private var cachedCtl: UTM.CtlAnswer?
+
+    /// Whether utmctl answers this process at all (H9). Probed once per run like every other fact:
+    /// the probe is a second when it works, and twenty when it doesn't.
+    var utmctl: UTM.CtlAnswer {
+        if let cachedCtl { return cachedCtl }
+        let answer = UTM.isInstalled ? UTM.ctlAnswers() : .failed("UTM isn't installed")
+        cachedCtl = answer
+        return answer
+    }
+
     /// Windows QEMU VMs to offer when none is configured; any QEMU VM if none says it's Windows.
     var candidates: [VMInfo] {
         guard case .success(let list) = vms else { return [] }
@@ -174,10 +185,16 @@ final class Context {
             if sharedFolderMarker != nil { markerFolder = folder }
         }
         defer { if let markerFolder { SharedFolder.removeMarker(in: markerFolder) } }
+        // The piece that asks the person's own session about their drive letter is a file of its own.
+        if markerFolder != nil {
+            GuestAgent.push(vm: vmName, path: GuestScripts.userDrivePath, text: GuestScripts.userDriveChild)
+        }
+        defer { if markerFolder != nil { GuestAgent.remove(vm: vmName, path: GuestScripts.userDrivePath) } }
         // The password cache is keyed by the guest's own COMPUTER\user, so it applies whichever VM this is.
         let script = GuestScripts.survey(user: isConfiguredVM ? Config.rdpUser : nil,
                                          passwordChecked: Config.passwordCheckedFor,
-                                         marker: sharedFolderMarker == nil ? "" : SharedFolder.markerName)
+                                         marker: sharedFolderMarker == nil ? "" : SharedFolder.markerName,
+                                         userDrive: markerFolder != nil)
         switch GuestAgent.run(vm: vmName, script, timeout: 180) {
         case .failure(let error):
             return .failed(error)
@@ -190,6 +207,21 @@ final class Context {
 
     /// Whether the settings in Config describe this run's VM (`doctor --vm` can point elsewhere).
     var isConfiguredVM: Bool { vmName != nil && vmName == Config.vmName }
+
+    /// This VM's MAC: UTM's answer, else its running process's, else what was remembered — and that
+    /// last one only when these settings are this VM's. Another VM's MAC finds another VM's DHCP
+    /// lease, which is the address the certificate is made for and Connect goes to.
+    var vmMAC: String? { vm?.mac ?? process?.mac ?? (isConfiguredVM ? Config.vmMAC : nil) }
+
+    /// Whether the VM was last seen with a console window, for when neither UTM nor a running
+    /// process says. Nothing for a VM these settings don't describe.
+    var consoleEnabled: Bool? { isConfiguredVM ? Config.consoleEnabled : nil }
+
+    /// The Windows user these settings name, and only when they name this VM's. What a guest script
+    /// means by "the account Winbar was told about"; unlike `rdpUser` it doesn't fall back to
+    /// whoever is signed in, because a script that acts on the wrong account is worse than one that
+    /// acts on the default.
+    var configuredUser: String? { isConfiguredVM ? Config.rdpUser : nil }
 
     /// Caches worth keeping between runs, taken from a fresh survey.
     private func remember(_ output: GuestOutput) {
@@ -204,8 +236,8 @@ final class Context {
             default: break
             }
         }
-        guard isConfiguredVM else { return }
-        if let state = BitLockerState(output) { Config.recordBitLocker(on: !state.decrypted) }
+        guard let vmName, isConfiguredVM else { return }
+        if let state = BitLockerState(output) { Config.recordBitLocker(on: !state.decrypted, for: vmName) }
     }
 
     /// `<DNS host name>.local` unless configured otherwise.
@@ -272,6 +304,7 @@ final class Context {
         case .host:
             cachedVMs = nil
             cachedSharedFolder = nil
+            cachedCtl = nil
         case .guest: cachedGuest = nil
         case .client:
             cachedSelfTest = nil
@@ -283,6 +316,7 @@ final class Context {
     func refreshAll() {
         cachedVMs = nil
         cachedSharedFolder = nil
+        cachedCtl = nil
         cachedGuest = nil
         cachedSelfTest = nil
         cachedSavedPC = nil

@@ -40,7 +40,7 @@ enum BitLocker {
             guard let state = BitLockerState(output) else {
                 return .unknown(output["G9_ERROR"] ?? output.error ?? "Windows didn't report BitLocker's state.")
             }
-            Config.recordBitLocker(on: !state.decrypted)
+            Config.recordBitLocker(on: !state.decrypted, for: vm)
             if let error = output.error { return .unknown(error) }
             return output["SUSPENDED"] == "1" ? .suspended : .notNeeded
         }
@@ -51,7 +51,7 @@ enum BitLocker {
             guard let state = BitLockerState(output) else {
                 return .failure(WinbarError("Couldn't read BitLocker's state", output["G9_ERROR"] ?? output.error ?? ""))
             }
-            Config.recordBitLocker(on: !state.decrypted)
+            Config.recordBitLocker(on: !state.decrypted, for: vm)
             return .success(state)
         }
     }

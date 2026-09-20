@@ -24,7 +24,8 @@
                   skip_privacy, no_bitlocker, qol
     Winbar extras: autologon, remote_desktop, guest_tools (locked on), winbar_tuning, computer_name (text field;
                   the renderer turns it on when the value is non-empty)
-    Derived by the renderer, not a checklist row: time_zone (regional_from_mac on and a Windows zone id known)
+    Derived by the renderer, not checklist rows: time_zone (regional_from_mac on and a Windows zone id known) and
+                  product_key (PRODUCT_KEY is non-empty; the key itself is optional and off by default)
   Every component is processorArchitecture="arm64": the ARM64 image holds only arm64_ component manifests and the
   25H2 ARM64 Setup (sources\UnattendMgr.dll) queries component[...][processorArchitecture=arm64].
 -->
@@ -152,9 +153,23 @@
       <!--END bypass_requirements-->
       <UserData>
         <AcceptEula>true</AcceptEula>
-        <!-- Empty key + the /IMAGE/INDEX selector = no product-key page (Rufus 4.15). Activation happens later. -->
+        <!--
+          The product key is optional, and off unless the person asked for one. Without it, the empty <Key /> plus
+          the /IMAGE/INDEX selector is what makes Setup skip its product-key page (Rufus 4.15); Windows installs
+          unactivated and can be activated later under Settings > System > Activation.
+          With it, the key goes in here as PLAIN TEXT. Unlike the account password there is no obscured form for a
+          product key, so nothing hides it: the setup disk's own life (mode 0600, kept out of Time Machine, deleted
+          as soon as the install finishes) is what protects it.
+          The edition still comes from /IMAGE/INDEX, never from the key, and Setup refuses a key that is not for
+          the edition being installed. The renderer cannot tell which edition a key is for, so it does not try.
+        -->
         <ProductKey>
+          <!--IF product_key-->
+          <Key>{{PRODUCT_KEY}}</Key>
+          <!--END product_key-->
+          <!--IF !product_key-->
           <Key />
+          <!--END !product_key-->
         </ProductKey>
       </UserData>
     </component>

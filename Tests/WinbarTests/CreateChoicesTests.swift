@@ -109,6 +109,59 @@ import Testing
     }
 }
 
+/// The product key: optional, shape-checked, and normalised to what the answer file takes.
+@Suite struct CreateProductKey {
+    /// Microsoft's generic, non-activating keys, so no real licence is anywhere near the tests.
+    static let pro = "VK7JG-NPHTM-C97JM-9MPGT-3V66T"
+    static let home = "YTMG3-N6DKC-DKB77-7M9GH-8HVX7"
+
+    @Test func acceptsAKeyHoweverItWasTyped() {
+        #expect(CreateChoices.normalizedProductKey(Self.pro) == Self.pro)
+        #expect(CreateChoices.normalizedProductKey(Self.home) == Self.home)
+        #expect(CreateChoices.normalizedProductKey(Self.pro.lowercased()) == Self.pro)
+        #expect(CreateChoices.normalizedProductKey(Self.pro.replacingOccurrences(of: "-", with: "")) == Self.pro)
+        #expect(CreateChoices.normalizedProductKey("  vk7jg nphtm c97jm 9mpgt 3v66t  ") == Self.pro)
+        #expect(CreateChoices.normalizedProductKey("VK7JG–NPHTM") == nil)   // an en dash is not a hyphen
+    }
+
+    @Test func refusesAnythingThatIsNotOne() {
+        for typed in ["", "   ", "VK7JG-NPHTM-C97JM-9MPGT", "VK7JG-NPHTM-C97JM-9MPGT-3V66TX",
+                      "VK7JG-NPHTM-C97JM-9MPGT-3V66", "VK7JG_NPHTM_C97JM_9MPGT_3V66T"] {
+            #expect(CreateChoices.normalizedProductKey(typed) == nil, "\(typed)")
+        }
+    }
+
+    /// The characters Microsoft's alphabet leaves out, because a person could misread each of them for
+    /// another. N is *not* one of them: every Windows 8-and-later key has one.
+    @Test func refusesTheLettersOutsideTheAlphabet() {
+        for excluded in ["A", "E", "I", "L", "O", "S", "U", "Z", "0", "1", "5"] {
+            let key = excluded + String(Self.pro.filter { $0 != "-" }.dropFirst())
+            #expect(CreateChoices.normalizedProductKey(key) == nil, "\(excluded) must be refused")
+        }
+        #expect(!CreateChoices.productKeyAlphabet.contains("A"))
+        #expect(CreateChoices.productKeyAlphabet.contains("N"))
+        #expect(CreateChoices.productKeyAlphabet.count == 25)
+    }
+
+    /// Nothing typed is no problem: the key is optional, and without one Windows installs unactivated.
+    @Test func noKeyIsNotAProblem() {
+        #expect(CreateChoices.productKeyProblem("") == nil)
+        #expect(CreateChoices.productKeyProblem("   ") == nil)
+        #expect(CreateChoices.productKeyProblem(" " + Self.pro.lowercased() + " ") == nil)
+        #expect(CreateChoices.productKeyProblem("not a key") == .productKeyShape)
+    }
+
+    /// The message says what a key looks like, without naming an edition: which edition a key is for isn't
+    /// in the key, and Windows Setup is what refuses a mismatched one.
+    @Test func theRefusalSaysWhatAKeyLooksLike() {
+        let message = ChoiceProblem.productKeyShape.description
+        #expect(message.contains("25 characters in five groups of five"))
+        #expect(message.contains("Hyphens are optional"))
+        #expect(message.contains("B C D F G H J K M N P"))
+        #expect(!message.contains("Windows 11 Pro") && !message.contains("Home"))
+    }
+}
+
 @Suite struct CreateSizing {
     /// Macs by memory and core layout: an M1 (8 Performance of 8), an M4 Pro (10 of 14), an M4 Max (12 of 16),
     /// an M5 Max (6 Super of 18).

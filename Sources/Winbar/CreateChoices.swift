@@ -27,6 +27,7 @@ enum ChoiceProblem: Error, Equatable, CustomStringConvertible {
     case nameEmpty, nameChars, nameLong, nameTaken(String)
     case userEmpty, userLong, userChars(String), userEdges, userReserved(String), userIsComputer
     case passwordEmpty, passwordLong, passwordControl, passwordMismatch
+    case productKeyShape
     case computerChars, computerDigits, computerHyphen
     case coresRange(max: Int), memoryRange(max: Int), diskRange
     case locked(CreateOption)
@@ -48,6 +49,10 @@ enum ChoiceProblem: Error, Equatable, CustomStringConvertible {
         case .passwordLong: return "Windows passwords are up to 127 characters."
         case .passwordControl: return "Passwords can't contain control characters, such as a tab."
         case .passwordMismatch: return "The passwords don't match."
+        case .productKeyShape:
+            return "A Windows product key is 25 characters in five groups of five, from "
+                + CreateChoices.productKeyAlphabet.map(String.init).joined(separator: " ")
+                + ". Hyphens are optional, and case doesn't matter."
         case .computerChars: return "Up to 15 letters, digits and hyphens."
         case .computerDigits: return "A computer name can't be only digits."
         case .computerHyphen: return "A computer name can't start or end with a hyphen."
@@ -186,6 +191,38 @@ enum CreateChoices {
         if password.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) { return .passwordControl }
         if let confirmation, confirmation != password { return .passwordMismatch }
         return nil
+    }
+
+    // MARK: - Product key
+
+    /// Microsoft's product-key alphabet: the classic Base24 set, which leaves out every character a person could
+    /// misread for another (A E I L O S U Z, and 0 1 5), plus N.
+    ///
+    /// N is in it. Every Windows 8-and-later key uses N — Microsoft's own generic keys do (`VK7JG-NPHTM-…` for
+    /// Pro, `YTMG3-N6DKC-…` for Home), and so do retail keys — so leaving it out would refuse the very keys this
+    /// is for. Nothing else is added: a key is checked for shape only.
+    static let productKeyAlphabet = "BCDFGHJKMNPQRTVWXY2346789"
+
+    private static let productKeyCharacters = Set(productKeyAlphabet)
+
+    /// A product key in the form the answer file takes it: five groups of five, upper case, hyphenated. Hyphens
+    /// and spaces are optional on the way in and case doesn't matter, so a key read off a sticker or pasted from
+    /// an email is accepted as typed. nil when it isn't a product key at all.
+    ///
+    /// The shape is all that can be checked. Which edition a key unlocks isn't in the key, so Winbar doesn't
+    /// guess: Windows Setup refuses a key that isn't for the edition being installed, and guessing here would
+    /// refuse a key that would have worked.
+    static func normalizedProductKey(_ typed: String) -> String? {
+        let stripped = Array(typed.uppercased().filter { !$0.isWhitespace && $0 != "-" })
+        guard stripped.count == 25, stripped.allSatisfy(productKeyCharacters.contains) else { return nil }
+        return stride(from: 0, to: 25, by: 5).map { String(stripped[$0..<($0 + 5)]) }.joined(separator: "-")
+    }
+
+    /// Nothing typed is no problem: the key is optional, and without one Windows installs unactivated.
+    static func productKeyProblem(_ typed: String) -> ChoiceProblem? {
+        let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        return normalizedProductKey(trimmed) == nil ? .productKeyShape : nil
     }
 
     // MARK: - Computer name

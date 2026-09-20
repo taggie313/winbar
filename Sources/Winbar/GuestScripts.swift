@@ -153,6 +153,10 @@ try {
       $items = @(Get-ChildItem -LiteralPath $remote -Force -ErrorAction Stop)
       Emit 'SF_REACHABLE' 'True'
       Emit 'SF_COUNT' $items.Count
+      # spice-webdavd puts its own file in whatever root it is serving, so a share holding that and
+      # nothing else is a mount with no folder behind it — what a bookmark UTM can no longer resolve
+      # looks like from in here. Names are counted, never sent: this is the person's own folder.
+      Emit 'SF_ONLY_SPICE' (@($items | Where-Object { $_.Name -ne '.spice-clipboard' }).Count -eq 0)
       $readme = $items | Where-Object { $_.Name -eq 'README.txt' } | Select-Object -First 1
       # UTM's stand-in folder announces itself in this file's first line; a real folder's README
       # says something else.
@@ -181,12 +185,134 @@ try {
 } catch { Emit 'SF_ERROR' $_.Exception.Message }
 """#
 
+    /// Where the piece that runs in the person's own session lives, and where it answers.
+    ///
+    /// C:\Users\Public is the one place SYSTEM and a standard account can each read and write, which
+    /// this needs: the agent writes the script, their session writes the answer.
+    static let userDrivePath = #"C:\Users\Public\winbar-drive.ps1"#
+    static let userDriveAnswer = #"C:\Users\Public\winbar-drive.out"#
+
+    /// What the signed-in person's own drive letter shows — the thing they actually open.
+    ///
+    /// A mapped drive belongs to a logon session, and Winbar's scripts run as SYSTEM in session 0,
+    /// so the letter they find is the agent's own. Theirs can hold a dead handle while the share
+    /// behind it is perfectly healthy: seen live right after a repair, `Z:\` listing nothing while
+    /// the UNC listed every file. The Guest Tools map that letter at sign-in, which can race the
+    /// WebDAV server having a folder behind it.
+    ///
+    /// This is a file of its own because the way into their session is a scheduled task — the same
+    /// one Winbar uses to open a window on their desktop — and a task can only point at a file. It
+    /// answers through another file, because a task's own output goes nowhere. `GuestAgent.push`
+    /// puts it there; `userDriveSection` runs it.
+    static let userDriveChild = #"""
+param([string]$Marker = '', [string]$Remap = '0', [string]$Fallback = '', [string]$Out = '')
+$lines = New-Object System.Collections.Generic.List[string]
+function U([string]$k, $v) { $lines.Add('SF_USER_' + $k + '=' + (([string]$v) -replace '[\r\n]+', ' ')) }
+function Look([string]$root) {
+  try {
+    $items = @(Get-ChildItem -LiteralPath $root -Force -ErrorAction Stop)
+    if ($Marker -and (@($items | Where-Object { $_.Name -eq $Marker }).Count -gt 0)) { return 'ok' }
+    if (@($items | Where-Object { $_.Name -ne '.spice-clipboard' }).Count -eq 0) { return 'empty' }
+    return 'other'
+  } catch { return 'error' }
+}
+$drive = ''
+$remote = ''
+try {
+  foreach ($c in @(Get-CimInstance Win32_NetworkConnection -ErrorAction Stop)) {
+    if ([string]$c.RemoteName -like '\\localhost@*') { $drive = [string]$c.LocalName; $remote = [string]$c.RemoteName }
+  }
+} catch { }
+if (-not $remote) {
+  foreach ($d in @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)) {
+    if ([string]$d.DisplayRoot -like '\\localhost@*') { $drive = $d.Name + ':'; $remote = [string]$d.DisplayRoot }
+  }
+}
+$state = 'none'
+if ($drive) { $state = Look ($drive + '\') }
+U 'FIRST' $state
+if ($Remap -eq '1' -and $state -ne 'ok') {
+  # Drop the handle and make it again. A letter whose handle is dead lists nothing however healthy
+  # the share is, and only the session that owns the letter can replace it.
+  $letter = 'Z:'
+  if ($drive) { $letter = $drive }
+  $unc = $Fallback
+  if ($remote) { $unc = $remote }
+  & net.exe use $letter /delete /y 2>&1 | Out-Null
+  & net.exe use $letter $unc /persistent:yes 2>&1 | Out-Null
+  U 'REMAPPED' '1'
+  Start-Sleep -Seconds 1
+  $state = Look ($letter + '\')
+  $drive = $letter
+  $remote = $unc
+}
+U 'DRIVE' $drive
+U 'REMOTE' $remote
+U 'STATE' $state
+[System.IO.File]::WriteAllLines($Out, $lines, (New-Object System.Text.UTF8Encoding $false))
+"""#
+
+    /// Runs `userDriveChild` in the signed-in person's session and folds its answer into this one.
+    /// Needs `$explorerUser` and `$explorerDomain` from `userSection`, plus `$wbUserDrive`,
+    /// `$wbRemap`, `$wbMarker` and `$wbFallbackUNC`.
+    static let userDriveSection = #"""
+if ($wbUserDrive -eq '1') {
+  if (-not $explorerUser) {
+    Emit 'SF_USER_STATE' 'nosession'
+  } elseif (-not (Test-Path -LiteralPath $wbUserDrivePath)) {
+    Emit 'SF_USER_STATE' 'noscript'
+  } else {
+    # An answer left behind by an earlier run would be read as this one's.
+    Remove-Item -LiteralPath $wbUserDriveAnswer -Force -ErrorAction SilentlyContinue
+    $sfTask = 'Winbar-' + [guid]::NewGuid().ToString('N')
+    try {
+      $sfArgs = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $wbUserDrivePath + '"'
+      $sfArgs = $sfArgs + ' -Marker "' + $wbMarker + '" -Remap ' + $wbRemap
+      $sfArgs = $sfArgs + ' -Fallback "' + $wbFallbackUNC + '" -Out "' + $wbUserDriveAnswer + '"'
+      $sfAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $sfArgs
+      $sfPrincipal = New-ScheduledTaskPrincipal -UserId ($explorerDomain + '\' + $explorerUser) -LogonType Interactive
+      $sfSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+      Register-ScheduledTask -TaskName $sfTask -Action $sfAction -Principal $sfPrincipal -Settings $sfSettings -Force -ErrorAction Stop | Out-Null
+      Start-ScheduledTask -TaskName $sfTask -ErrorAction Stop
+      $sfDeadline = (Get-Date).AddSeconds(45)
+      while ((-not (Test-Path -LiteralPath $wbUserDriveAnswer)) -and ((Get-Date) -lt $sfDeadline)) { Start-Sleep -Milliseconds 500 }
+      # What Task Scheduler made of it, as unsigned: the only trace a launch that failed leaves.
+      $sfInfo = Get-ScheduledTaskInfo -TaskName $sfTask -ErrorAction SilentlyContinue
+      if ($sfInfo) {
+        $sfResult = [int64]$sfInfo.LastTaskResult
+        if ($sfResult -lt 0) { $sfResult += 4294967296 }
+        Emit 'SF_USER_TASK' ('0x{0:X8}' -f $sfResult)
+      }
+      if (Test-Path -LiteralPath $wbUserDriveAnswer) {
+        # Already KEY=VALUE lines, so they go straight into the answer.
+        foreach ($sfLine in @(Get-Content -LiteralPath $wbUserDriveAnswer -ErrorAction SilentlyContinue)) {
+          if ($sfLine) { $wbLines.Add([string]$sfLine) }
+        }
+      } else {
+        Emit 'SF_USER_STATE' 'noanswer'
+      }
+    } catch {
+      Emit 'SF_USER_STATE' 'error'
+      Emit 'SF_USER_ERROR' $_.Exception.Message
+    } finally {
+      Unregister-ScheduledTask -TaskName $sfTask -Confirm:$false -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $wbUserDriveAnswer -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+"""#
+
     /// The shared folder on its own, for `winbar share` when there is no survey to read. `marker` is
     /// the file `SharedFolder.verify` just wrote into the folder; empty means "don't look for one".
-    static func sharedFolder(user: String?, marker: String = "") -> GuestScript {
-        GuestScript(body: userSection + "\n" + sharedFolderSection,
+    static func sharedFolder(user: String?, marker: String = "", userDrive: Bool = false,
+                             remap: Bool = false) -> GuestScript {
+        GuestScript(body: userSection + "\n" + sharedFolderSection + "\n" + userDriveSection,
                     params: userParams(user) + [("wbFallbackUNC", SharedFolder.defaultRemotePath),
-                                                ("wbMarker", marker)])
+                                                ("wbMarker", marker),
+                                                ("wbUserDrive", userDrive ? "1" : "0"),
+                                                ("wbRemap", remap ? "1" : "0"),
+                                                ("wbUserDrivePath", userDrivePath),
+                                                ("wbUserDriveAnswer", userDriveAnswer)])
     }
 
     private static let guidPattern = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
@@ -200,7 +326,10 @@ try {
     /// `passwordChecked`: `COMPUTER\user` keys already known to have a password (not probed again).
     /// `marker`: the file `SharedFolder` has just written into the shared folder, so the survey can
     /// say whether Windows is serving *that* folder; empty when there is none to look for.
-    static func survey(user: String?, passwordChecked: [String], marker: String = "") -> GuestScript {
+    /// `userDrive`: also ask, in the signed-in person's own session, what their drive letter shows.
+    /// Doctor pays for it only when there is a folder to check.
+    static func survey(user: String?, passwordChecked: [String], marker: String = "",
+                       userDrive: Bool = false) -> GuestScript {
         let processor = Tuning.processor.map { setting, _ in
             "  Emit 'G1_\(setting)' (AcValue $BAL 'SUB_PROCESSOR' '\(setting)')"
         }.joined(separator: "\n")
@@ -348,7 +477,7 @@ try {
 """# + "\n" + bitLockerSection + "\n" + #"""
 
 # G11 shared folder
-"""# + "\n" + sharedFolderSection + "\n" + #"""
+"""# + "\n" + sharedFolderSection + "\n" + userDriveSection + "\n" + #"""
 
 # G10 information
 try {
@@ -368,6 +497,10 @@ try {
             ("wbFirewallGroup", Tuning.rdpFirewallGroup),
             ("wbFallbackUNC", SharedFolder.defaultRemotePath),
             ("wbMarker", marker),
+            ("wbUserDrive", userDrive ? "1" : "0"),
+            ("wbRemap", "0"),   // doctor reports; setup and `winbar share` are what change things
+            ("wbUserDrivePath", userDrivePath),
+            ("wbUserDriveAnswer", userDriveAnswer),
         ])
     }
 

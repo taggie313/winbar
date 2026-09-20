@@ -260,7 +260,7 @@ struct CreateJobView: View {
             }
             Text(CreateCopy.nNextSetup(savedPC: state.wroteSavedPC)).fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 4) {
-                bullet(CreateCopy.nNotActivated)
+                bullet(state.usedProductKey ? CreateCopy.nActivating : CreateCopy.nNotActivated)
                 bullet(CreateCopy.nUpdates)
             }
             noteList(progress.notes)

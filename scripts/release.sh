@@ -341,7 +341,10 @@ ok "signing as $IDENTITY_NAME"
 if xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1; then
   ok "notarytool profile '$PROFILE' works"
 else
-  needed_for_release "notarytool keychain profile '$PROFILE' is missing or no longer works. Create it once with:" \
+  needed_for_release "notarytool can't read keychain profile '$PROFILE'. If you created it already, the Mac is" \
+    "probably locked: notarytool keeps these in the data-protection keychain, which is unavailable" \
+    "until someone unlocks the Mac (the error says 'no Keychain password item found' either way)." \
+    "Otherwise create it once with:" \
     "xcrun notarytool store-credentials $PROFILE --apple-id <your Apple ID> --team-id ${TEAM_ID:-<team>}" \
     "(it prompts for an app-specific password: account.apple.com > Sign-In and Security)"
 fi

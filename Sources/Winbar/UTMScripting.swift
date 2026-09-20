@@ -10,7 +10,8 @@ enum AppleScriptRunner {
         let result = Shell.run("/usr/bin/osascript", ["-"] + arguments, input: Data(source.utf8), timeout: timeout)
         if result.timedOut {
             return .failure(WinbarError("UTM didn't answer in time",
-                                        "Gave up after \(Int(timeout)) seconds; UTM may be busy or showing a dialog."))
+                                        "Gave up after \(Int(timeout)) seconds; UTM may be busy or showing a dialog.",
+                                        timedOut: true))
         }
         guard result.status == 0 else { return .failure(explain(cleanError(result.errorText))) }
         // osascript appends one newline to the result; the result itself may legitimately end in one.
@@ -36,7 +37,8 @@ enum AppleScriptRunner {
     static func explain(_ message: String) -> WinbarError {
         switch errorNumber(in: message) {
         case -1743: return Automation.deniedError()
-        case -1712: return WinbarError("UTM didn't answer in time", "It may be busy or showing a dialog. (\(message))")
+        case -1712: return WinbarError("UTM didn't answer in time", "It may be busy or showing a dialog. (\(message))",
+                                       timedOut: true)
         default: return WinbarError("AppleScript failed", message)
         }
     }

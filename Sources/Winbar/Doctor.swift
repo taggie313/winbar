@@ -17,15 +17,33 @@ enum Doctor {
     /// Prints the table, one section at a time, and returns what it found.
     @discardableResult
     static func report(_ ctx: Context) -> [(check: Check, status: Status)] {
-        var results: [(check: Check, status: Status)] = []
+        var collected: [(check: Check, status: Status)] = []
         for section in Check.Section.allCases {
             print("")
             print(Term.paint(section.rawValue, .bold))
-            for check in Recipe.checks where check.section == section {
-                let status = ctx.status(of: check)
-                results.append((check, status))
-                printLine(check, status)
-            }
+            collected += results(Recipe.checks.filter { $0.section == section }, status: { ctx.status(of: $0) },
+                                 show: { printLine($0, $1) })
+        }
+        return collected
+    }
+
+    /// Every check, in order, with what each one said — and a row for each of them whatever any one
+    /// of them does. Split out from the printing so the promise can be held to without a Mac: a
+    /// probe that takes twenty seconds, or that never answers and has to be given up on, costs its
+    /// own row's detail and nothing else. `report` prints each row through `show` as it arrives,
+    /// rather than at the end, because a slow row is exactly when someone is watching.
+    ///
+    /// The bounding itself belongs to the probes (`Shell.run`'s timeout, `AppleScriptRunner`'s,
+    /// `Automation.consent`'s deadline): a check that blocks for ever would still stop here, and no
+    /// loop can rescue a closure that never returns.
+    @discardableResult
+    static func results(_ checks: [Check], status: (Check) -> Status,
+                        show: (Check, Status) -> Void = { _, _ in }) -> [(check: Check, status: Status)] {
+        var results: [(check: Check, status: Status)] = []
+        for check in checks {
+            let status = status(check)
+            results.append((check, status))
+            show(check, status)
         }
         return results
     }

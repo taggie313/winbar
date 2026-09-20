@@ -17,20 +17,31 @@ enum Connection {
     ///
     /// Waits up to `timeout` for the guest agent: right after a start Windows hasn't got that far,
     /// and one unanswered probe isn't a reason to give up.
+    ///
+    /// The settings are read and written only for the VM Winbar looks after. Another VM's host and
+    /// user describe a different Windows, and a host asked of it must not be filed under this one.
     static func resolveHost(vm: String, timeout: TimeInterval) -> String? {
-        if let host = Config.rdpHost { return host }
+        let ours = vm == Config.vmName
+        if ours, let host = Config.rdpHost { return host }
         guard VMProcesses.isRunning(vm), UTM.waitForGuestAgent(vm, timeout: timeout),
-              case .success(let out) = GuestAgent.run(vm: vm, GuestScripts.identity(user: Config.rdpUser), timeout: 90),
+              case .success(let out) = GuestAgent.run(vm: vm, GuestScripts.identity(user: ours ? Config.rdpUser : nil), timeout: 90),
               let host = out.defaultRDPHost, Config.isValidHostName(host)
         else { return nil }
+        guard ours else { return host }
         Config.rdpHost = host
         if Config.rdpUser == nil, let user = out["USER"], !user.isEmpty { Config.rdpUser = user }
         return host
     }
 
-    /// The VM's MAC: from its running process, else cached.
+    /// The VM's MAC: from its running process, else what was remembered for it — and nothing at all
+    /// for a VM Winbar doesn't look after.
+    ///
+    /// Never another VM's. The MAC is how the DHCP lease, and so the address Winbar probes and
+    /// connects to, is found: standing in with VM B's MAC for a stopped VM A points readiness, the
+    /// certificate and Connect itself at the wrong machine.
     static func mac(vm: String) -> String? {
-        VMProcesses.find(vm)?.mac ?? Config.vmMAC
+        if let running = VMProcesses.find(vm)?.mac { return running }
+        return vm == Config.vmName ? Config.vmMAC : nil
     }
 
     /// Waits until the RDP port answers (or macOS blocks the probe, which proves nothing either way,

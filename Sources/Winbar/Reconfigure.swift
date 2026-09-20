@@ -9,6 +9,10 @@ struct ConfigChanges: Equatable {
     /// The folder UTM shares with the guest. Not hardware (see `changesHardware`), but UTM only
     /// passes it to the guest when it is set while the VM is stopped, so it rides the same restart.
     var sharedFolder: SharedFolder.Setting?
+    /// Write that folder even though UTM already names it: what is stored for it is dead, and
+    /// "already set" is not the same as "working". Set when the person has been told the rewrite is
+    /// the scripted kind and has said yes.
+    var rewriteSharedFolder = false
 
     var isEmpty: Bool { cpuCores == nil && memoryMB == nil && display == nil && sharedFolder == nil }
 
@@ -90,7 +94,7 @@ enum Reconfigure {
             // stale while the VM is off: correct the cache, and never rewrite a display (booting the
             // VM for the BitLocker guard, restarting UTM) just to land where it already is.
             if let count = info.displayCount {
-                Config.consoleEnabled = count > 0
+                Config.rememberConsoleEnabled(count > 0, for: vm)
                 if changes.display == (count == 0 ? .headless : .console) { changes.display = nil }
             }
         }
@@ -101,7 +105,13 @@ enum Reconfigure {
             case .failure(let error):
                 return .failure(WinbarError("Couldn't ask UTM which folder \(vm) shares", error.description))
             case .success(let now):
-                if SharedFolder.matches(now, wanted) { changes.sharedFolder = nil }
+                // A folder UTM restarted since it last worked has to be written again, however right
+                // the registry looks, so that case is never dropped as "already set".
+                let rewrite = changes.rewriteSharedFolder || SharedFolder.brokenByUTMRestart(vm: vm)
+                if SharedFolder.decide(current: now, wanted: wanted, running: false,
+                                       needsRewrite: rewrite) == .alreadySet {
+                    changes.sharedFolder = nil
+                }
             }
         }
         guard !changes.isEmpty else {
@@ -192,7 +202,7 @@ enum Reconfigure {
                     return .failure(startAgain(after: WinbarError("UTM didn't apply the shared folder",
                                                                   "It reports \(reported) for \(vm).")))
                 }
-                Config.rememberSharedFolder(folder.path, for: vm)
+                Config.rememberSharedFolderWritten(folder.path, for: vm)
             }
         }
 
@@ -234,7 +244,7 @@ enum Reconfigure {
             case .console where (applied.displayCount ?? 0) == 0: mismatches.append("no display added")
             default: break
             }
-            if let count = applied.displayCount { Config.consoleEnabled = count > 0 }
+            if let count = applied.displayCount { Config.rememberConsoleEnabled(count > 0, for: vm) }
             guard mismatches.isEmpty else {
                 let detail = mismatches.joined(separator: "; ") + (changes.display != nil ? ". " + restartOwed(vm) : "")
                 return .failure(WinbarError("UTM didn't apply everything", detail))
@@ -252,6 +262,14 @@ enum Reconfigure {
             if case .failure(let error) = UTM.quit() {
                 return .failure(WinbarError("The configuration changed, but UTM has to restart before \(vm) starts again",
                                             error.detail + " " + restartOwed(vm)))
+            }
+            // The UTM that just quit took the shared folder's bookmark with it (see `SharedFolder`),
+            // so a share that was working is dead from here on — including one this very run just
+            // set. The VM is still stopped, which is the only moment it can be written again, so do
+            // that now where it is Winbar's to write, and either way hand the folder back so the
+            // caller asks Windows what became of it.
+            if let folder = SharedFolder.reestablish(vm: vm, progress: progress) {
+                changes.sharedFolder = .folder(folder)
             }
         }
 

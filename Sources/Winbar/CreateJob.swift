@@ -6,10 +6,10 @@ import Darwin
 // log, the lock), the sweep for orphans, cancel, and the public API both front-ends call. The run
 // itself — preflight, media, the VM, the install, finish — is in CreateJobRun.swift.
 //
-// The password is a parameter of `start` and nothing else: it is never a property of the job, never
-// in state.json, never in the log, never in an argument. `CreateRun` drops its reference as soon as
-// the answer file is on the setup disk (Swift can't zero a String's storage, so that is as close to
-// erasing it as this can get).
+// The password, and the optional Windows product key beside it, are parameters of `start` and nothing
+// else: never a property of the job, never in state.json, never in the log, never in an argument.
+// `CreateRun` drops its references as soon as the answer file is on the setup disk (Swift can't zero a
+// String's storage, so that is as close to erasing them as this can get).
 
 /// Why a job couldn't start, or ended badly, in the copy deck's terms plus the exit code it carries.
 /// The CLI prints `failure` and returns `exitCode`; the window shows the same failure.
@@ -101,14 +101,16 @@ enum CreateJob {
     /// Installs Windows into a new VM, following `plan`. Blocking: it returns when the install has
     /// finished, failed or been interrupted, and throws `CreateJobError` in the last two cases.
     ///
-    /// `password` is used once, to render the answer file, and then dropped. `onChange` is
-    /// called for every state change, on the main queue when the caller isn't already on it (the CLI
-    /// blocks the main thread, where a main-queue hop would never arrive).
-    static func start(plan: CreatePlan, password: String, onChange: @escaping (CreateJobState) -> Void) throws {
+    /// `password` is used once, to render the answer file, and then dropped. `productKey` is the optional
+    /// Windows product key and is treated the same way: nil is the default and renders the file Winbar has
+    /// always rendered. `onChange` is called for every state change, on the main queue when the caller isn't
+    /// already on it (the CLI blocks the main thread, where a main-queue hop would never arrive).
+    static func start(plan: CreatePlan, password: String, productKey: String? = nil,
+                      onChange: @escaping (CreateJobState) -> Void) throws {
         sweep()
         let lock = try takeLock()
         let run = try CreateRun(plan: plan, id: newJobID(), lock: lock, onChange: onChange)
-        try run.install(password: password)
+        try run.install(password: password, productKey: productKey)
     }
 
     /// Carries on watching an install that was interrupted (Ctrl-C, a crash, a Mac restart).

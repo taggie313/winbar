@@ -7,6 +7,11 @@ import Darwin
 // The password is read from /dev/tty with echo off and handed straight to CreateJob.start. It is
 // never a flag and never an environment variable, because arguments are visible to every process on
 // the Mac and end up in the shell's history, and the environment is handed to every child process.
+//
+// The optional Windows product key is treated the same way and for the same reasons: --product-key is
+// a switch that asks, --product-key-stdin names a pipe, and neither ever takes the key as a value.
+// There is deliberately no WINBAR_PRODUCT_KEY environment variable: the environment is handed to every
+// program the command starts, and a key that leaked that way would be a licence someone else could use.
 
 /// The copy `winbar create` shows, in the copy deck's words. One deck for both front-ends: the lines
 /// below are the ones only Terminal says, and the rest of the deck, which the window shows too, is
@@ -81,6 +86,32 @@ enum CreateCopy {
         .filter(\.isLocked)
         .map { ("--no-" + $0.rawValue.replacingOccurrences(of: "_", with: "-"), ChoiceProblem.locked($0).description) })
 
+    /// Why the key gets the password's treatment, in the password's own words. A licence key is worth
+    /// something to whoever finds it, and an argument is readable by every process on the Mac.
+    static let productKeyWhyPrompt =
+        "The product key is never a flag value either, for the same reason: arguments are visible to every program "
+        + "on your Mac while the command runs and end up in your shell history. --product-key asks for it with the "
+        + "characters hidden, and --product-key-stdin reads it from a pipe."
+
+    /// The block printed before the key prompt. It says the one thing that is different about a product
+    /// key: unlike the password, nothing hides it in the answer file.
+    static let beforeProductKey =
+        "Windows Setup reads it from the same answer file, in plain text: a product key has no scrambled form the "
+        + "way the password does. The answer file sits on the setup disk in Winbar's folder, readable only by you "
+        + "and kept out of Time Machine, and Winbar deletes it as soon as Windows has finished installing. Winbar "
+        + "keeps no other copy, and never logs it. Setup refuses a key that isn't for the edition being installed, "
+        + "and the VM still installs either way — just unactivated."
+
+    static let keyStdinTTY = "--product-key-stdin reads the product key from a pipe, but standard input is this "
+        + "terminal, where every character would be echoed. Pipe it in, or use --product-key and Winbar "
+        + "will ask."
+    static let keyStdinEmpty = "Nothing came in on standard input. With --product-key-stdin, pipe the "
+        + "Windows product key in, for example: op read op://Private/windows/key | winbar create --yes "
+        + "--product-key-stdin"
+    static let keyNoTTY = "winbar create needs a terminal to ask for the Windows product key, and never takes it "
+        + "from a flag or an environment variable. Run it in Terminal, or pipe the key in with "
+        + "--product-key-stdin."
+
     static let pwStdinTTY = "--password-stdin reads the password from a pipe, but standard input is this "
         + "terminal, where every character would be echoed. Pipe it in, or leave the flag off and Winbar "
         + "will ask."
@@ -152,6 +183,11 @@ enum CreateCLI {
         /// --password-stdin`. Still never a flag or an environment variable, which every program on
         /// the Mac can read; a pipe is private to the two processes.
         var passwordStdin = false
+        /// `--product-key`: ask for a Windows product key, hidden, and put it in the answer file. A switch,
+        /// not a value: see the note at the top of this file. Off by default, and off is today's behaviour.
+        var productKey = false
+        /// `--product-key-stdin`: the same key, read from a pipe, for a scripted run.
+        var productKeyStdin = false
         var guestTools: String?
         var isoSHA256: String?
         var resume = false
@@ -194,6 +230,8 @@ enum CreateCLI {
         "--no-select": { $0.noSelect = true },
         "--console": { $0.console = true },
         "--password-stdin": { $0.passwordStdin = true },
+        "--product-key": { $0.productKey = true },
+        "--product-key-stdin": { $0.productKeyStdin = true },
         "--resume": { $0.resume = true },
         "--window": { $0.window = true },
         "--verbose": { $0.verbose = true },
@@ -205,10 +243,12 @@ enum CreateCLI {
                                           "--computer-name", "--answer-file-out", "--guest-tools", "--iso-sha256",
                                           "--cancel"]
 
-    /// The password from standard input: everything up to the first newline, or the whole of it when
+    /// One secret from standard input: everything up to the first newline, or the whole of it when
     /// there is none (`printf %s`). Trailing CR is dropped so a file written on Windows still works.
-    /// Nothing is echoed, and the bytes are never logged.
-    static func readPasswordFromStdin() -> String? {
+    /// Nothing is echoed, and the bytes are never logged. Used by `--password-stdin` and, for the
+    /// product key, by `--product-key-stdin`; only one of the two can have the pipe, so `parse`
+    /// refuses both at once.
+    static func readSecretFromStdin() -> String? {
         var data = Data()
         while let chunk = try? FileHandle.standardInput.read(upToCount: 4096), !chunk.isEmpty {
             data.append(chunk)
@@ -241,6 +281,20 @@ enum CreateCLI {
             if argument.hasPrefix("--password"), argument != "--password-stdin" {
                 return .failure(Usage(code: "E_PW_FLAG",
                                       message: "winbar create has no \(argument): " + CreateCopy.passwordWhyPrompt))
+            }
+            // Nor a product key. `--product-key` and `--product-key-stdin` carry no value; anything else
+            // spelled like them, and `--product-key=KEY`, is someone trying to pass the key itself.
+            if argument.hasPrefix("--product-key"), argument != "--product-key", argument != "--product-key-stdin" {
+                return .failure(Usage(code: "E_KEY_FLAG",
+                                      message: "winbar create has no \(argument): " + CreateCopy.productKeyWhyPrompt))
+            }
+            // `--product-key KEY`, where the key would otherwise be read as the VM's name and silently
+            // installed without one. Only a real key is taken this way; any other word is still a name.
+            if argument == "--product-key",
+               inlineValue != nil || (i < arguments.count && CreateChoices.normalizedProductKey(arguments[i]) != nil) {
+                return .failure(Usage(code: "E_KEY_FLAG",
+                                      message: "winbar create: --product-key takes no value. "
+                                          + CreateCopy.productKeyWhyPrompt))
             }
             if let apply = switches[argument] {
                 guard inlineValue == nil else {
@@ -276,6 +330,15 @@ enum CreateCLI {
         }
         if options.cancel, options.resume {
             return .failure(Usage(code: "E_USAGE", message: "winbar create: --resume and --cancel contradict each other"))
+        }
+        if options.productKey, options.productKeyStdin {
+            return .failure(Usage(code: "E_USAGE", message: "winbar create: --product-key asks for the key and "
+                                  + "--product-key-stdin reads it from a pipe. Use one or the other"))
+        }
+        if options.passwordStdin, options.productKeyStdin {
+            return .failure(Usage(code: "E_USAGE", message: "winbar create: --password-stdin and --product-key-stdin "
+                                  + "both read standard input, so only one of them can. Pipe the password in and "
+                                  + "let --product-key ask for the key"))
         }
         if options.window {
             // The window asks for everything itself, so a flag alongside it would quietly do nothing.
@@ -414,6 +477,13 @@ enum CreateCLI {
               --no-visual-tweaks    tune, but leave animations and transparency alone
               --user NAME           Windows user name (default: your Mac's; here: \(user))
               --computer-name NAME  Windows computer name (default: from the VM name; here: \(computer))
+              --product-key         ask for a Windows product key, hidden, and install with it. Optional:
+                                    without one Windows installs unactivated, and you can activate it later
+                                    in Settings > System > Activation. The key goes into Windows' answer
+                                    file in plain text (a key has no scrambled form the way the password
+                                    does), on the setup disk Winbar deletes when the install finishes.
+                                    Setup refuses a key that isn't for the edition being installed
+              --product-key-stdin   read that key from standard input instead, for scripted runs
 
               Always on: removing the TPM, Secure Boot and RAM requirement (UTM can't add a TPM to a VM
               it creates by script), the local account (Remote Desktop and automatic sign-in need one),
@@ -541,6 +611,15 @@ enum CreateCLI {
         let mac = MacFacts.current
         if !options.dryRun { print("Winbar \(AppBundle.version) create") }
 
+        // UTM before anything else. Making a Windows VM is exactly where "install UTM yourself
+        // first" is the step someone stops at, so create offers the same install setup does, in the
+        // same words. A dry run changes nothing, so it only reports (the plan says "not installed").
+        // The job's preflight still refuses without UTM (E_UTM_MISSING) for the window and for a run
+        // with no terminal to ask on.
+        if !options.dryRun, !Dependencies.state(of: .utm).isInstalled {
+            DependencySetup.offer(.utm, assumeYes: options.yes, indent: "")
+        }
+
         // The ISO: the flag, or the newest one in Downloads with a question, or nothing to go on.
         // Absolute and tilde-free from here on: UTM keeps a bookmark to whatever path it is given.
         func absolute(_ path: String) -> String {
@@ -595,12 +674,16 @@ enum CreateCLI {
         }
 
         if options.dryRun {
-            return try dryRun(plan: plan, image: image, mac: mac, reading: reading, options: options)
+            // Asked for here so --answer-file-out can show where the key lands, and so a key Windows
+            // would refuse is caught by a dry run too.
+            return try dryRun(plan: plan, image: image, mac: mac, reading: reading, options: options,
+                              productKey: try productKey(options))
         }
 
         let askedOnScreen = !options.yes && Term.stdinIsTTY
         if askedOnScreen {
-            var checklist = Checklist(plan: plan, image: image, mac: mac, reading: reading)
+            var checklist = Checklist(plan: plan, image: image, mac: mac, reading: reading,
+                                      productKeyWanted: options.productKey || options.productKeyStdin)
             switch checklist.run() {
             case .quit: return 0
             case .go(let edited): plan = edited
@@ -632,7 +715,7 @@ enum CreateCLI {
                 throw CreateJobError(failure: CreateFailure(code: "E_PW_STDIN_TTY", title: CreateCopy.pwStdinTTY,
                                                             detail: "", nextStep: nil), exit: 64)
             }
-            guard let piped = CreateCLI.readPasswordFromStdin() else {
+            guard let piped = CreateCLI.readSecretFromStdin() else {
                 throw CreateJobError(failure: CreateFailure(code: "E_PW_STDIN", title: CreateCopy.pwStdinEmpty,
                                                             detail: "", nextStep: nil), exit: 65)
             }
@@ -640,6 +723,9 @@ enum CreateCLI {
                 throw CreateJobError(failure: CreateFailure(code: "E_PW", title: problem.description, detail: "",
                                                             nextStep: nil), exit: 65)
             }
+            // The pipe carried the password, so a key can only come from the terminal here; `parse`
+            // refuses --password-stdin and --product-key-stdin together for that reason.
+            let key = try productKey(options)
             let progress = CreateProgressPrinter(verbose: options.verbose, said: [])
             watching = progress
             watchSignals()
@@ -647,7 +733,7 @@ enum CreateCLI {
                 progress.finish()
                 restoreSignals()
             }
-            try CreateJob.start(plan: plan, password: piped) { progress.update($0) }
+            try CreateJob.start(plan: plan, password: piped, productKey: key) { progress.update($0) }
             progress.finish()
             return try ending(progress.state, options: options)
         }
@@ -664,7 +750,9 @@ enum CreateCLI {
             print("  " + CreateCopy.wrap(paragraph, width: CreateCopy.width - 2, indent: "  "))
             print("")
         }
+        // After the password, and before anything is created: a key Windows would refuse stops the run here.
         let password = try askPassword(tty: tty, user: plan.userName)
+        let key = try productKey(options)
 
         print(CreateCopy.wrap(CreateCopy.automationCLI.replacingOccurrences(of: "{app}", with: Automation.host.name),
                               width: CreateCopy.width))
@@ -679,7 +767,7 @@ enum CreateCLI {
             progress.finish()   // also on the way out of a failure, so nothing overwrites its lines
             restoreSignals()
         }
-        try CreateJob.start(plan: plan, password: password) { progress.update($0) }
+        try CreateJob.start(plan: plan, password: password, productKey: key) { progress.update($0) }
         progress.finish()   // before the ending, so the last line is closed
         return try ending(progress.state, options: options)
     }
@@ -693,6 +781,56 @@ enum CreateCLI {
         warnings += CreateChoices.memoryWarnings(plan.memoryMiB / 1024, mac: mac)
         if plan.edition.isHome { warnings.append(.home) }
         return warnings
+    }
+
+    /// The Windows product key, when the run asked for one, and nil when it didn't — which is the default,
+    /// and today's behaviour. From the pipe with `--product-key-stdin`, otherwise from a hidden prompt on the
+    /// controlling terminal. Called before anything is created, so a key Windows would refuse stops the run
+    /// rather than an install.
+    static func productKey(_ options: Options) throws -> String? {
+        if options.productKeyStdin {
+            guard isatty(FileHandle.standardInput.fileDescriptor) == 0 else {
+                throw CreateJobError(failure: CreateFailure(code: "E_KEY_STDIN_TTY", title: CreateCopy.keyStdinTTY,
+                                                            detail: "", nextStep: nil), exit: 64)
+            }
+            guard let piped = readSecretFromStdin() else {
+                throw CreateJobError(failure: CreateFailure(code: "E_KEY_STDIN", title: CreateCopy.keyStdinEmpty,
+                                                            detail: "", nextStep: nil), exit: 65)
+            }
+            guard let key = CreateChoices.normalizedProductKey(piped) else {
+                throw CreateJobError(failure: CreateFailure(code: "E_KEY", title: ChoiceProblem.productKeyShape.description,
+                                                            detail: "", nextStep: nil), exit: 65)
+            }
+            return key
+        }
+        guard options.productKey else { return nil }
+        guard let tty = TTY.open() else {
+            throw CreateJobError(failure: CreateFailure(code: "E_NO_TTY", title: CreateCopy.keyNoTTY, detail: "",
+                                                        nextStep: nil), exit: 64)
+        }
+        defer { tty.close() }
+        // The blank line lives here, not at the call site: without a key nothing at all is printed.
+        print("")
+        print("Before you type the product key")
+        print("  " + CreateCopy.wrap(CreateCopy.beforeProductKey, width: CreateCopy.width - 2, indent: "  "))
+        print("")
+        return try askProductKey(tty: tty)
+    }
+
+    /// Hidden, three tries, normalised. Once, not twice: a mistyped key is caught by its shape, which a
+    /// mistyped password never is.
+    static func askProductKey(tty: TTY) throws -> String {
+        for attempt in 1...3 {
+            guard let typed = tty.readPassword("Windows product key: ") else {
+                throw CreateJobError(failure: CreateFailure(code: "E_NO_TTY", title: CreateCopy.keyNoTTY, detail: "",
+                                                            nextStep: nil), exit: 64)
+            }
+            if let key = CreateChoices.normalizedProductKey(typed) { return key }
+            let problem = ChoiceProblem.productKeyShape.description
+            tty.write(CreateCopy.wrap(problem, width: CreateCopy.width) + "\n")
+            if attempt == 3 { throw CreateJobError.input("E_KEY", problem) }
+        }
+        throw CreateJobError.input("E_KEY", ChoiceProblem.productKeyShape.description)
     }
 
     /// Twice, hidden, three tries. Nothing is created before this passes.
@@ -732,7 +870,7 @@ enum CreateCLI {
         print("  Sign in as     \(plan.userName), with the password you chose")
         print("  Reach it at    \(host)")
         print("  Winbar's VM    “\(plan.vmName)”" + (plan.select ? " (the menu bar icon now looks after it)" : ""))
-        for text in [CreateCopy.nNotActivated, CreateCopy.nUpdates] {
+        for text in [state.usedProductKey ? CreateCopy.nActivating : CreateCopy.nNotActivated, CreateCopy.nUpdates] {
             print("  ·  " + CreateCopy.wrap(text, width: CreateCopy.width - 5, indent: "     "))
         }
         print("")
@@ -830,16 +968,18 @@ enum CreateCLI {
     // MARK: - Dry run
 
     private static func dryRun(plan: CreatePlan, image: WindowsImageInfo, mac: MacFacts,
-                               reading: Regional.Reading?, options: Options) throws -> Int32 {
+                               reading: Regional.Reading?, options: Options, productKey: String?) throws -> Int32 {
         let effective = try CreateChoices.effective(plan)
         print(dryRunText(plan: effective.plan, image: image, mac: mac, reading: reading,
                          utmVersion: UTM.isInstalled ? UTM.version : nil,
                          space: CreatePreflight.freeSpace(), fileVault: Host.fileVaultOn,
                          onBattery: CreatePreflight.onBattery(), guestTools: GuestTools.cached(),
                          warnings: planWarnings(effective.plan, mac: mac).map(\.description)
-                             + (effective.plan.has(.regionalFromMac) ? (reading?.notes ?? []).map(\.description) : [])))
+                             + (effective.plan.has(.regionalFromMac) ? (reading?.notes ?? []).map(\.description) : []),
+                         hasProductKey: productKey != nil))
         if let directory = options.answerFileOut {
-            let files = try AnswerFile.render(plan: effective.plan, image: image, password: standInPassword)
+            let files = try AnswerFile.render(plan: effective.plan, image: image, password: standInPassword,
+                                              productKey: productKey)
             let base = URL(fileURLWithPath: (directory as NSString).expandingTildeInPath)
             try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
             for file in files {
@@ -850,7 +990,8 @@ enum CreateCLI {
             }
             print("")
             print("Wrote \(base.appendingPathComponent(AnswerFile.answerFileName).path) (the password in it is the "
-                  + "stand-in \(standInPassword)).")
+                  + "stand-in \(standInPassword)"
+                  + (productKey == nil ? "" : "; the product key is your real one, in plain text") + ").")
         }
         return 0
     }
@@ -861,7 +1002,7 @@ enum CreateCLI {
     /// The dry run's text. Pure, so the layout can be tested without a Mac's ISO.
     static func dryRunText(plan: CreatePlan, image: WindowsImageInfo, mac: MacFacts, reading: Regional.Reading?,
                            utmVersion: String?, space: CreatePreflight.Space, fileVault: Bool?, onBattery: Bool,
-                           guestTools: GuestTools.Copy?, warnings: [String]) -> String {
+                           guestTools: GuestTools.Copy?, warnings: [String], hasProductKey: Bool = false) -> String {
         let host = CreateChoices.hostName(computerName: plan.computerName)
         let imageIndex = image.editions.firstIndex { $0.index == plan.edition.index }.map { $0 + 1 } ?? plan.edition.index
         // `wrapped` is false for a value that is already laid out in columns (the checklist grid).
@@ -875,6 +1016,11 @@ enum CreateCLI {
             + "\(image.fullBuild ?? String(image.build)), \(CreateCopy.languageName(image.language))")
         add("Account", "\(plan.userName), local administrator; password asked for when you run it for real")
         add("Computer", "\(plan.computerName), reached from your Mac as \(host)")
+        // Whether there is a key, never the key: the dry run's text is something people paste into bug reports.
+        add("Product key", hasProductKey
+            ? "the one you typed, written into the answer file in plain text; Windows activates itself with it"
+            : "none. Windows installs unactivated; activate it later in Settings > System > Activation, or run "
+                + "this again with --product-key")
         let region = plan.has(.regionalFromMac) ? reading.map(Checklist.regionSummary) : nil
         add("Region", region ?? "Windows' defaults: \(CreateCopy.languageName(image.language)) formats and keyboard, "
             + "Windows' default time zone")

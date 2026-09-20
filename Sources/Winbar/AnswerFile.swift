@@ -40,8 +40,9 @@ enum AnswerFile {
     // MARK: - Ids (the contract between the template, the renderer and the first-logon script)
 
     static let lockedOn = ["bypass_requirements", "local_account", "guest_tools"]
-    /// Not checklist rows: `no_visual_tweaks` is --no-visual-tweaks; `time_zone` is derived by `effective`.
-    static let modifiers = ["no_visual_tweaks", "time_zone"]
+    /// Not checklist rows: `no_visual_tweaks` is --no-visual-tweaks; `time_zone` and `product_key` are derived
+    /// by `effective` from the values, as `computer_name` is from the name.
+    static let modifiers = ["no_visual_tweaks", "time_zone", "product_key"]
     /// FirstLogon.ps1's switch for each option, in the launcher's order.
     static let launcherSwitches: [(id: String, name: String)] = [
         ("guest_tools", "-GuestTools"), ("autologon", "-Autologon"), ("remote_desktop", "-RemoteDesktop"),
@@ -54,8 +55,13 @@ enum AnswerFile {
 
     /// The CD's root files for a plan. The password is used here and nowhere else: it isn't kept, logged or
     /// returned except inside Autounattend.xml, obscured as Windows SIM does it.
-    static func render(plan: CreatePlan, image: WindowsImageInfo, password: String) throws -> [SetupFile] {
-        let xml = try renderChecked(inputs(plan: plan, image: image), password: password).xml
+    ///
+    /// `productKey` is optional and nil unless the person asked for one. It is used the same way — never kept,
+    /// logged or returned — but it lands in the file as **plain text**: there is no obscured form for a product
+    /// key, so what protects it is the setup disk itself (mode 0600, out of Time Machine, deleted at the end).
+    static func render(plan: CreatePlan, image: WindowsImageInfo, password: String,
+                       productKey: String? = nil) throws -> [SetupFile] {
+        let xml = try renderChecked(inputs(plan: plan, image: image, productKey: productKey), password: password).xml
         // Written with CRLF line endings, as the file goes onto the CD.
         return [SetupFile(name: answerFileName, contents: Data(xml.replacingOccurrences(of: "\n", with: "\r\n").utf8)),
                 SetupFile(name: firstLogonName, contents: Data(firstLogonScript.utf8))]
@@ -63,7 +69,7 @@ enum AnswerFile {
 
     /// The renderer's inputs for a plan. Missing regional values are left blank for `effective` to fill with
     /// the image language; the display name is the user name (the UX has no separate field).
-    static func inputs(plan: CreatePlan, image: WindowsImageInfo) -> Inputs {
+    static func inputs(plan: CreatePlan, image: WindowsImageInfo, productKey: String? = nil) -> Inputs {
         var options: [String: Bool] = [:]
         for option in CreateOption.allCases { options[option.rawValue] = plan.has(option) }
         options["computer_name"] = !plan.computerName.isEmpty
@@ -81,6 +87,9 @@ enum AnswerFile {
             "USERNAME": plan.userName,
             "DISPLAY_NAME": plan.userName,
             "COMPUTER_NAME": plan.computerName,
+            // The key is never part of the plan, for the same reason the password isn't: the plan is written to
+            // state.json and quoted in the log. It arrives here as an argument and goes no further.
+            "PRODUCT_KEY": productKey ?? "",
         ]
         return Inputs(options: options, values: values)
     }
@@ -102,7 +111,8 @@ enum AnswerFile {
     /// name). The visual-tweaks modifier needs tuning. Home can't host Remote Desktop: off, with a
     /// warning. Without regional_from_mac the locales are the image language and there's no time zone;
     /// with it, a locale the Mac couldn't supply is the image language, and `time_zone` is on only when
-    /// there's a zone to set.
+    /// there's a zone to set. `product_key` is on only when there is a key: without one the file keeps the
+    /// empty `<Key />` it has always had.
     static func effective(_ inputs: Inputs) throws -> (inputs: Inputs, warnings: [String]) {
         var opts = inputs.options
         var values = inputs.values
@@ -129,6 +139,10 @@ enum AnswerFile {
         let zone = (values["TIME_ZONE"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         values["TIME_ZONE"] = zone
         opts["time_zone"] = opts["regional_from_mac"] == true && !zone.isEmpty
+        // No key is the default, and renders the empty <Key /> that makes Setup skip its product-key page.
+        let key = (values["PRODUCT_KEY"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        values["PRODUCT_KEY"] = key
+        opts["product_key"] = !key.isEmpty
         if (values["DISPLAY_NAME"] ?? "").isEmpty { values["DISPLAY_NAME"] = values["USERNAME"] ?? "" }
         return (Inputs(options: opts, values: values), warnings)
     }
@@ -163,6 +177,13 @@ enum AnswerFile {
                      "computer name: 1-15 of A-Z a-z 0-9 and \"-\", not starting or ending with \"-\"")
             try need(!name.allSatisfy { $0.isASCII && $0.isNumber }, "computer name cannot be all digits")
             try need(name.lowercased() != user.lowercased(), "computer name must differ from the user name")
+        }
+        // The key is optional; when there is one it must already be canonical. The front-ends normalise what the
+        // person typed (`CreateChoices.normalizedProductKey`); this is the renderer's own floor.
+        if inputs.options["product_key"] == true {
+            let key = values["PRODUCT_KEY"] ?? ""
+            try need(CreateChoices.normalizedProductKey(key) == key,
+                     "PRODUCT_KEY must be five groups of five from \(CreateChoices.productKeyAlphabet)")
         }
         try need(fullMatch(values["IMAGE_INDEX"] ?? "", imageIndexPattern), "IMAGE_INDEX comes from install.wim (1-99)")
         for key in ["PE_LANGUAGE", "UI_LANGUAGE", "SYSTEM_LOCALE", "USER_LOCALE"] {
@@ -274,7 +295,8 @@ enum AnswerFile {
     /// exactly one FirstLogonCommands; each list's Order runs 1…n; Path ≤ 259 and CommandLine ≤ 1024
     /// characters; both password copies decode to the password, PlainText false; the account is the
     /// autologon user, in Administrators; each option's signature element is present exactly when the
-    /// option is on; the launcher's switches are the ticked options, and it finds the CD by label or
+    /// option is on (the product key among them: exactly the key that was asked for, and an empty
+    /// `<Key />` when none was); the launcher's switches are the ticked options, and it finds the CD by label or
     /// content, catches a script that can't run and writes status.tmp then renames it (D7); and the
     /// password reached nowhere but the two obscured Values.
     ///
@@ -363,6 +385,10 @@ enum AnswerFile {
             ("qol", pathHas("DisableFileSyncNGSC") && commandLines.contains { $0.contains("HiberbootEnabled") }),
             ("remote_desktop", textOf("fDenyTSConnections") == ["false"] && textOf("UserAuthentication") == ["1"]),
             ("computer_name", textOf("ComputerName") == [values["COMPUTER_NAME"] ?? ""]),
+            // The key is in the file as plain text, so this is a look, not a decode: it is there exactly when
+            // one was asked for, and it is the one that was asked for.
+            ("product_key", !(values["PRODUCT_KEY"] ?? "").isEmpty
+                && textOf("ProductKey", "Key") == [values["PRODUCT_KEY"] ?? ""]),
         ]
         for (id, present) in signatures {
             try need(present == on(id), "option signature mismatch: \(id) is \(on(id) ? "on" : "off")")
@@ -372,6 +398,9 @@ enum AnswerFile {
                      "without skip_privacy, ProtectYourPC must be 1 and there must be no OptIn")
         }
         if !on("computer_name") { try need(textOf("ComputerName") == ["*"], "a blank computer name must render *") }
+        if !on("product_key") {
+            try need(textOf("ProductKey", "Key") == [""], "without a product key the Key element must be empty")
+        }
         let ui = values["UI_LANGUAGE"] ?? ""
         if !on("regional_from_mac") {
             try need(find("TimeZone").isEmpty, "without regional_from_mac there must be no TimeZone")

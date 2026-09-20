@@ -187,6 +187,45 @@ enum Fixture {
         #expect(files[0].contents == Data(golden.utf8))
     }
 
+    /// No key is the default, and renders exactly the file Winbar rendered before keys existed: the golden is
+    /// the one taken from the oracle then, and nothing about it moved.
+    @Test func withoutAProductKeyTheFileIsUnchanged() throws {
+        let files = try AnswerFile.render(plan: TestPlan.plan(), image: TestPlan.image,
+                                          password: Fixture.cases.password)
+        let golden = try Fixture.text("default.xml").replacingOccurrences(of: "\n", with: "\r\n")
+        #expect(files[0].contents == Data(golden.utf8))
+        // Passing nil explicitly is the same as not passing one at all.
+        let explicitlyNone = try AnswerFile.render(plan: TestPlan.plan(), image: TestPlan.image,
+                                                   password: Fixture.cases.password, productKey: nil)
+        #expect(explicitlyNone[0].contents == files[0].contents)
+        #expect(String(decoding: files[0].contents, as: UTF8.self).contains("<Key />\r\n"))
+    }
+
+    /// With one, the key goes into the <Key> the template already had, and that is the only thing that changes:
+    /// the edition still comes from /IMAGE/INDEX.
+    @Test func aProductKeyChangesOneLineAndNothingElse() throws {
+        let files = try AnswerFile.render(plan: TestPlan.plan(), image: TestPlan.image,
+                                          password: Fixture.cases.password, productKey: TestPlan.productKey)
+        let golden = try Fixture.text("product-key.xml").replacingOccurrences(of: "\n", with: "\r\n")
+        #expect(files[0].contents == Data(golden.utf8))
+        let withKey = String(decoding: files[0].contents, as: UTF8.self)
+        let without = try String(decoding: AnswerFile.render(plan: TestPlan.plan(), image: TestPlan.image,
+                                                             password: Fixture.cases.password)[0].contents,
+                                 as: UTF8.self)
+        #expect(withKey.replacingOccurrences(of: "<Key>\(TestPlan.productKey)</Key>", with: "<Key />") == without)
+        #expect(withKey.contains("<Key>\(TestPlan.productKey)</Key>"))
+        // The image index chooses the edition, not the key.
+        #expect(withKey.contains("<Value>3</Value>"))
+    }
+
+    /// The key is plain text in the answer file and nowhere else in it: one occurrence, inside <ProductKey>.
+    @Test func theKeyAppearsOnceAndOnlyInProductKey() throws {
+        let xml = try AnswerFile.renderChecked(TestPlan.inputsWithKey(), password: Fixture.cases.password).xml
+        let lines = xml.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { $0.contains(TestPlan.productKey) }
+        #expect(lines == ["          <Key>\(TestPlan.productKey)</Key>"])
+    }
+
     /// Regional off: no Mac values reach the file, whatever the plan carries.
     @Test func planWithoutRegionalUsesTheImageLanguage() throws {
         var plan = TestPlan.plan()
@@ -206,6 +245,18 @@ enum TestPlan {
                                         language: "en-US", editions: [edition], isArm64: true, bootPrompts: true)
     static let edition = WindowsEdition(index: 3, name: "Windows 11 Pro", displayName: "Windows 11 Pro",
                                         editionID: "Professional")
+    /// Microsoft's own generic, non-activating Pro key (ANSWERFILE.md section 5), so no real licence is
+    /// anywhere near the tests. The oracle renders `product-key.xml` with the same one.
+    static let productKey = "VK7JG-NPHTM-C97JM-9MPGT-3V66T"
+
+    /// The oracle's dummy values with a key, for the rules that only bite when there is one.
+    static func inputsWithKey(_ key: String = productKey) -> AnswerFile.Inputs {
+        var options: [String: Bool] = ["computer_name": true]
+        for option in CreateOption.allCases { options[option.rawValue] = true }
+        var values = Fixture.cases.dummyValues
+        values["PRODUCT_KEY"] = key
+        return AnswerFile.Inputs(options: options, values: values)
+    }
 
     static func plan(userName: String = "alex", computerName: String = "Windows-11") -> CreatePlan {
         CreatePlan(vmName: "Windows 11", isoPath: image.path, edition: edition, cores: 6, memoryMiB: 16384,
@@ -263,6 +314,16 @@ enum TestPlan {
         #expect(refusal(values: ["INPUT_LOCALE": "0409-00000409"]) == "INPUT_LOCALE: language tag or LCID:KLID like 0409:00000409")
         // A blank time zone is not a refusal: the element is left out and Windows keeps its default zone.
         #expect(refusal(values: ["TIME_ZONE": ""]) == nil)
+        // The product key: optional, so no key is not a refusal, and the renderer's own floor is the canonical
+        // form. What the person typed is normalised by the front-ends before it ever gets here.
+        let keyShape = "PRODUCT_KEY must be five groups of five from BCDFGHJKMNPQRTVWXY2346789"
+        #expect(refusal(values: ["PRODUCT_KEY": ""]) == nil)
+        #expect(refusal(values: ["PRODUCT_KEY": "   "]) == nil)
+        #expect(refusal(values: ["PRODUCT_KEY": "VK7JG-NPHTM-C97JM-9MPGT-3V66T"]) == nil)
+        #expect(refusal(values: ["PRODUCT_KEY": "vk7jg-nphtm-c97jm-9mpgt-3v66t"]) == keyShape)
+        #expect(refusal(values: ["PRODUCT_KEY": "VK7JGNPHTMC97JM9MPGT3V66T"]) == keyShape)
+        #expect(refusal(values: ["PRODUCT_KEY": "VK7JG-NPHTM-C97JM-9MPGT-3V66"]) == keyShape)
+        #expect(refusal(values: ["PRODUCT_KEY": "AEIOU-LSZ01-5BCDF-GHJKM-PQRTV"]) == keyShape)
     }
 
     @Test func refusesAnUnknownIdAndAMissingValue() throws {
@@ -452,6 +513,26 @@ enum TestPlan {
                 == "without regional_from_mac the locales must be the image language")
         #expect(check(xml.replacingOccurrences(of: "<OOBE>", with: "<TimeZone>UTC</TimeZone>\n      <OOBE>"))
                 == "without regional_from_mac there must be no TimeZone")
+    }
+
+    /// The key has to be in the file exactly when one was asked for, and be the one that was asked for. There
+    /// is nothing to decode: a product key is plain text in an answer file.
+    @Test func catchesProductKeyProblems() throws {
+        let password = Fixture.cases.password
+        let (withKey, _) = try AnswerFile.effective(TestPlan.inputsWithKey())
+        let xml = try AnswerFile.renderXML(withKey, password: password)
+        #expect(check(xml, withKey, password) == nil)
+        #expect(check(xml.replacingOccurrences(of: TestPlan.productKey, with: "YTMG3-N6DKC-DKB77-7M9GH-8HVX7"),
+                      withKey, password) == "option signature mismatch: product_key is on")
+        #expect(check(xml.replacingOccurrences(of: "<Key>\(TestPlan.productKey)</Key>", with: "<Key />"),
+                      withKey, password) == "option signature mismatch: product_key is on")
+
+        let plainCase = Fixture.cases.cases.first { $0.name == "default" }!
+        let (plain, _) = try AnswerFile.effective(Fixture.inputs(plainCase))
+        let plainXML = try AnswerFile.renderXML(plain, password: plainCase.password)
+        #expect(check(plainXML, plain, plainCase.password) == nil)
+        #expect(check(plainXML.replacingOccurrences(of: "<Key />", with: "<Key>\(TestPlan.productKey)</Key>"),
+                      plain, plainCase.password) == "without a product key the Key element must be empty")
     }
 
     /// A blank computer name renders "*", Windows' documented random name.

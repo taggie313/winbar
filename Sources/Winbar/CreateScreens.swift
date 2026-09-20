@@ -100,16 +100,22 @@ struct Checklist {
     let image: WindowsImageInfo
     let mac: MacFacts
     let reading: Regional.Reading?
+    /// Whether this run will ask for a Windows product key (`--product-key`, `--product-key-stdin`). Not the
+    /// key: the screen is reprinted after every change, and a licence doesn't belong in a scrollback. The key
+    /// itself is asked for after the password, once the plan is settled.
+    let productKeyWanted: Bool
     /// Warnings already printed, so each is shown once.
     private var shown: Set<String> = []
 
     enum Outcome { case quit, go(CreatePlan) }
 
-    init(plan: CreatePlan, image: WindowsImageInfo, mac: MacFacts, reading: Regional.Reading?) {
+    init(plan: CreatePlan, image: WindowsImageInfo, mac: MacFacts, reading: Regional.Reading?,
+         productKeyWanted: Bool = false) {
         self.plan = plan
         self.image = image
         self.mac = mac
         self.reading = reading
+        self.productKeyWanted = productKeyWanted
     }
 
     // MARK: Rows
@@ -180,6 +186,7 @@ struct Checklist {
         case .edition:
             box = "[x]"
             label = "\(CreateCopy.installLabel) \(plan.edition.displayName)"
+            extra.append(String(repeating: " ", count: 9) + Checklist.productKeyLine(wanted: productKeyWanted))
         case .computerName:
             box = "   "
             label = "Computer name: \(plan.computerName) (your Mac reaches it as "
@@ -204,6 +211,15 @@ struct Checklist {
     static func label(_ option: CreateOption, plan: CreatePlan) -> String {
         let label = CreateCopy.label(option)
         return option == .localAccount ? "\(label) \(plan.userName)" : label
+    }
+
+    /// What the edition row says about the product key: whether there will be one, never which one. The
+    /// key belongs to the edition above it (Setup refuses one that isn't for the edition being installed),
+    /// which is why it is said here rather than as a row of its own.
+    /// Kept to one line: the screen is reprinted after every change, and ?6 has the rest of it.
+    static func productKeyLine(wanted: Bool) -> String {
+        wanted ? "Product key: asked for after the password, in plain text in the answer file"
+               : "Product key: none, so Windows installs unactivated (--product-key uses one)"
     }
 
     /// N_REGIONAL: what the Mac's values become in Windows, including the zone mapping.

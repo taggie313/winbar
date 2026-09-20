@@ -80,12 +80,13 @@ enum CLI {
                         sometimes twice, which Winbar checks for — and the folder's path
                         must have no spaces in it
           connect       open the VM in Windows App, starting it if needed
-          config [--vm NAME] [--host HOST] [--user USER] [--saved-pc NAME]
+          config [--vm NAME] [--forget NAME] [--host HOST] [--user USER] [--saved-pc NAME]
                  [--keep-bitlocker yes|no] [--no-visual-tweaks yes|no] [--autologon yes|no]
                  [--remote-desktop yes|no] [--winbar-tuning yes|no]
                         show settings, or change them ("" resets one to its default). The last
                         three are what winbar create's checklist asked: "no" keeps setup from
-                        offering them again
+                        offering them again. Every setting below vmName belongs to the chosen
+                        VM: --vm keeps the one you leave, --forget is how a VM is dropped
           help          this text
 
         flags:
@@ -162,7 +163,7 @@ enum CLI {
                 return withVM { connect($0, parent: parent) }
             }
         case "config":
-            return withOptions(rest, values: ["--vm", "--host", "--user", "--saved-pc", "--keep-bitlocker",
+            return withOptions(rest, values: ["--vm", "--forget", "--host", "--user", "--saved-pc", "--keep-bitlocker",
                                               "--no-visual-tweaks", "--autologon", "--remote-desktop",
                                               "--winbar-tuning"],
                                switches: []) { parsed in config(parsed) }
@@ -219,7 +220,8 @@ enum CLI {
 
     private static func withVM(_ body: (String) -> Int32) -> Int32 {
         guard UTM.isInstalled else {
-            Term.error("UTM isn't installed: brew install --cask utm")
+            Term.error("UTM isn't installed. Run winbar setup and it offers to install it, or do it yourself: "
+                           + DependencyCopy.byHand(.utm))
             return 1
         }
         guard let vm = Config.vmName else {
@@ -294,8 +296,13 @@ enum CLI {
         case .success(let done) where done.display == nil:
             print(mode == .headless ? "\(vm) is already headless." : "\(vm)'s console window is already on.")
             return 0
-        case .success:
+        case .success(let done):
             print(mode == .headless ? "\(vm) is headless: reach it with winbar connect." : "\(vm)'s console window is on.")
+            // The display change restarted UTM, which kills a shared folder set by script; Reconfigure
+            // wrote it again on the way through, so say so and check Windows really got it. The
+            // display change itself succeeded either way, so it decides the exit code.
+            guard let folder = done.sharedFolder else { return 0 }
+            _ = finishShare(vm, folder, name: folder.path.map { SharedFolder.abbreviate($0) }, reestablished: true)
             return 0
         }
     }
@@ -352,19 +359,32 @@ enum CLI {
         }
         let name = wanted.path.map { SharedFolder.abbreviate($0) }
 
-        switch SharedFolder.decide(current: current, wanted: wanted, running: VMProcesses.isRunning(vm)) {
+        // A share UTM has restarted since is dead however right the registry looks, so it is written
+        // again rather than reported as already set.
+        let broken = SharedFolder.brokenByUTMRestart(vm: vm)
+        switch SharedFolder.decide(current: current, wanted: wanted, running: VMProcesses.isRunning(vm),
+                                   needsRewrite: broken) {
         case .alreadySet:
             print(name.map { "\(vm) already shares \($0)." } ?? "\(vm) already shares nothing with Windows.")
             // UTM's registry is not proof that Windows has it — Windows is given the folder from the
-            // start before — so ask, and offer the restart that would fix it.
-            guard reportWindowsView(vm, current) == .stale else { return 0 }
+            // start before — so ask, and offer whichever repair the answer calls for.
+            let checked = reportWindowsView(vm, current, brokenByUTMRestart: broken)
+            guard checked?.verification == .stale else { return 0 }
+            // A mount with nothing behind it needs the folder written again, not another start —
+            // and this is the only way back for one Winbar didn't write.
+            if checked?.view?.looksDead == true, let folder = current { return offerRewrite(vm, folder: folder) }
             guard Term.confirm("Restart \(vm) now so Windows gets it?", assumeYes: false, defaultYes: true) else {
                 print("Left as it is. Run winbar restart, then winbar share, when \(vm) can restart.")
                 return 1
             }
             return finishShare(vm, wanted, name: name)
         case .needsRestart:
-            print("\(vm) is running. " + SharedFolder.restartCost)
+            if broken, name != nil {
+                print("\(vm) is running, and its shared folder is dead: " + SharedFolder.diedWhenUTMRestarted
+                      + " Writing it again needs the VM off.")
+            } else {
+                print("\(vm) is running. " + SharedFolder.restartCost)
+            }
             guard Term.confirm("Restart \(vm) now?", assumeYes: false, defaultYes: true) else {
                 print("Nothing changed. Run this again when \(vm) can restart, or shut it down first.")
                 return 1
@@ -384,19 +404,24 @@ enum CLI {
                   + "Run winbar share once it's up and Winbar will check and finish the job.")
             return 0
         }
-        return finishShare(vm, wanted, name: name)
+        return finishShare(vm, wanted, name: name, reestablished: broken && name != nil)
     }
 
     /// Waits for Windows, checks whether it really has the folder, and gives it the second start UTM
     /// needs if it hasn't (see `SharedFolder.settle`). Both the change and the "UTM has it, Windows
     /// doesn't" path end here, and neither says it is done without having looked.
-    private static func finishShare(_ vm: String, _ wanted: SharedFolder.Setting, name: String?) -> Int32 {
+    private static func finishShare(_ vm: String, _ wanted: SharedFolder.Setting, name: String?,
+                                   reestablished: Bool = false) -> Int32 {
         switch SharedFolder.settle(wanted, vm: vm, user: Config.rdpUser, terminalInteraction) {
         case .failure(let error):
             Term.error("\(error)")
             return 1
         case .success(let checked):
             switch checked.verification {
+            case .live where reestablished:
+                print("Windows still has the shared folder: \(checked.drive ?? SharedFolder.defaultDrive).")
+                reportUserDrive(checked)
+                return 0
             case .live:
                 guard let name else {
                     print("\(vm) shares nothing with Windows now.")
@@ -404,7 +429,15 @@ enum CLI {
                 }
                 print("\(vm) shares \(name), and Windows has it: \(checked.drive ?? SharedFolder.defaultDrive). "
                       + SharedFolder.worthKnowing)
+                reportUserDrive(checked)
                 return 0
+            case .stale where reestablished:
+                // The restart this command did is what emptied it, so say that rather than blaming
+                // the two-start rule.
+                Term.error("\(vm)'s shared folder is empty in Windows now: " + SharedFolder.diedWhenUTMRestarted
+                           + " Run: winbar share \(name ?? "<folder>")")
+                Term.error(SharedFolder.durableAdvice)
+                return 1
             case .stale:
                 Term.error("UTM has the change, but Windows is still serving what it had before. "
                            + "Restart \(vm) once more (winbar restart), then run winbar share to check.")
@@ -414,6 +447,26 @@ enum CLI {
                       + "Run winbar share once Windows is up.")
                 return 0
             }
+        }
+    }
+
+    /// Which of the two things was wrong, once the share itself is live: the share, or only the
+    /// drive letter in the person's own Windows session. They look identical from a desk — the
+    /// folder is empty — and the remedy is different, so they are named differently.
+    private static func reportUserDrive(_ checked: SharedFolder.Checked) {
+        guard let view = checked.view else { return }
+        switch SharedFolder.driveState(view) {
+        case .working where view.userRemapped:
+            print("Its drive letter in your Windows session (\(view.userDrive ?? SharedFolder.defaultDrive)) had gone "
+                  + "stale, so Winbar mapped it again. Nothing was wrong with the folder itself.")
+        case .working:
+            break
+        case .stale, .missing:
+            Term.error("The share itself works, but \(view.userDrive ?? "the drive letter") in your Windows session "
+                       + "still lists nothing" + (view.userRemapped ? " after being mapped again" : "")
+                       + ". Signing out of Windows and back in makes it afresh.")
+        case .unknown(let why):
+            print("Your own drive letter in Windows wasn't checked (\(why)); the share itself is fine.")
         }
     }
 
@@ -430,15 +483,58 @@ enum CLI {
         } else if let refusal = SharedFolder.refusal(current) {
             print("\(refusal)")
         }
-        reportWindowsView(vm, current)
-        return 0
+        let checked = reportWindowsView(vm, current, brokenByUTMRestart: SharedFolder.brokenByUTMRestart(vm: vm))
+        guard checked?.verification == .stale, checked?.view?.looksDead == true else { return 0 }
+        return offerRewrite(vm, folder: current)
+    }
+
+    /// The one way back for a share whose bookmark UTM can no longer resolve: write the folder into
+    /// the registry again. Offered rather than done, because the rewrite is the scripted kind — it
+    /// will die at the next UTM restart too — and because for a folder Winbar didn't write it
+    /// replaces whatever UTM has with that weaker kind. Saying no changes nothing.
+    ///
+    /// One offer, one rewrite, then a report: `finishShare` may give the VM the second start UTM
+    /// needs, and nothing here loops.
+    private static func offerRewrite(_ vm: String, folder: String) -> Int32 {
+        let name = SharedFolder.abbreviate(folder)
+        let ours = SharedFolder.stillOurs(read: folder, remembered: Config.sharedFolder,
+                                          wasOurs: Config.sharedFolderByWinbar)
+        print("Winbar can write \(name) into UTM's registry again, which brings the share back.")
+        if !ours {
+            print("It didn't write this one. Writing it replaces what UTM has with the scripted kind, "
+                  + "which dies again at the next UTM restart.")
+        }
+        print(SharedFolder.durableAdvice)
+        guard Term.confirm("Write \(name) again" + (VMProcesses.isRunning(vm) ? " and restart \(vm)?" : "?"),
+                           assumeYes: false, defaultYes: true) else {
+            print("Nothing changed.")
+            return 1
+        }
+        let wanted = SharedFolder.Setting.folder(folder)
+        switch SharedFolder.decide(current: folder, wanted: wanted, running: VMProcesses.isRunning(vm),
+                                   needsRewrite: true) {
+        case .alreadySet:
+            return 0   // can't happen with needsRewrite, and nothing to do if it did
+        case .needsRestart, .setNow:
+            let changes = ConfigChanges(sharedFolder: wanted, rewriteSharedFolder: true)
+            if case .failure(let error) = Reconfigure.apply(changes, to: vm, terminalInteraction) {
+                Term.error("\(error)")
+                return 1
+            }
+            guard VMProcesses.isRunning(vm) else {
+                print("Written again. Start \(vm) and run winbar share to check Windows has it.")
+                return 0
+            }
+            return finishShare(vm, wanted, name: name)
+        }
     }
 
     /// The Windows half of the report, shared by `share` and `showShare`. Silent when the VM is off:
     /// there is nothing to ask. It proves what Windows is serving rather than trusting the mapping —
     /// a drive can be mounted and still be the folder from the start before (see `SharedFolder`).
     @discardableResult
-    private static func reportWindowsView(_ vm: String, _ current: String?) -> SharedFolder.Verification? {
+    private static func reportWindowsView(_ vm: String, _ current: String?,
+                                          brokenByUTMRestart: Bool) -> SharedFolder.Checked? {
         guard VMProcesses.isRunning(vm) else {
             print("Windows sees it as a drive (\(SharedFolder.defaultDrive) unless you changed it) while \(vm) runs.")
             return nil
@@ -455,7 +551,7 @@ enum CLI {
         }
         guard let view = checked.view else {
             if case .unknown(let why) = checked.verification { print("Winbar couldn't check inside Windows (\(why)).") }
-            return checked.verification
+            return checked
         }
         if !view.webdavdRunning {
             print("Windows can't reach it: spice-webdavd isn't running (\(view.webdavd)). It comes with UTM Guest Tools.")
@@ -471,6 +567,22 @@ enum CLI {
                 } else {
                     print("Windows has it, but no drive letter is mapped. winbar setup maps \(SharedFolder.defaultDrive) for you.")
                 }
+                // Session 0's letter is not the one they open.
+                switch SharedFolder.driveState(view) {
+                case .working, .unknown:
+                    break
+                case .stale:
+                    print("In your own Windows session, \(view.userDrive ?? SharedFolder.defaultDrive) is stale and lists "
+                          + "nothing. winbar setup maps it again, or sign out of Windows and back in.")
+                case .missing:
+                    print("Your own Windows session has no drive mapped to it. winbar setup maps one for you.")
+                }
+            case .stale where view.looksDead:
+                // Two failures that look the same from Windows; this one has nothing behind the
+                // mount at all, so another start would change nothing.
+                print("Windows has a drive for it\(view.drive.map { " (\($0))" } ?? "") with nothing behind it: "
+                      + (brokenByUTMRestart ? SharedFolder.diedWhenUTMRestarted
+                                            : "whatever UTM stored for this folder can't be opened any more."))
             case .stale:
                 print("Windows is still serving what it had at the start before this one"
                       + (view.drive.map { " (\($0))" } ?? "") + ". Restart \(vm) (winbar restart) and this folder appears.")
@@ -480,7 +592,7 @@ enum CLI {
             }
         }
         if let error = view.error { print("Windows also said: \(error)") }
-        return checked.verification
+        return checked
     }
 
     /// Connect needs Winbar's own Accessibility grant (to press the saved PC) and its Local Network
@@ -550,7 +662,8 @@ enum CLI {
             print("Winbar has no Accessibility access, so opening a one-off connection (it asks for the password). winbar setup explains.")
         }
         guard RDP.openOneOff(host: host, user: Config.rdpUser) else {
-            print("Couldn't open Windows App. Install it: brew install --cask windows-app")
+            print("Couldn't open Windows App. Run winbar setup and it offers to install it, or do it yourself: "
+                  + DependencyCopy.byHand(.windowsApp))
             return 1
         }
         return 0
@@ -560,9 +673,9 @@ enum CLI {
 
     private static func config(_ parsed: Parsed) -> Int32 {
         guard parsed.positionals.isEmpty else {
-            Term.error("usage: winbar config [--vm NAME] [--host HOST] [--user USER] [--saved-pc NAME] "
-                       + "[--keep-bitlocker yes|no] [--no-visual-tweaks yes|no] [--autologon yes|no] "
-                       + "[--remote-desktop yes|no] [--winbar-tuning yes|no]")
+            Term.error("usage: winbar config [--vm NAME] [--forget NAME] [--host HOST] [--user USER] "
+                       + "[--saved-pc NAME] [--keep-bitlocker yes|no] [--no-visual-tweaks yes|no] "
+                       + "[--autologon yes|no] [--remote-desktop yes|no] [--winbar-tuning yes|no]")
             return 64
         }
         if let host = parsed.values["--host"], !host.isEmpty, !Config.isValidHostName(host) {
@@ -579,18 +692,42 @@ enum CLI {
             }
             switches[option] = on
         }
+        // Forgetting first, so `--forget X --vm X` means "start X afresh" rather than dropping the
+        // settings that were just chosen.
+        if let vm = parsed.values["--forget"] {
+            guard !vm.isEmpty else {
+                Term.error("winbar config: --forget needs the name of a VM")
+                return 64
+            }
+            let forgotten = Config.forget(vm)
+            if forgotten.isEmpty {
+                let known = Config.rememberedVMs()
+                print("Nothing was remembered about \(vm)."
+                      + (known.isEmpty ? "" : " Winbar remembers: \(known.joined(separator: ", "))."))
+            } else {
+                print("Forgot \(vm): \(forgotten.joined(separator: ", ")).")
+            }
+        }
         if let vm = parsed.values["--vm"] {
             if vm.isEmpty {
+                // No VM chosen, and nothing forgotten: choosing it again brings its settings back.
                 Config.vmName = nil
-            } else {
-                let cleared = Config.selectVM(vm)
-                if !cleared.isEmpty { print("Forgot what was remembered about the previous VM: \(cleared.joined(separator: ", ")).") }
+                Config.vmID = nil
+            } else if let previous = Config.selectVM(vm) {
+                print("Now looking after \(vm). What Winbar remembers about \(previous) is kept for it.")
             }
+        }
+        // Every setting below belongs to a VM, so there has to be one. They used to land in a single
+        // global set and become whichever VM was chosen next — which is what this release stops.
+        if Config.vmName == nil, !switches.isEmpty || ["--host", "--user", "--saved-pc"].contains(where: { parsed.values[$0] != nil }) {
+            Term.error("winbar config: no VM is chosen, so there is nothing to set these on. "
+                       + "Run winbar setup, or winbar config --vm <name> first.")
+            return 1
         }
         if let host = parsed.values["--host"] { Config.rdpHost = host }
         if let user = parsed.values["--user"] { Config.rdpUser = user }
         if let name = parsed.values["--saved-pc"] { Config.savedPCName = name }
-        // After --vm: switching VMs forgets these, and they belong to the VM being chosen.
+        // After --vm: they belong to the VM being chosen, not to the one being left.
         if let on = switches["--keep-bitlocker"] { Config.keepBitLocker = on }
         if let on = switches["--no-visual-tweaks"] { Config.noVisualTweaks = on }
         // The three create's checklist can turn off: "no" is what setup reports as off by choice.

@@ -15,7 +15,7 @@ enum SelfTest {
         }
         let vm = Config.vmName
         let process = VMProcesses.find(vm)
-        if let process { VMProcesses.cache(process) }
+        if let vm, let process { VMProcesses.cache(process, for: vm) }
         let mac = process?.mac ?? Config.vmMAC
         let ip = RDP.leasedIP(mac: mac)
         let rows: [(String, String)] = [

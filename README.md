@@ -59,7 +59,11 @@ differ, but every comparison was made like-for-like.
 ## Requirements
 
 - A Mac with **Apple silicon**, running **macOS 14 Sonoma** or later.
-- **UTM**, from `brew install --cask utm`, the Mac App Store or [getutm.app](https://mac.getutm.app).
+- **UTM**, the app that actually runs the VM. You don't have to install it first: `winbar setup`
+  and `winbar create` offer to install it for you — through Homebrew if you have it, otherwise
+  from UTM's own download, which Winbar checks is notarized by Apple and signed by UTM's
+  developer before it opens it. By hand: `brew install --cask utm`, the Mac App Store or
+  [getutm.app](https://mac.getutm.app).
 - A **Windows 11 ARM64** VM in UTM, using UTM's default **Shared Network** mode, with the
   **UTM Guest Tools** installed inside Windows (Winbar talks to Windows through them). No VM yet?
   `winbar create` makes one and installs Windows for you; you'll need a Windows 11 ARM64 ISO from
@@ -67,11 +71,18 @@ differ, but every comparison was made like-for-like.
   installer over (80 MB, once — see below).
 - **Windows 11 Pro**, Enterprise or Education. **Windows 11 Home can't accept Remote Desktop
   connections**, so it won't work.
-- **Windows App** (Microsoft's Remote Desktop app), from `brew install --cask windows-app` or the
-  Mac App Store.
+- **Not for 3D games or GPU work.** The VM has no graphics card: UTM gives Windows a display-only
+  adapter, so Direct3D falls back to Microsoft's software renderer and runs on the emulated CPU.
+  Office, browsers, developer tools and line-of-business software are fine. Games, CAD and anything
+  that expects a GPU are not.
+- **Windows App** (Microsoft's Remote Desktop app). `winbar setup` offers to install this one too:
+  with Homebrew, or by opening its Mac App Store page — Microsoft ships it through the App Store,
+  and an App Store app can't be installed for you, so the Get button stays yours to press. By
+  hand: `brew install --cask windows-app` or the Mac App Store.
 - About 15 minutes, and your Windows PIN or password handy. [Homebrew](https://brew.sh) is
-  optional — it's one of the two ways to install Winbar, and the easiest way to get the two apps
-  above.
+  optional — it's one of the two ways to install Winbar, and the way Winbar installs the two apps
+  above when you have it. Winbar never installs Homebrew itself: a package manager isn't its to
+  put on your Mac.
 
 ## Install
 
@@ -95,16 +106,38 @@ brew install --cask taggie313/tap/winbar
 The full name `taggie313/tap/winbar` says which tap the cask comes from; Homebrew adds that tap
 for you the first time, so there's nothing to do beforehand. It's not an official Homebrew cask.
 
-Either way, Winbar needs two other apps, which aren't installed for you because many people
-already have them from the App Store:
+Either way, Winbar needs two other apps: **UTM**, which runs the VM, and Microsoft's **Windows
+App**, which shows its desktop. You don't have to go and get them first — `winbar setup` checks for
+both and offers to install whichever is missing:
+
+- **With Homebrew**, it asks Homebrew to do it (`brew install --cask utm`,
+  `brew install --cask windows-app`) and shows Homebrew's own output as it goes. Windows App is an
+  installer package, so Homebrew asks for your Mac password; that prompt is Homebrew's. Winbar
+  never runs anything as an administrator.
+- **Without Homebrew**, it fetches UTM's own disk image, checks that Apple notarized it and that
+  UTM's developer signed it *before* opening it, and copies UTM to your Applications folder. For
+  Windows App it opens the Mac App Store page: Microsoft only ships it there, and nobody can press
+  Get for you.
+
+It always says what it will download, roughly how big it is and where from, and nothing is
+installed unless you say yes.
+
+Once UTM is installed, macOS asks whether Winbar (or your terminal app) may **control UTM** the
+first time it drives it — choose **Allow**; that's how Winbar starts, stops and reconfigures the
+VM. Until it's answered, UTM's command-line tool waits silently, so setup waits for it and says
+what to look for: the prompt can open behind other windows, and a Mac left locked never gets past
+it. Opening UTM once from your Applications folder first is the easiest way to get it in front of
+you. `winbar doctor`'s **H9 UTM answers Winbar** row says which state you're in.
+
+Prefer to do it yourself? The commands still work:
 
 ```sh
 brew install --cask utm windows-app      # skip any you already have
 ```
 
 Winbar asks GitHub once a day whether there is a newer release, and adds one menu item when there
-is. It never downloads or installs anything by itself, and says nothing at all when it can't reach
-GitHub. `winbar --version --check` asks on demand.
+is. It never downloads or installs an update by itself, and says nothing at all when it can't
+reach GitHub. `winbar --version --check` asks on demand.
 
 ## Creating a new Windows VM
 
@@ -131,7 +164,8 @@ from the network: Windows Setup itself runs offline.
 
 Winbar shows the plan as a checklist you can change, then asks for the Windows password twice.
 **The password is never a flag or an environment variable** — arguments are visible to every
-program on your Mac and end up in your shell history. Prefer a window? `winbar create --window`,
+program on your Mac and end up in your shell history. A Windows product key, if you have one, is
+optional and asked for the same way (`--product-key`). Prefer a window? `winbar create --window`,
 or **New Windows VM…** in the menu.
 
 ### The checklist
@@ -152,6 +186,7 @@ Rufus's "Windows User Experience" options, in Rufus's order, plus what Winbar ne
 | Turn on Remote Desktop, with NLA | on | `--no-remote-desktop` |
 | Install the UTM Guest Tools | always on | — (they carry the network driver and the guest agent) |
 | Apply Winbar's tuning | on | `--no-winbar-tuning` |
+| Use a Windows product key | off | `--product-key` turns it **on** (see below) |
 
 Windows' display language always comes from the ISO: other languages would have to be downloaded,
 and the install runs offline. `winbar create --help` lists every option, and `--dry-run` prints the
@@ -160,6 +195,32 @@ whole plan without creating anything.
 Four Rufus options are deliberately left out: the 'Windows CA 2023' bootloaders and SkuSiPolicy
 (both only matter with Secure Boot, which this VM doesn't have), S Mode (the Guest Tools couldn't
 install) and Windows To Go (a VM isn't a USB stick).
+
+### If you have a product key
+
+Without one — the default, and what Winbar has always done — Windows installs unactivated. It works,
+with a watermark and a few personalisation settings greyed out, and you can activate it whenever you
+like under **Settings > System > Activation**.
+
+Have a licence you want to use? `winbar create --product-key` asks for the key at a hidden prompt,
+after the password, and installs with it; in the window there's a **Product key** field under the
+edition. Type it with or without hyphens, in any case. For a scripted run, `--product-key-stdin`
+reads it from a pipe:
+
+```sh
+op read op://Private/windows/key | winbar create --yes --product-key-stdin
+```
+
+**The key is never a flag value**, for the same reason the password isn't: arguments are visible to
+every program on your Mac while the command runs, and end up in your shell history.
+
+Two things to know. First, **the key goes into Windows' answer file in plain text**. A product key
+has no scrambled form the way the account password does, so nothing hides it; what protects it is
+the setup disk itself, which is readable only by your Mac account, kept out of Time Machine, and
+deleted as soon as Windows has finished installing. Winbar keeps no other copy and never logs it.
+Second, Winbar can't tell which edition a key is for and doesn't guess: **Windows Setup refuses a
+key that isn't for the edition being installed** and asks for one on screen, so make sure the
+edition in the checklist matches your licence.
 
 ### About that password
 
@@ -265,7 +326,11 @@ You'll meet these in this order. Winbar opens the right window for each one.
    Search Privacy*.
 8. **Switch the VM to Shared Network**, if it uses another network mode (in UTM, with the VM
    stopped: *Edit > Network*).
-9. **Install Windows App**, if it isn't installed.
+9. **Install Windows App**, if it isn't installed. Setup offers to do it: with Homebrew if you
+   have it (Microsoft ships Windows App as an installer package, so Homebrew asks for your Mac
+   password — that prompt is Homebrew's, and Winbar never runs anything as an administrator),
+   otherwise by opening its Mac App Store page for you to press Get. It says what it will
+   download and how big it is first, and does nothing unless you say yes.
 10. **Save the PC in Windows App.** Setup offers to do this for you, and asks for your Windows
     password at a hidden prompt so it can hand it to Windows App. Windows App then keeps it in your
     login keychain, exactly as it would if you typed it in there; Winbar keeps no copy. For the
@@ -346,7 +411,7 @@ The menu has **Open Shared Folder** when there is one and **Share a Folder…** 
 `winbar setup` offers `~/Shared-with-Windows` once and takes no for an answer; `winbar doctor` shows
 the folder and the drive. Nobody needs one — doctor treats having none as a plain fact, not a problem.
 
-Two things are worth knowing, and Winbar says both rather than leaving you to find out:
+Three things are worth knowing, and Winbar says all three rather than leaving you to find out:
 
 - **The VM has to restart.** UTM hands the shared folder to Windows only at start-up, and it hands
   over the one it had at the *previous* start — so a change can take two restarts. Winbar asks
@@ -356,6 +421,21 @@ Two things are worth knowing, and Winbar says both rather than leaving you to fi
   with "A device attached to the system is not functioning"; the same files at
   `~/Shared-with-Windows` work in both directions. Winbar refuses a path with a space and suggests
   the hyphenated name.
+- **A folder set this way doesn't survive UTM restarting.** Setting it by script is all Winbar can
+  automate, and what UTM stores for it is a bookmark that lives only as long as the UTM that made
+  it: relaunch UTM and the drive comes back empty. Winbar restarts UTM for every display change, so
+  it writes the folder again on the way through, checks from inside Windows, and tells you when it
+  couldn't. **If you want one that simply stays, pick it in UTM itself:** shut the VM down and
+  choose a Shared Directory on its details screen. That one is a proper bookmark, and Winbar never
+  overwrites it — when a folder it didn't write stops working, `winbar share` says so and *offers*
+  to write it again, explaining that its rewrite is the weaker kind.
+
+There are two things that can go wrong and look identical from your desk — the folder is empty —
+so Winbar names them separately. Either the share itself isn't serving your folder, or the `Z:` in
+*your* Windows session is a stale handle while the share behind it is fine. A drive letter belongs
+to a logon session, and the Guest Tools map yours when you sign in, which can happen before the
+share is up. Winbar checks your own session, says which of the two it found, and maps the letter
+again when that is all that's wrong.
 
 It travels over WebDAV (`\\localhost@9843\DavWWWRoot`), which the UTM Guest Tools already set up —
 nothing new is installed in Windows. Fine for documents and small projects; slow for very large
@@ -380,6 +460,11 @@ reason not to, and tells you when it makes a choice.
 - **Automatic sign-in** keeps the password encrypted inside Windows. It does mean anyone who can
   open the VM's window on your Mac lands on the desktop, so the VM is as private as your Mac
   account is.
+- **A product key, if you give one, is plain text in the answer file.** There is no scrambled form
+  for a product key the way there is for the account password, so Winbar doesn't pretend there is:
+  what protects it is the setup disk, readable only by your Mac account, kept out of Time Machine,
+  and deleted as soon as Windows has finished installing. It is never logged, never in Winbar's
+  settings, and never taken as a flag or an environment variable.
 - **One certificate, trusted for one purpose.** Winbar gives Windows' Remote Desktop a
   self-signed certificate named for the address your Mac connects to (2048-bit RSA, valid for
   10 years; its private key can't be exported and never leaves the VM). On the Mac it trusts that

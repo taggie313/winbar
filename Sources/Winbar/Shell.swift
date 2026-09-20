@@ -8,11 +8,16 @@ struct WinbarError: Error, CustomStringConvertible {
     /// macOS refused to let this process control UTM (see `Automation`). Doctor and the menu turn it
     /// into a step the person can take instead of a dead end.
     let automationDenied: Bool
+    /// Nothing came back at all. Not the same as a refusal: on a Mac where the first Apple Event is
+    /// still waiting to be allowed, every request simply never answers (see `UTMFirstUse`), and that
+    /// has its own thing to say.
+    let timedOut: Bool
 
-    init(_ title: String, _ detail: String = "", automationDenied: Bool = false) {
+    init(_ title: String, _ detail: String = "", automationDenied: Bool = false, timedOut: Bool = false) {
         self.title = title
         self.detail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
         self.automationDenied = automationDenied
+        self.timedOut = timedOut
     }
 
     var description: String { detail.isEmpty ? title : "\(title): \(detail)" }
@@ -43,14 +48,39 @@ enum Automation {
         }
     }
 
-    /// Whether macOS would put its “… wants to control UTM” prompt on screen for the next Apple Event
-    /// this process sends to `bundleID`: it has never been asked about this pair. Asks TCC only, with
-    /// `askUserIfNeeded` false, so nothing is sent to the app and nothing is launched.
+    /// What macOS says about this process being allowed to control `bundleID`.
+    enum Consent: Equatable {
+        /// It has never been asked about this pair, so the next Apple Event raises the prompt.
+        case wouldPrompt
+        /// It has an answer on file — allowed or refused — or the target isn't running, which is
+        /// all it can say then (`procNotFound`).
+        case decided
+        /// It didn't answer. On a Mac whose Apple Event path to that app is already waiting on the
+        /// prompt, this is the usual answer, and it is a symptom rather than a missing fact.
+        case unknown
+    }
+
+    /// The bounded form, and the only one anything should call.
     ///
-    /// False once macOS has an answer, allowed or refused, and false when the target isn't running,
-    /// which is all this can say then (`procNotFound`). `winbar create` uses it to name what it is
-    /// waiting for while a scripting call blocks.
-    static func willPrompt(bundleID: String) -> Bool {
+    /// `AEDeterminePermissionToAutomateTarget` is documented to ask TCC and nothing else when it is
+    /// told not to prompt. It doesn't always come back: on a Mac where UTM had just been installed
+    /// and the first Apple Event to it was still waiting to be allowed, it sat in a semaphore for
+    /// twenty minutes and took `winbar doctor` with it — the row never returned, so no row after it
+    /// was ever printed. Nothing that can't answer may be allowed to end a run, so it is asked on
+    /// another thread and given a few seconds.
+    static func consent(bundleID: String, timeout: TimeInterval = 3) -> Consent {
+        guard let answered = withDeadline(timeout, { rawWillPrompt(bundleID: bundleID) }) else { return .unknown }
+        return answered ? .wouldPrompt : .decided
+    }
+
+    /// Whether the prompt is still to come. An unknown answer is not a yes.
+    static func willPrompt(bundleID: String, timeout: TimeInterval = 3) -> Bool {
+        consent(bundleID: bundleID, timeout: timeout) == .wouldPrompt
+    }
+
+    /// The call itself, which can block for as long as macOS likes. Safe to abandon: it reads, and
+    /// writes nothing anybody else looks at. Never call it directly — `consent` bounds it.
+    static func rawWillPrompt(bundleID: String) -> Bool {
         var target = AEAddressDesc()
         let id = Array(bundleID.utf8)
         let made = id.withUnsafeBufferPointer {
@@ -153,6 +183,35 @@ func pause(_ seconds: TimeInterval) {
 /// `DispatchQueue.main.sync` would deadlock.
 func onMain<T>(_ body: () -> T) -> T {
     Thread.isMainThread ? body() : DispatchQueue.main.sync(execute: body)
+}
+
+/// Runs `work` on another thread and stops waiting for it after `limit`; nil means it hadn't
+/// answered by then.
+///
+/// For the few macOS calls that have no timeout of their own and can block for ever (see
+/// `Automation.consent` for the one that proved it). A call that is given up on is *not* cancelled
+/// — there is no way to cancel it — so `work` must be something it is safe to abandon: it must not
+/// write to anything the caller goes on to use, and the thread it is on stays blocked until it
+/// returns or the process ends.
+func withDeadline<T>(_ limit: TimeInterval, _ work: @escaping () -> T) -> T? {
+    let box = Box<T>()
+    let done = DispatchSemaphore(value: 0)
+    DispatchQueue.global(qos: .userInitiated).async {
+        box.value = work()
+        done.signal()
+    }
+    guard done.wait(timeout: .now() + limit) == .success else { return nil }
+    return box.value
+}
+
+/// Somewhere for an answer to land that both threads may touch.
+private final class Box<T> {
+    private let lock = NSLock()
+    private var stored: T?
+    var value: T? {
+        get { lock.lock(); defer { lock.unlock() }; return stored }
+        set { lock.lock(); stored = newValue; lock.unlock() }
+    }
 }
 
 /// Re-runs `check` until it passes or `timeout` elapses. Blocking.

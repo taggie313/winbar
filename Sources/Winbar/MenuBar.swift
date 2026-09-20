@@ -169,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             running = process != nil
             rdpReady = nil
         }
-        if let process { VMProcesses.cache(process) }
+        if let name, let process { VMProcesses.cache(process, for: name) }
         consoleEnabled = process.map { !$0.headless } ?? Config.consoleEnabled ?? true
         render()
     }
@@ -377,7 +377,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .sorted { ($0.isWindows ? 0 : 1, $0.name) < ($1.isWindows ? 0 : 1, $1.name) }
         for vm in offered {
             let item = addItem(vm.name, #selector(chooseVM(_:)), to: chooseMenu)
-            item.representedObject = vm.name
+            item.representedObject = vm
         }
         if offered.isEmpty {
             let none = NSMenuItem(title: "UTM has no QEMU VMs", action: nil, keyEquivalent: "")
@@ -391,8 +391,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func chooseVM(_ sender: NSMenuItem) {
-        guard let name = sender.representedObject as? String else { return }
-        Config.selectVM(name)
+        // The whole VM as UTM listed it, for its id: settings are filed under that, so a VM renamed
+        // in UTM keeps what Winbar knows about it.
+        guard let vm = sender.representedObject as? VMInfo else { return }
+        Config.selectVM(vm.name, id: vm.id)
         refresh()
     }
 
@@ -497,14 +499,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 onMain { self?.confirm("Winbar couldn't check BitLocker", reason, button: "Continue") ?? false }
             },
             offerForceStop: offerForceStop)
-        background({
-            Reconfigure.apply(ConfigChanges(display: showing ? .headless : .console), to: vm, interaction)
+        background({ () -> (Result<ConfigChanges, WinbarError>, SharedFolder.Checked?) in
+            let result = Reconfigure.apply(ConfigChanges(display: showing ? .headless : .console), to: vm, interaction)
+            // A display change restarts UTM, which kills a shared folder set by script. Reconfigure
+            // wrote it again on the way through; this is where Windows is asked whether it took.
+            guard case .success(let done) = result, let folder = done.sharedFolder else { return (result, nil) }
+            return (result, try? SharedFolder.settle(folder, vm: vm, user: Config.rdpUser, interaction).get())
         }) { [weak self] result in
             guard let self else { return }
             self.end()
-            switch result {
+            switch result.0 {
             case .failure(let error):
                 self.fail("Couldn't change \(vm)'s display: \(error.title)", error.detail)
+                return
             case .success(let done) where done.display == nil:
                 // The menu's idea of the display was stale; Reconfigure has corrected it from UTM.
                 self.inform(showing ? "\(vm) is already headless" : "\(vm)'s console window is already on",
@@ -512,6 +519,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .success:
                 break
             }
+            // Silent when the folder came back: the display change is what was asked for. Said when
+            // it didn't, because the alternative is a dead Z: and no message.
+            guard let checked = result.1, checked.verification != .live else { return }
+            self.inform("\(vm)'s shared folder is empty in Windows now",
+                        SharedFolder.diedWhenUTMRestarted + " Choose the folder again from this menu, or run winbar "
+                            + "share in Terminal. " + SharedFolder.durableAdvice)
         }
     }
 
@@ -577,6 +590,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 switch checked.verification {
                 case .live:
                     NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                    // A drive letter belongs to a logon session: theirs can still be a dead handle.
+                    if let view = checked.view, SharedFolder.driveState(view).needsMapping {
+                        self.inform("\(vm) shares \(name), but its Windows drive letter is stale",
+                                    "The folder itself works. The drive letter in your Windows session lists nothing "
+                                        + "even after being mapped again — signing out of Windows and back in makes it afresh.")
+                    }
                 case .stale:
                     self.fail("\(vm) is set to share \(name), but Windows hasn't got it yet",
                               "Windows is given the folder UTM held at the start before this one. Restart \(vm) once more "
@@ -673,7 +692,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Fallback: works without Accessibility, but Windows App asks for the password.
     private func openOneOffConnection(host: String) {
         if !RDP.openOneOff(host: host, user: Config.rdpUser) {
-            fail("Couldn't open Windows App", "Install Windows App (brew install --cask windows-app), then try Connect again.")
+            fail("Couldn't open Windows App",
+                 "Run winbar setup in Terminal and it offers to install Windows App for you, or get it from the Mac App "
+                     + "Store. Then try Connect again.")
         }
     }
 

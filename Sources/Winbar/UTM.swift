@@ -179,6 +179,10 @@ enum UTM {
             if case .failure(let error) = quit() {
                 return .failure(WinbarError("UTM has to restart before \(vm) starts", owed + " " + error.detail))
             }
+            // The UTM that just quit held the bookmark behind any scripted shared folder, so write it
+            // again while the VM is still stopped — this is the last moment before it starts. Best
+            // effort: `winbar share` and doctor report what Windows ended up with.
+            _ = SharedFolder.reestablish(vm: vm)
             return .success(())
         }
     }
@@ -193,6 +197,42 @@ enum UTM {
     static func ctl(_ arguments: [String], input: Data? = nil, timeout: TimeInterval = 60) -> CommandResult {
         ensureRunning()
         return Shell.run(utmctl, arguments, input: input, timeout: timeout)
+    }
+
+    // MARK: Whether this process can drive UTM at all
+
+    /// What `utmctl` did when it was asked the cheapest question there is.
+    enum CtlAnswer: Equatable {
+        case answered
+        /// macOS has refused this process the right to control UTM.
+        case denied
+        /// It started and said nothing until the deadline. The first call after UTM is installed or
+        /// reinstalled is the one that does this: every utmctl call is an Apple Event, and macOS
+        /// holds the first one until somebody answers "… wants to control UTM" — a prompt that can
+        /// open behind another window, and that a Mac nobody is sitting at never gets.
+        case silent(seconds: Int)
+        /// It answered, with a failure of its own.
+        case failed(String)
+
+        var isAnswered: Bool { self == .answered }
+    }
+
+    /// Pure, so every verdict can be told apart without UTM.
+    static func classifyCtl(status: Int32, output: String, timedOut: Bool, seconds: Int) -> CtlAnswer {
+        if Automation.isDenied(output) { return .denied }
+        if timedOut { return .silent(seconds: seconds) }
+        if status == 0 { return .answered }
+        return .failed(output.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Asks utmctl to list the VMs — which changes nothing — and says what came back. Blocking, and
+    /// bounded, because the answer this exists for is "nothing at all".
+    static func ctlAnswers(timeout: TimeInterval = 20) -> CtlAnswer {
+        ensureRunning()
+        let result = Shell.run(utmctl, ["list"], timeout: timeout)
+        Debug.log("ctlAnswers: status=\(result.status) timedOut=\(result.timedOut) output=\(result.output.prefix(200))")
+        return classifyCtl(status: result.status, output: result.output, timedOut: result.timedOut,
+                           seconds: Int(timeout))
     }
 
     // MARK: Lifecycle
@@ -236,9 +276,7 @@ enum UTM {
                                             + (crashReport(since: started).map { "Crash report: \($0)" }
                                                ?? "Look for UTM-*.ips in ~/Library/Logs/DiagnosticReports.")))
         }
-        if shouldCacheSettings(vm: vm, selected: Config.vmName, asked: cacheSettings) {
-            VMProcesses.cache(settled)
-        }
+        if cacheSettings { VMProcesses.cache(settled, for: vm) }
         return .success(settled)
     }
 

@@ -486,6 +486,62 @@ struct CreateLogTests {
         #expect(!stateJSON.contains("password"))
     }
 
+    /// The product key is in the answer file as plain text — that is the whole point, and the only place it
+    /// can be. Everything else the job writes or says is checked for it here: the state, the log, the note
+    /// the job raises about the key, and the plan, which has no field to put one in.
+    @Test("Nothing but the answer file ever holds the product key")
+    func productKeyStaysInTheAnswerFile() throws {
+        let canary = "BCDFG-HJKMN-PQRTV-WXY23-46789"       // shaped like a key, and nobody's
+        #expect(CreateChoices.normalizedProductKey(canary) == canary)
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let plan = testPlan()
+        let files = try AnswerFile.render(plan: plan, image: testImage(), password: "Winbar-Test-Pa55!",
+                                          productKey: canary)
+        for file in files {
+            try file.contents.write(to: directory.appendingPathComponent(file.name))
+        }
+
+        var state = testState(plan: plan)
+        state.messages = [CreateMessage(code: "N_PRODUCT_KEY", text: CreateCopy.nProductKey, at: testMoment())]
+        try CreateJob.writeState(state, in: directory)
+        #expect(state.usedProductKey)
+
+        let log = CreateLog(vmName: plan.vmName, directory: directory)
+        log.write("N_PRODUCT_KEY: \(CreateCopy.nProductKey)")
+        log.write("stage 3/10 media: \(CreateStage.media.runningTitle)")
+
+        let answerFile = AnswerFile.answerFileName.lowercased()
+        for name in try FileManager.default.contentsOfDirectory(atPath: directory.path) {
+            let text = String(decoding: try Data(contentsOf: directory.appendingPathComponent(name)), as: UTF8.self)
+            if name.lowercased() == answerFile {
+                #expect(text.contains("<Key>\(canary)</Key>"), "the answer file should carry the key")
+            } else {
+                #expect(!text.contains(canary), "\(name) holds the product key")
+            }
+        }
+        let planJSON = String(decoding: try JSONEncoder.job.encode(plan), as: UTF8.self).lowercased()
+        #expect(!planJSON.contains("productkey") && !planJSON.contains("product_key"))
+    }
+
+    /// The copy that says a key was used never says which. Both front-ends show these.
+    @Test("The product-key copy carries no key")
+    func productKeyCopyCarriesNoKey() {
+        for text in [CreateCopy.nProductKey, CreateCopy.nActivating, CreateCopy.productKeyTooltip,
+                     CreateCopy.beforeProductKey, CreateCopy.productKeyWhyPrompt,
+                     ChoiceProblem.productKeyShape.description,
+                     Checklist.productKeyLine(wanted: true), Checklist.productKeyLine(wanted: false)] {
+            // Nothing in the deck is shaped like a key: no five-groups-of-five anywhere.
+            let groups = text.split(whereSeparator: { $0 == " " || $0 == "\n" })
+                .filter { CreateChoices.normalizedProductKey(String($0)) != nil }
+            #expect(groups.isEmpty, "\(text)")
+        }
+        #expect(CreateCopy.nProductKey.contains("plain text"))
+        #expect(CreateCopy.nProductKey.contains("Time Machine"))
+        #expect(CreateCopy.nProductKey.contains("deletes it"))
+    }
+
     @Test("The arguments create-vm is given carry no secret")
     func vmArgumentsAreHarmless() {
         // What CreateRun passes to the script: the name, two paths and three numbers.

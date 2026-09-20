@@ -185,9 +185,14 @@ enum VMProcesses {
 
     /// Remembers what the running process says, so the menu knows it while the VM is off.
     ///
+    /// Only for the VM Winbar looks after, which is what `vm` is checked against: these keys are what
+    /// `winbar connect`, the DHCP lease lookup and the menu work from, so another VM's MAC written
+    /// over them makes Winbar describe — and act on — the wrong VM.
+    ///
     /// A new MAC under the same name means a different VM (deleted and recreated, say), so what was
     /// known about the old one's BitLocker no longer applies.
-    static func cache(_ process: VMProcess) {
+    static func cache(_ process: VMProcess, for vm: String) {
+        guard UTM.shouldCacheSettings(vm: vm, selected: Config.vmName, asked: true) else { return }
         if let mac = process.mac, mac != Config.vmMAC {
             if Config.vmMAC != nil { Config.forgetBitLocker() }
             Config.vmMAC = mac
