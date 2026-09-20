@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Winbar</string>
+	<key>CFBundleExecutable</key>
+	<string>Winbar</string>
+	<key>CFBundleIdentifier</key>
+	<string>net.elusive.winbar</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Winbar</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<!-- Both versions are placeholders: scripts/build-app.sh stamps the VERSION file into them. -->
+	<key>CFBundleShortVersionString</key>
+	<string>0.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>0.0.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Winbar asks UTM to start, stop and reconfigure your Windows virtual machine.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Winbar checks whether your Windows virtual machine is ready for Remote Desktop.</string>
+</dict>
+</plist>

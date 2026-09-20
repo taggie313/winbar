@@ -1,0 +1,6 @@
+.DS_Store
+# SwiftPM build products and the assembled app; release.sh requires a clean tree
+.build/
+dist/
+*.xcodeproj/
+.swiftpm/

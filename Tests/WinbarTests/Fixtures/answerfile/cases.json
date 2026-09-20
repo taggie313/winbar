@@ -1,0 +1,2832 @@
+{
+ "cases": [
+  {
+   "effectiveOptions": {
+    "autologon": 1,
+    "bypass_requirements": 1,
+    "computer_name": 1,
+    "guest_tools": 1,
+    "local_account": 1,
+    "no_bitlocker": 1,
+    "no_online_account": 1,
+    "no_visual_tweaks": 0,
+    "qol": 1,
+    "regional_from_mac": 1,
+    "remote_desktop": 1,
+    "skip_privacy": 1,
+    "time_zone": 1,
+    "winbar_tuning": 1
+   },
+   "effectiveValues": {
+    "COMPUTER_NAME": "Windows-11",
+    "DISPLAY_NAME": "alex",
+    "EDITION_ID": "Professional",
+    "IMAGE_INDEX": "3",
+    "INPUT_LOCALE": "0409:00000409",
+    "PE_LANGUAGE": "en-US",
+    "SYSTEM_LOCALE": "en-US",
+    "TIME_ZONE": "Eastern Standard Time",
+    "UI_LANGUAGE": "en-US",
+    "USERNAME": "alex",
+    "USER_LOCALE": "en-US"
+   },
+   "name": "default",
+   "options": {
+    "autologon": 1,
+    "bypass_requirements": 1,
+    "computer_name": 1,
+    "guest_tools": 1,
+    "local_account": 1,
+    "no_bitlocker": 1,
+    "no_online_account": 1,
+    "qol": 1,
+    "regional_from_mac": 1,
+    "remote_desktop": 1,
+    "skip_privacy": 1,
+    "winbar_tuning": 1
+   },
+   "password": "Winbar-Test-Pa55!",
+   "summary": "14853 B | RunSync 10 | FirstLogon 17 | launcher 992 ch | windowsPE: International-Core-WinPE, Setup ; specialize: Shell-Setup, SecureStartup-FilterDriver, EnhancedStorage-Adm, TerminalServices-LocalSessionManager, TerminalServices-RDP-WinStationExtensions, Networking-MPSSVC-Svc, Deployment ; oobeSystem: International-Core, Shell-Setup",
+   "values": {},
+   "warnings": []
+  },
+  {
+   "effectiveOptions": {
+    "autologon": 0,
+    "bypass_requirements": 1,
+    "computer_name": 1,
+    "guest_tools": 1,
+    "local_account": 1,
+    "no_bitlocker": 0,
+    "no_online_account": 0,
+    "no_visual_tweaks": 0,
+    "qol": 0,
+    "regional_from_mac": 0,
+    "remote_desktop": 0,
+    "skip_privacy": 0,
+    "time_zone": 0,
+    "winbar_tuning": 0
+   },
+   "effectiveValues": {
+    "COMPUTER_NAME": "Windows-11",
+    "DISPLAY_NAME": "alex",
+    "EDITION_ID": "Professional",
+    "IMAGE_INDEX": "3",
+    "INPUT_LOCALE": "en-US",
+    "PE_LANGUAGE": "en-US",
+    "SYSTEM_LOCALE": "en-US",
+    "TIME_ZONE": "",
+    "UI_LANGUAGE": "en-US",
+    "USERNAME": "alex",
+    "USER_LOCALE": "en-US"
+   },
+   "name": "all-off",
+   "options": {
+    "autologon": 0,
+    "bypass_requirements": 1,
+    "computer_name": 1,
+    "guest_tools": 1,
+    "local_account": 1,
+    "no_bitlocker": 0,
+    "no_online_account": 0,
+    "qol": 0,
+    "regional_from_mac": 0,
+    "remote_desktop": 0,
+    "skip_privacy": 0,
+    "winbar_tuning": 0
+   },
+   "password": "Winbar-Test-Pa55!",
+   "summary": "6903 B | RunSync 3 | FirstLogon 2 | launcher 945 ch | windowsPE: International-Core-WinPE, Setup ; specialize: Shell-Setup ; oobeSystem: International-Core, Shell-Setup",
+   "values": {},
+   "warnings": []
+  },
+  {
+   "effectiveOptions": {
+    "autologon": 1,
+    "bypass_requirements": 1,
+    "computer_name": 1,
+    "guest_tools": 1,
+    "local_account": 1,
+    "no_bitlocker": 1,
+    "no_online_account": 1,
+    "no_visual_tweaks": 0,
+    "qol": 1,
+    "regional_from_mac": 1,
+    "remote_desktop": 0,
+    "skip_privacy": 1,
+    "time_zone": 1,
+    "winbar_tuning": 1
+   },
+   "effectiveValues": {
+    "COMPUTER_NAME": "Windows-11",
+    "DISPLAY_NAME": "alex",
+    "EDITION_ID": "Core",
+    "IMAGE_INDEX": "1",
+    "INPUT_LOCALE": "0409:00000409",
+    "PE_LANGUAGE": "en-US",
+    "SYSTEM_LOCALE": "en-US",
+    "TIME_ZONE": "Eastern Standard Time",
+    "UI_LANGUAGE": "en-US",
+    "USERNAME": "alex",
+    "USER_LOCALE": "en-US"
+   },
+   "name": "home-edition",
+   "options": {
+    "autologon": 1,
+    "bypass_requirements": 1,
+    "computer_name": 1,
+    "guest_tools": 1,
+    "local_account": 1,
+    "no_bitlocker": 1,
+    "no_online_account": 1,
+    "qol": 1,
+    "regional_from_mac": 1,
+    "remote_desktop": 1,
+    "skip_privacy": 1,
+    "winbar_tuning": 1
+   },
+   "password": "Winbar-Test-Pa55!",
+   "summary": "13869 B | RunSync 10 | FirstLogon 17 | launcher 977 ch | windowsPE: International-Core-WinPE, Setup ; specialize: Shell-Setup, SecureStartup-FilterDriver, EnhancedStorage-Adm, Deployment ; oobeSystem: International-Core, Shell-Setup",
+   "values": {
+    "EDITION_ID": "Core",
+    "IMAGE_INDEX": "1"
+   },
+   "warnings": [
+    "Windows Home cannot host Remote Desktop: remote_desktop turned off (pick Pro to keep it)"
+   ]
+  },
+  {
+   "effectiveOptions": {
+    "autologon": 1,
+    "bypass_requirements": 1,
+    "computer_name": 1,
+    "guest_tools": 1,
+    "local_account": 1,
+    "no_bitlocker": 1,
+    "no_online_account": 1,
+    "no_visual_tweaks": 1,
+    "qol": 1,
+    "regional_from_mac": 1,
+    "remote_desktop": 1,
+    "skip_privacy": 1,
+    "time_zone": 1,
+    "winbar_tuning": 1
+   },
+   "effectiveValues": {
+    "COMPUTER_NAME": "Windows-11",
+    "DISPLAY_NAME": "alex",
+    "EDITION_ID": "Professional",
+    "IMAGE_INDEX": "3",
+    "INPUT_LOCALE": "0409:00000409",
+    "PE_LANGUAGE": "en-US",
+    "SYSTEM_LOCALE": "en-US",
+    "TIME_ZONE": "Eastern Standard Time",
+    "UI_LANGUAGE": "en-US",
+    "USERNAME": "alex",
+    "USER_LOCALE": "en-US"
+   },
+   "name": "no-visual-tweaks",
+   "options": {
+    "autologon": 1,
+    "bypass_requirements": 1,
+    "computer_name": 1,
+    "guest_tools": 1,
+    "local_account": 1,
+    "no_bitlocker": 1,
+    "no_online_account": 1,
+    "no_visual_tweaks": 1,
+    "qol": 1,
+    "regional_from_mac": 1,
+    "remote_desktop": 1,
+    "skip_privacy": 1,
+    "winbar_tuning": 1
+   },
+   "password": "Winbar-Test-Pa55!",
+   "summary": "14869 B | RunSync 10 | FirstLogon 17 | launcher 1008 ch | windowsPE: International-Core-WinPE, Setup ; specialize: Shell-Setup, SecureStartup-FilterDriver, EnhancedStorage-Adm, TerminalServices-LocalSessionManager, TerminalServices-RDP-WinStationExtensions, Networking-MPSSVC-Svc, Deployment ; oobeSystem: International-Core, Shell-Setup",
+   "values": {},
+   "warnings": []
+  },
+  {
+   "effectiveOptions": {
+    "autologon": 1,
+    "bypass_requirements": 1,
+    "computer_name": 1,
+    "guest_tools": 1,
+    "local_account": 1,
+    "no_bitlocker": 1,
+    "no_online_account": 1,
+    "no_visual_tweaks": 0,
+    "qol": 1,
+    "regional_from_mac": 1,
+    "remote_desktop": 1,
+    "skip_privacy": 1,
+    "time_zone": 0,
+    "winbar_tuning": 1
+   },
+   "effectiveValues": {
+    "COMPUTER_NAME": "Windows-11",
+    "DISPLAY_NAME": "alex",
+    "EDITION_ID": "Professional",
+    "IMAGE_INDEX": "3",
+    "INPUT_LOCALE": "en-US",
+    "PE_LANGUAGE": "en-US",
+    "SYSTEM_LOCALE": "en-US",
+    "TIME_ZONE": "",
+    "UI_LANGUAGE": "en-US",
+    "USERNAME": "alex",
+    "USER_LOCALE": "en-US"
+   },
+   "name": "blank-regional",
+   "options": {
+    "autologon": 1,
+    "bypass_requirements": 1,
+    "computer_name": 1,
+    "guest_tools": 1,
+    "local_account": 1,
+    "no_bitlocker": 1,
+    "no_online_account": 1,
+    "qol": 1,
+    "regional_from_mac": 1,
+    "remote_desktop": 1,
+    "skip_privacy": 1,
+    "winbar_tuning": 1
+   },
+   "password": "Winbar-Test-Pa55!",
+   "summary": "14796 B | RunSync 10 | FirstLogon 17 | launcher 992 ch | windowsPE: International-Core-WinPE, Setup ; specialize: Shell-Setup, SecureStartup-FilterDriver, EnhancedStorage-Adm, TerminalServices-LocalSessionManager, TerminalServices-RDP-WinStationExtensions, Networking-MPSSVC-Svc, Deployment ; oobeSystem: International-Core, Shell-Setup",
+   "values": {
+    "INPUT_LOCALE": "",
+    "SYSTEM_LOCALE": "",
+    "TIME_ZONE": "",
+    "USER_LOCALE": ""
+   },
+   "warnings": []
+  },
+  {
+   "effectiveOptions": {
+    "autologon": 1,
+    "bypass_requirements": 1,
+    "computer_name": 0,
+    "guest_tools": 1,
+    "local_account": 1,
+    "no_bitlocker": 1,
+    "no_online_account": 1,
+    "no_visual_tweaks": 0,
+    "qol": 1,
+    "regional_from_mac": 1,
+    "remote_desktop": 1,
+    "skip_privacy": 1,
+    "time_zone": 1,
+    "winbar_tuning": 1
+   },
+   "effectiveValues": {
+    "COMPUTER_NAME": "",
+    "DISPLAY_NAME": "alex",
+    "EDITION_ID": "Professional",
+    "IMAGE_INDEX": "3",
+    "INPUT_LOCALE": "0409:00000409",
+    "PE_LANGUAGE": "en-US",
+    "SYSTEM_LOCALE": "en-US",
+    "TIME_ZONE": "Eastern Standard Time",
+    "UI_LANGUAGE": "en-US",
+    "USERNAME": "alex",
+    "USER_LOCALE": "en-US"
+   },
+   "name": "blank-computer-name",
+   "options": {
+    "autologon": 1,
+    "bypass_requirements": 1,
+    "computer_name": 1,
+    "guest_tools": 1,
+    "local_account": 1,
+    "no_bitlocker": 1,
+    "no_online_account": 1,
+    "qol": 1,
+    "regional_from_mac": 1,
+    "remote_desktop": 1,
+    "skip_privacy": 1,
+    "winbar_tuning": 1
+   },
+   "password": "Winbar-Test-Pa55!",
+   "summary": "14844 B | RunSync 10 | FirstLogon 17 | launcher 992 ch | windowsPE: International-Core-WinPE, Setup ; specialize: Shell-Setup, SecureStartup-FilterDriver, EnhancedStorage-Adm, TerminalServices-LocalSessionManager, TerminalServices-RDP-WinStationExtensions, Networking-MPSSVC-Svc, Deployment ; oobeSystem: International-Core, Shell-Setup",
+   "values": {
+    "COMPUTER_NAME": ""
+   },
+   "warnings": []
+  },
+  {
+   "effectiveOptions": {
+    "autologon": 1,
+    "bypass_requirements": 1,
+    "computer_name": 1,
+    "guest_tools": 1,
+    "local_account": 1,
+    "no_bitlocker": 1,
+    "no_online_account": 1,
+    "no_visual_tweaks": 0,
+    "qol": 1,
+    "regional_from_mac": 1,
+    "remote_desktop": 1,
+    "skip_privacy": 1,
+    "time_zone": 1,
+    "winbar_tuning": 1
+   },
+   "effectiveValues": {
+    "COMPUTER_NAME": "Joses-Win-11-AR",
+    "DISPLAY_NAME": "José <\"O'Brien\"> & Co",
+    "EDITION_ID": "Professional",
+    "IMAGE_INDEX": "3",
+    "INPUT_LOCALE": "040a:0000040a",
+    "PE_LANGUAGE": "en-US",
+    "SYSTEM_LOCALE": "es-ES",
+    "TIME_ZONE": "Romance Standard Time",
+    "UI_LANGUAGE": "en-US",
+    "USERNAME": "O'Brien & Co",
+    "USER_LOCALE": "es-ES"
+   },
+   "name": "odd-values",
+   "options": {
+    "autologon": 1,
+    "bypass_requirements": 1,
+    "computer_name": 1,
+    "guest_tools": 1,
+    "local_account": 1,
+    "no_bitlocker": 1,
+    "no_online_account": 1,
+    "qol": 1,
+    "regional_from_mac": 1,
+    "remote_desktop": 1,
+    "skip_privacy": 1,
+    "winbar_tuning": 1
+   },
+   "password": "dummy Pa55 & <w0rd> \"q\" 'ü'",
+   "summary": "14990 B | RunSync 10 | FirstLogon 17 | launcher 992 ch | windowsPE: International-Core-WinPE, Setup ; specialize: Shell-Setup, SecureStartup-FilterDriver, EnhancedStorage-Adm, TerminalServices-LocalSessionManager, TerminalServices-RDP-WinStationExtensions, Networking-MPSSVC-Svc, Deployment ; oobeSystem: International-Core, Shell-Setup",
+   "values": {
+    "COMPUTER_NAME": "Joses-Win-11-AR",
+    "DISPLAY_NAME": "José <\"O'Brien\"> & Co",
+    "INPUT_LOCALE": "040a:0000040a",
+    "SYSTEM_LOCALE": "es-ES",
+    "TIME_ZONE": "Romance Standard Time",
+    "USERNAME": "O'Brien & Co",
+    "USER_LOCALE": "es-ES"
+   },
+   "warnings": []
+  }
+ ],
+ "computerNames": [
+  {
+   "name": "Windows-11",
+   "user": "alex",
+   "vm": "Windows 11"
+  },
+  {
+   "name": "Alexs-Work-PC",
+   "user": "alex",
+   "vm": "Alex's Work PC"
+  },
+  {
+   "name": "Windows-11-Pro",
+   "user": "alex",
+   "vm": "Windows 11 Pro for Testing"
+  },
+  {
+   "name": "Windows-VM",
+   "user": "alex",
+   "vm": "ウィンドウズ"
+  },
+  {
+   "name": "Joses-Win-11-AR",
+   "user": "O'Brien & Co",
+   "vm": "José's Win 11 (ARM)"
+  },
+  {
+   "name": "Cafe-Buro",
+   "user": "alex",
+   "vm": "Café Büro"
+  },
+  {
+   "name": "Win-Box",
+   "user": "alex",
+   "vm": "Win×Box"
+  },
+  {
+   "name": "Windows-VM",
+   "user": "alex",
+   "vm": "   "
+  },
+  {
+   "name": "VM-2024",
+   "user": "alex",
+   "vm": "2024"
+  },
+  {
+   "name": "VM-112233445566",
+   "user": "alex",
+   "vm": "112233445566778899"
+  },
+  {
+   "name": "Alexs-Mac",
+   "user": "alex",
+   "vm": "Alex’s Mac"
+  },
+  {
+   "name": "alex-PC",
+   "user": "alex",
+   "vm": "alex"
+  },
+  {
+   "name": "Windows-VM-PC",
+   "user": "windows-vm",
+   "vm": "Windows-VM"
+  },
+  {
+   "name": "Windows-11-P-PC",
+   "user": "Windows-11-Pro",
+   "vm": "Windows 11 Pro"
+  },
+  {
+   "name": "Windows-VM",
+   "user": "x",
+   "vm": "--- ---"
+  },
+  {
+   "name": "Win-11",
+   "user": "alex",
+   "vm": "Ｗｉｎ 11"
+  },
+  {
+   "name": "aaaaaaaaaaaaaaa",
+   "user": "alex",
+   "vm": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ ],
+ "dummyValues": {
+  "COMPUTER_NAME": "Windows-11",
+  "DISPLAY_NAME": "",
+  "EDITION_ID": "Professional",
+  "IMAGE_INDEX": "3",
+  "INPUT_LOCALE": "0409:00000409",
+  "PE_LANGUAGE": "en-US",
+  "SYSTEM_LOCALE": "en-US",
+  "TIME_ZONE": "Eastern Standard Time",
+  "UI_LANGUAGE": "en-US",
+  "USERNAME": "alex",
+  "USER_LOCALE": "en-US"
+ },
+ "hostilePassword": "dummy Pa55 & <w0rd> \"q\" 'ü'",
+ "matrix": [
+  {
+   "bits": "00000000",
+   "fnv": "c56b36c24715f4d8",
+   "name": "opts-00000000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00000001",
+   "fnv": "f174d19ecbd1633e",
+   "name": "opts-00000001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00000001",
+   "fnv": "ef3c06be28f0ee9b",
+   "name": "opts-00000001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00000010",
+   "fnv": "bbf19f8a89e3ea3f",
+   "name": "opts-00000010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00000011",
+   "fnv": "6a998f5749ffe1e5",
+   "name": "opts-00000011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00000011",
+   "fnv": "950bc3e68726e904",
+   "name": "opts-00000011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00000100",
+   "fnv": "e3a5003397ca57ed",
+   "name": "opts-00000100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00000101",
+   "fnv": "f1a2beab686be94f",
+   "name": "opts-00000101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00000101",
+   "fnv": "59fbc1906148a1fa",
+   "name": "opts-00000101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00000110",
+   "fnv": "ec79f2c481ad6e40",
+   "name": "opts-00000110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00000111",
+   "fnv": "8ac89c0604304c06",
+   "name": "opts-00000111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00000111",
+   "fnv": "36165d8e2e343aa3",
+   "name": "opts-00000111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00001000",
+   "fnv": "33bda0e050330d47",
+   "name": "opts-00001000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00001001",
+   "fnv": "0afa94fba5fc5aed",
+   "name": "opts-00001001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00001001",
+   "fnv": "d1d7674ba8162d6c",
+   "name": "opts-00001001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00001010",
+   "fnv": "7ea3517cd2284672",
+   "name": "opts-00001010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00001011",
+   "fnv": "c8b3bc5a9fd9cd3c",
+   "name": "opts-00001011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00001011",
+   "fnv": "8f1f99294f84fabd",
+   "name": "opts-00001011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00001100",
+   "fnv": "974ca83d970e0588",
+   "name": "opts-00001100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00001101",
+   "fnv": "15d1baf236e3a6ee",
+   "name": "opts-00001101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00001101",
+   "fnv": "6cda4750de63ae0b",
+   "name": "opts-00001101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00001110",
+   "fnv": "6ad49097cad4a60f",
+   "name": "opts-00001110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00001111",
+   "fnv": "7587fd679ec16635",
+   "name": "opts-00001111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00001111",
+   "fnv": "e50f6fcecf5fc294",
+   "name": "opts-00001111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00010000",
+   "fnv": "b1cfe0761fd32c3c",
+   "name": "opts-00010000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00010001",
+   "fnv": "ede66fe0aa683ee2",
+   "name": "opts-00010001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00010001",
+   "fnv": "c11174e96885c2d7",
+   "name": "opts-00010001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00010010",
+   "fnv": "9b3aadc61e24fa45",
+   "name": "opts-00010010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00010011",
+   "fnv": "10d7b7c5f61caf47",
+   "name": "opts-00010011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00010011",
+   "fnv": "8f25bebe9fcd4032",
+   "name": "opts-00010011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00010100",
+   "fnv": "0cff4d0acc0b7ee5",
+   "name": "opts-00010100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00010101",
+   "fnv": "77d640442e907627",
+   "name": "opts-00010101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00010101",
+   "fnv": "0fe224bd38bcdc52",
+   "name": "opts-00010101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00010110",
+   "fnv": "d7ddd2d1c2208c52",
+   "name": "opts-00010110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00010111",
+   "fnv": "e525e7fa5030d75c",
+   "name": "opts-00010111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00010111",
+   "fnv": "f1fe2275a44f2d9d",
+   "name": "opts-00010111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00011000",
+   "fnv": "9d90315e47f0288f",
+   "name": "opts-00011000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00011001",
+   "fnv": "4fcc0d6f888638b5",
+   "name": "opts-00011001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00011001",
+   "fnv": "3ae0fc8062953514",
+   "name": "opts-00011001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00011010",
+   "fnv": "bcff2c30cf26eb14",
+   "name": "opts-00011010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00011011",
+   "fnv": "2b9701448809713a",
+   "name": "opts-00011011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00011011",
+   "fnv": "2e7346f927ba59ef",
+   "name": "opts-00011011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00011100",
+   "fnv": "2a74f07adaf2eee4",
+   "name": "opts-00011100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00011101",
+   "fnv": "d87703c7802b2c0a",
+   "name": "opts-00011101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00011101",
+   "fnv": "217f7a0894d2437f",
+   "name": "opts-00011101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00011110",
+   "fnv": "9cedd718b682a23d",
+   "name": "opts-00011110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00011111",
+   "fnv": "05bd181a4389f11f",
+   "name": "opts-00011111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00011111",
+   "fnv": "7ade7527ad87b7ca",
+   "name": "opts-00011111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00100000",
+   "fnv": "24de7d76e8bd2709",
+   "name": "opts-00100000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00100001",
+   "fnv": "975b71af185efd6b",
+   "name": "opts-00100001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00100001",
+   "fnv": "a67331a6c1830e5e",
+   "name": "opts-00100001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00100010",
+   "fnv": "a52d9f38b77df81a",
+   "name": "opts-00100010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00100011",
+   "fnv": "b2cf0cb7644ecae4",
+   "name": "opts-00100011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00100011",
+   "fnv": "079611682c907865",
+   "name": "opts-00100011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00100100",
+   "fnv": "77fc693e14b74e9a",
+   "name": "opts-00100100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00100101",
+   "fnv": "c8c474c3bd33f164",
+   "name": "opts-00100101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00100101",
+   "fnv": "82718587e2db3ee5",
+   "name": "opts-00100101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00100110",
+   "fnv": "afb7227ec7f96807",
+   "name": "opts-00100110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00100111",
+   "fnv": "40c847ace1f734ad",
+   "name": "opts-00100111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00100111",
+   "fnv": "fcda0e24609e982c",
+   "name": "opts-00100111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00101000",
+   "fnv": "0dd8dcc2a1a36ce0",
+   "name": "opts-00101000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00101001",
+   "fnv": "c4f9d15f49a9bee6",
+   "name": "opts-00101001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00101001",
+   "fnv": "883def4254ff6b43",
+   "name": "opts-00101001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00101010",
+   "fnv": "26cc562c64d74a85",
+   "name": "opts-00101010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00101011",
+   "fnv": "76486290affaef87",
+   "name": "opts-00101011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00101011",
+   "fnv": "7fa9994a73d7f172",
+   "name": "opts-00101011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00101100",
+   "fnv": "5c29c63069184185",
+   "name": "opts-00101100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00101101",
+   "fnv": "f1e92d9c9cc0c687",
+   "name": "opts-00101101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00101101",
+   "fnv": "084658b3c13b8872",
+   "name": "opts-00101101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00101110",
+   "fnv": "1fa9af8e4202e0ae",
+   "name": "opts-00101110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00101111",
+   "fnv": "7f3187171867c4e8",
+   "name": "opts-00101111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00101111",
+   "fnv": "f324a02e4c561571",
+   "name": "opts-00101111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00110000",
+   "fnv": "3b27d685a0088bc3",
+   "name": "opts-00110000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00110001",
+   "fnv": "343aa13c4d8134e9",
+   "name": "opts-00110001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00110001",
+   "fnv": "4b683ff7aeea3230",
+   "name": "opts-00110001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00110010",
+   "fnv": "f222fa567fee202e",
+   "name": "opts-00110010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00110011",
+   "fnv": "6270c7685c95f468",
+   "name": "opts-00110011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00110011",
+   "fnv": "11f03485560424f1",
+   "name": "opts-00110011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00110100",
+   "fnv": "1171d34d8537fc08",
+   "name": "opts-00110100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00110101",
+   "fnv": "1d530a262d0d6d6e",
+   "name": "opts-00110101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00110101",
+   "fnv": "7f9021bf121b148b",
+   "name": "opts-00110101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00110110",
+   "fnv": "229c5003616ff76f",
+   "name": "opts-00110110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00110111",
+   "fnv": "fc00a4c3041ca855",
+   "name": "opts-00110111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00110111",
+   "fnv": "90b92fc767d27474",
+   "name": "opts-00110111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00111000",
+   "fnv": "1fc2948dbfdf76c2",
+   "name": "opts-00111000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00111001",
+   "fnv": "699997fe5e67664c",
+   "name": "opts-00111001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00111001",
+   "fnv": "083f554896655fcd",
+   "name": "opts-00111001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00111010",
+   "fnv": "0712ad2693ec0119",
+   "name": "opts-00111010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00111011",
+   "fnv": "f6a3ea1947edf1fb",
+   "name": "opts-00111011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00111011",
+   "fnv": "ecec7c29e2e1446e",
+   "name": "opts-00111011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00111100",
+   "fnv": "d3962ac4c8145c2b",
+   "name": "opts-00111100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00111101",
+   "fnv": "a94fe057f3f9e3f1",
+   "name": "opts-00111101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00111101",
+   "fnv": "9eda741fd4c10a98",
+   "name": "opts-00111101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "00111110",
+   "fnv": "f6495b43fbe15956",
+   "name": "opts-00111110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00111111",
+   "fnv": "5704faaba7e47bf0",
+   "name": "opts-00111111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "00111111",
+   "fnv": "f64b390cfca7ddb9",
+   "name": "opts-00111111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01000000",
+   "fnv": "0350c915e59156e3",
+   "name": "opts-01000000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01000001",
+   "fnv": "1a80d7588cfb46c9",
+   "name": "opts-01000001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01000001",
+   "fnv": "1b1f7fd130ac3fd0",
+   "name": "opts-01000001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01000010",
+   "fnv": "bd90e9fe0577c196",
+   "name": "opts-01000010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01000011",
+   "fnv": "64295b93fae07e30",
+   "name": "opts-01000011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01000011",
+   "fnv": "f12df125e6101cf9",
+   "name": "opts-01000011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01000100",
+   "fnv": "827be4786f725b14",
+   "name": "opts-01000100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01000101",
+   "fnv": "2bc7ffa39022e13a",
+   "name": "opts-01000101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01000101",
+   "fnv": "4831d342c8afc9ef",
+   "name": "opts-01000101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01000110",
+   "fnv": "2c19e6d8ea7e9043",
+   "name": "opts-01000110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01000111",
+   "fnv": "7b77985a3784c969",
+   "name": "opts-01000111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01000111",
+   "fnv": "0bdac6d11e3ee6b0",
+   "name": "opts-01000111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01001000",
+   "fnv": "14f0c520977b8358",
+   "name": "opts-01001000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01001001",
+   "fnv": "545bf7e58d99c1be",
+   "name": "opts-01001001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01001001",
+   "fnv": "b2fd7953662ced1b",
+   "name": "opts-01001001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01001010",
+   "fnv": "f311557331085f67",
+   "name": "opts-01001010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01001011",
+   "fnv": "0c0bf47699982d4d",
+   "name": "opts-01001011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01001011",
+   "fnv": "2a0d1c12fa6dfe0c",
+   "name": "opts-01001011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01001100",
+   "fnv": "98cd43031be4776d",
+   "name": "opts-01001100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01001101",
+   "fnv": "20704cb96564f8cf",
+   "name": "opts-01001101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01001101",
+   "fnv": "a443fb69bb79917a",
+   "name": "opts-01001101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01001110",
+   "fnv": "895e545b51f513b8",
+   "name": "opts-01001110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01001111",
+   "fnv": "0bb7842886e687de",
+   "name": "opts-01001111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01001111",
+   "fnv": "a80f7b49070a197b",
+   "name": "opts-01001111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01010000",
+   "fnv": "fde234613a118e13",
+   "name": "opts-01010000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01010001",
+   "fnv": "ef2db0c9da049ef9",
+   "name": "opts-01010001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01010001",
+   "fnv": "dc0d93b6e7497c40",
+   "name": "opts-01010001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01010010",
+   "fnv": "f5927ada34d57b98",
+   "name": "opts-01010010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01010011",
+   "fnv": "c531a14357559efe",
+   "name": "opts-01010011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01010011",
+   "fnv": "c8a99141e2908f5b",
+   "name": "opts-01010011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01010100",
+   "fnv": "96ae91791342fff8",
+   "name": "opts-01010100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01010101",
+   "fnv": "04bb8c8e5ebd4f1e",
+   "name": "opts-01010101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01010101",
+   "fnv": "d8dfe74cc8e16dbb",
+   "name": "opts-01010101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01010110",
+   "fnv": "e1ee5a9566d0be81",
+   "name": "opts-01010110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01010111",
+   "fnv": "60075d894a24dd43",
+   "name": "opts-01010111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01010111",
+   "fnv": "9c43a2c8895f8996",
+   "name": "opts-01010111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01011000",
+   "fnv": "c515f322fa50d1a4",
+   "name": "opts-01011000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01011001",
+   "fnv": "793dfcee69da0dca",
+   "name": "opts-01011001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01011001",
+   "fnv": "edf83d27a9d4b03f",
+   "name": "opts-01011001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01011010",
+   "fnv": "027ef57862cdc2c5",
+   "name": "opts-01011010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01011011",
+   "fnv": "6e45bb81c95387c7",
+   "name": "opts-01011011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01011011",
+   "fnv": "291f56cda78638b2",
+   "name": "opts-01011011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01011100",
+   "fnv": "cc651a1a393ab5fd",
+   "name": "opts-01011100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01011101",
+   "fnv": "b607eb1d80b74edf",
+   "name": "opts-01011101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01011101",
+   "fnv": "fe3c0dab11c6558a",
+   "name": "opts-01011101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01011110",
+   "fnv": "fc5c9eb79e1229d2",
+   "name": "opts-01011110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01011111",
+   "fnv": "f28b72688c5d24dc",
+   "name": "opts-01011111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01011111",
+   "fnv": "f13ae379ee52db1d",
+   "name": "opts-01011111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01100000",
+   "fnv": "f363944dd6e5f4e0",
+   "name": "opts-01100000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01100001",
+   "fnv": "a703d2235a8d46e6",
+   "name": "opts-01100001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01100001",
+   "fnv": "461b08621b84f343",
+   "name": "opts-01100001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01100010",
+   "fnv": "43351dee22413b8d",
+   "name": "opts-01100010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01100011",
+   "fnv": "3e7d8d24da5893af",
+   "name": "opts-01100011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01100011",
+   "fnv": "e12bde10be0dff9a",
+   "name": "opts-01100011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01100100",
+   "fnv": "21219d592a041985",
+   "name": "opts-01100100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01100101",
+   "fnv": "7dd59c404f979e87",
+   "name": "opts-01100101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01100101",
+   "fnv": "9af226b006086072",
+   "name": "opts-01100101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01100110",
+   "fnv": "002fa927b5c6f5e6",
+   "name": "opts-01100110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01100111",
+   "fnv": "5e15f23087b27980",
+   "name": "opts-01100111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01100111",
+   "fnv": "34d43ccba5692fc9",
+   "name": "opts-01100111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01101000",
+   "fnv": "383a91aaee0ae0a5",
+   "name": "opts-01101000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01101001",
+   "fnv": "9985c50502ec03e7",
+   "name": "opts-01101001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01101001",
+   "fnv": "da3b896960030512",
+   "name": "opts-01101001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01101010",
+   "fnv": "a700325f51821496",
+   "name": "opts-01101010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01101011",
+   "fnv": "c71e1ffb41333130",
+   "name": "opts-01101011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01101011",
+   "fnv": "1db93e0830d78ff9",
+   "name": "opts-01101011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01101100",
+   "fnv": "42f179283336bc86",
+   "name": "opts-01101100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01101101",
+   "fnv": "a7d0c2ea25b125e0",
+   "name": "opts-01101101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01101101",
+   "fnv": "af960cce00025669",
+   "name": "opts-01101101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01101110",
+   "fnv": "ddc24f0676562143",
+   "name": "opts-01101110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01101111",
+   "fnv": "3091438fed387a69",
+   "name": "opts-01101111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01101111",
+   "fnv": "c737ce5d9e76d7b0",
+   "name": "opts-01101111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01110000",
+   "fnv": "65bf56972f4f6906",
+   "name": "opts-01110000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01110001",
+   "fnv": "36c8455dd23c6260",
+   "name": "opts-01110001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01110001",
+   "fnv": "b9b245435388b2e9",
+   "name": "opts-01110001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01110010",
+   "fnv": "e531266a3f57f3f5",
+   "name": "opts-01110010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01110011",
+   "fnv": "0c72f0d7a3f15f77",
+   "name": "opts-01110011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01110011",
+   "fnv": "34ecbb5a7eb1d6a2",
+   "name": "opts-01110011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01110100",
+   "fnv": "ef373897a4e654ef",
+   "name": "opts-01110100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01110101",
+   "fnv": "c118e00837e5b5d5",
+   "name": "opts-01110101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01110101",
+   "fnv": "3921f0b302a2e1f4",
+   "name": "opts-01110101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01110110",
+   "fnv": "e706e1cd3e951ce2",
+   "name": "opts-01110110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01110111",
+   "fnv": "684802a96c39e32c",
+   "name": "opts-01110111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01110111",
+   "fnv": "1e4bc92da22e38ed",
+   "name": "opts-01110111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01111000",
+   "fnv": "0281aa7ef39d0f73",
+   "name": "opts-01111000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01111001",
+   "fnv": "659a0745494d6399",
+   "name": "opts-01111001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01111001",
+   "fnv": "cdf984557ae6dfa0",
+   "name": "opts-01111001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01111010",
+   "fnv": "981b75eac4b08cf6",
+   "name": "opts-01111010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01111011",
+   "fnv": "fde9d46355e680d0",
+   "name": "opts-01111011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01111011",
+   "fnv": "b75092fe091c7659",
+   "name": "opts-01111011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01111100",
+   "fnv": "cc8f60c21eb83218",
+   "name": "opts-01111100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01111101",
+   "fnv": "f6bc6e0d67d0257e",
+   "name": "opts-01111101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01111101",
+   "fnv": "8ba8882416c8b5db",
+   "name": "opts-01111101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "01111110",
+   "fnv": "55b5c811a63c5ae7",
+   "name": "opts-01111110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01111111",
+   "fnv": "a138539f887e98cd",
+   "name": "opts-01111111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "01111111",
+   "fnv": "3f294abe8e83498c",
+   "name": "opts-01111111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10000000",
+   "fnv": "d9413649d707ff70",
+   "name": "opts-10000000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10000001",
+   "fnv": "5645c1f67903db76",
+   "name": "opts-10000001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10000001",
+   "fnv": "ad941f318d87e813",
+   "name": "opts-10000001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10000010",
+   "fnv": "34d08ce955229bef",
+   "name": "opts-10000010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10000011",
+   "fnv": "58b1bd8da530dcd5",
+   "name": "opts-10000011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10000011",
+   "fnv": "5daeb4e2015fc8f4",
+   "name": "opts-10000011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10000100",
+   "fnv": "f2d0ba13c3c717b5",
+   "name": "opts-10000100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10000101",
+   "fnv": "8fba15c5070c7b37",
+   "name": "opts-10000101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10000101",
+   "fnv": "d07ec218a4f56162",
+   "name": "opts-10000101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10000110",
+   "fnv": "b6129283b6a2ee10",
+   "name": "opts-10000110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10000111",
+   "fnv": "5dd40615d583b556",
+   "name": "opts-10000111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10000111",
+   "fnv": "b0ea5e28ccdc3ab3",
+   "name": "opts-10000111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10001000",
+   "fnv": "7add32cdbb65022c",
+   "name": "opts-10001000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10001001",
+   "fnv": "638a5160f8e9e512",
+   "name": "opts-10001001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10001001",
+   "fnv": "48d23877bbbd2b47",
+   "name": "opts-10001001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10001010",
+   "fnv": "1209d02f991a6d47",
+   "name": "opts-10001010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10001011",
+   "fnv": "281a13098d8fbaed",
+   "name": "opts-10001011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10001011",
+   "fnv": "cbfea5c025818d6c",
+   "name": "opts-10001011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10001100",
+   "fnv": "6e0a08315d110651",
+   "name": "opts-10001100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10001101",
+   "fnv": "cb89437617a4b9d3",
+   "name": "opts-10001101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10001101",
+   "fnv": "7ef8e4ef2ea2f766",
+   "name": "opts-10001101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10001110",
+   "fnv": "ecc753e0ca7ac158",
+   "name": "opts-10001110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10001111",
+   "fnv": "b3e0b020ca6cbfbe",
+   "name": "opts-10001111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10001111",
+   "fnv": "bf01e43a758f6b1b",
+   "name": "opts-10001111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10010000",
+   "fnv": "a220ea0a43dec792",
+   "name": "opts-10010000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10010001",
+   "fnv": "3b5143174af25e9c",
+   "name": "opts-10010001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10010001",
+   "fnv": "35e4b3c004cc96dd",
+   "name": "opts-10010001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10010010",
+   "fnv": "cfaabc2c733e7c8b",
+   "name": "opts-10010010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10010011",
+   "fnv": "cbc796a4ecb49f91",
+   "name": "opts-10010011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10010011",
+   "fnv": "516836b039219a78",
+   "name": "opts-10010011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10010100",
+   "fnv": "d1754458c7ef32db",
+   "name": "opts-10010100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10010101",
+   "fnv": "d88a989368bf56e1",
+   "name": "opts-10010101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10010101",
+   "fnv": "c6131cbd729ad848",
+   "name": "opts-10010101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10010110",
+   "fnv": "8f4e004c66af12d8",
+   "name": "opts-10010110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10010111",
+   "fnv": "81d642ae233a413e",
+   "name": "opts-10010111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10010111",
+   "fnv": "4c758fe965614c9b",
+   "name": "opts-10010111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10011000",
+   "fnv": "8a237a626ddcf7d6",
+   "name": "opts-10011000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10011001",
+   "fnv": "14101b250ea4ea70",
+   "name": "opts-10011001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10011001",
+   "fnv": "6026637eae5fec39",
+   "name": "opts-10011001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10011010",
+   "fnv": "2226365fe17d44f7",
+   "name": "opts-10011010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10011011",
+   "fnv": "2451153cce98b51d",
+   "name": "opts-10011011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10011011",
+   "fnv": "02396a6c9c70d15c",
+   "name": "opts-10011011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10011100",
+   "fnv": "3c7046215739d3df",
+   "name": "opts-10011100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10011101",
+   "fnv": "7a3793089efcb7c5",
+   "name": "opts-10011101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10011101",
+   "fnv": "79bf337cb38e7ca4",
+   "name": "opts-10011101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10011110",
+   "fnv": "c71fd9eadcb51ae4",
+   "name": "opts-10011110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10011111",
+   "fnv": "b9a441b8eeead80a",
+   "name": "opts-10011111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10011111",
+   "fnv": "72ab8634c79cef7f",
+   "name": "opts-10011111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10100000",
+   "fnv": "fe8e7beac619a523",
+   "name": "opts-10100000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10100001",
+   "fnv": "16da6954f2e97409",
+   "name": "opts-10100001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10100001",
+   "fnv": "b6435a4ba752db10",
+   "name": "opts-10100001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10100010",
+   "fnv": "382b2b977d00b694",
+   "name": "opts-10100010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10100011",
+   "fnv": "5c961389e26facba",
+   "name": "opts-10100011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10100011",
+   "fnv": "3a1367dc12c3756f",
+   "name": "opts-10100011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10100100",
+   "fnv": "730684d84f386254",
+   "name": "opts-10100100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10100101",
+   "fnv": "cf1b317dd90af27a",
+   "name": "opts-10100101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10100101",
+   "fnv": "01e3dee55a412d2f",
+   "name": "opts-10100101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10100110",
+   "fnv": "15768939f2ec9541",
+   "name": "opts-10100110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10100111",
+   "fnv": "4cfb5ce718860903",
+   "name": "opts-10100111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10100111",
+   "fnv": "e0009529fa754756",
+   "name": "opts-10100111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10101000",
+   "fnv": "7b923a044c5172ab",
+   "name": "opts-10101000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10101001",
+   "fnv": "0050562aa9daca71",
+   "name": "opts-10101001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10101001",
+   "fnv": "4c69503b80f79118",
+   "name": "opts-10101001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10101010",
+   "fnv": "35a359b6c9f5d97c",
+   "name": "opts-10101010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10101011",
+   "fnv": "5311d522fc2e4122",
+   "name": "opts-10101011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10101011",
+   "fnv": "6b2008472278eb17",
+   "name": "opts-10101011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10101100",
+   "fnv": "5a67aa096fe8f4ec",
+   "name": "opts-10101100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10101101",
+   "fnv": "591f2c5c8dbaecd2",
+   "name": "opts-10101101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10101101",
+   "fnv": "6be02b814082de07",
+   "name": "opts-10101101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10101110",
+   "fnv": "ecaac68261aee139",
+   "name": "opts-10101110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10101111",
+   "fnv": "796295988e7e975b",
+   "name": "opts-10101111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10101111",
+   "fnv": "c358d3d42b0dcb0e",
+   "name": "opts-10101111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10110000",
+   "fnv": "ea346851d0af53bb",
+   "name": "opts-10110000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10110001",
+   "fnv": "e73b17d36a8b7e81",
+   "name": "opts-10110001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10110001",
+   "fnv": "5e55c20705d40fa8",
+   "name": "opts-10110001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10110010",
+   "fnv": "49f033b07fd5a37e",
+   "name": "opts-10110010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10110011",
+   "fnv": "5e611748a855cc38",
+   "name": "opts-10110011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10110011",
+   "fnv": "6619ad9badf148c1",
+   "name": "opts-10110011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10110100",
+   "fnv": "909b7bd45485e290",
+   "name": "opts-10110100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10110101",
+   "fnv": "d363c40d0df239d6",
+   "name": "opts-10110101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10110101",
+   "fnv": "90e6a01edbd7df33",
+   "name": "opts-10110101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10110110",
+   "fnv": "75b70b13dfdedbdf",
+   "name": "opts-10110110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10110111",
+   "fnv": "900e5e2e6892bfc5",
+   "name": "opts-10110111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10110111",
+   "fnv": "5c423ee19b6684a4",
+   "name": "opts-10110111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10111000",
+   "fnv": "84c4d2fbafc2d44b",
+   "name": "opts-10111000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10111001",
+   "fnv": "45deb9d730442851",
+   "name": "opts-10111001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10111001",
+   "fnv": "4144608cd715e638",
+   "name": "opts-10111001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10111010",
+   "fnv": "334825e36c2554ca",
+   "name": "opts-10111010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10111011",
+   "fnv": "48ea76f87609a154",
+   "name": "opts-10111011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10111011",
+   "fnv": "fbf10b7b6eb37f15",
+   "name": "opts-10111011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10111100",
+   "fnv": "7f4ef28529145840",
+   "name": "opts-10111100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10111101",
+   "fnv": "bc15cc77ce187606",
+   "name": "opts-10111101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10111101",
+   "fnv": "d75ef089a816e4a3",
+   "name": "opts-10111101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "10111110",
+   "fnv": "885f0005687680bb",
+   "name": "opts-10111110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10111111",
+   "fnv": "5b269f8e913a4b81",
+   "name": "opts-10111111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "10111111",
+   "fnv": "dd7711ba0c6e1ca8",
+   "name": "opts-10111111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11000000",
+   "fnv": "ce2b657414a6313b",
+   "name": "opts-11000000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11000001",
+   "fnv": "f1bf028353e50c01",
+   "name": "opts-11000001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11000001",
+   "fnv": "c226ac6ac654fd28",
+   "name": "opts-11000001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11000010",
+   "fnv": "1d971be17b121226",
+   "name": "opts-11000010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11000011",
+   "fnv": "dc94e37e32b868c0",
+   "name": "opts-11000011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11000011",
+   "fnv": "185d6ce44eb72209",
+   "name": "opts-11000011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11000100",
+   "fnv": "6e0a8e02ae8e9d5c",
+   "name": "opts-11000100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11000101",
+   "fnv": "9201b5c913c77b42",
+   "name": "opts-11000101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11000101",
+   "fnv": "214a657eed802977",
+   "name": "opts-11000101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11000110",
+   "fnv": "b53396b330464c73",
+   "name": "opts-11000110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11000111",
+   "fnv": "ae51f6ebf9c04099",
+   "name": "opts-11000111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11000111",
+   "fnv": "16c7a6062dc8fca0",
+   "name": "opts-11000111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11001000",
+   "fnv": "ce4110cd798a5761",
+   "name": "opts-11001000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11001001",
+   "fnv": "ddb0b1aa12a1f2e3",
+   "name": "opts-11001001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11001001",
+   "fnv": "70956c1019174ff6",
+   "name": "opts-11001001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11001010",
+   "fnv": "025f417dbb77e988",
+   "name": "opts-11001010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11001011",
+   "fnv": "17c72c8160720aee",
+   "name": "opts-11001011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11001011",
+   "fnv": "3d17a2a9f8eb120b",
+   "name": "opts-11001011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11001100",
+   "fnv": "af938d3b83971c42",
+   "name": "opts-11001100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11001101",
+   "fnv": "91661762316abbcc",
+   "name": "opts-11001101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11001101",
+   "fnv": "2094e407fdc2154d",
+   "name": "opts-11001101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11001110",
+   "fnv": "13964cd2092bcc75",
+   "name": "opts-11001110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11001111",
+   "fnv": "601cb44c045547f7",
+   "name": "opts-11001111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11001111",
+   "fnv": "382dbb63e85bdf22",
+   "name": "opts-11001111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11010000",
+   "fnv": "fd8de12a5a80b891",
+   "name": "opts-11010000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11010001",
+   "fnv": "ecb714fc5000b913",
+   "name": "opts-11010001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11010001",
+   "fnv": "d3062f6889357aa6",
+   "name": "opts-11010001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11010010",
+   "fnv": "c518218b1fac80de",
+   "name": "opts-11010010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11010011",
+   "fnv": "162e42979a1582d8",
+   "name": "opts-11010011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11010011",
+   "fnv": "6d787263dac27421",
+   "name": "opts-11010011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11010100",
+   "fnv": "d24d7130ce325d26",
+   "name": "opts-11010100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11010101",
+   "fnv": "df7c51d3449013c0",
+   "name": "opts-11010101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11010101",
+   "fnv": "304a7a8c15818d09",
+   "name": "opts-11010101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11010110",
+   "fnv": "d367b70e2b4d78ff",
+   "name": "opts-11010110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11010111",
+   "fnv": "c1a602607b8d53a5",
+   "name": "opts-11010111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11010111",
+   "fnv": "0cb1f30454a3c9c4",
+   "name": "opts-11010111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11011000",
+   "fnv": "5a31c9bdba64ca77",
+   "name": "opts-11011000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11011001",
+   "fnv": "ed68f1e55387ea9d",
+   "name": "opts-11011001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11011001",
+   "fnv": "78ee3244adb166dc",
+   "name": "opts-11011001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11011010",
+   "fnv": "90315d59e334a9f4",
+   "name": "opts-11011010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11011011",
+   "fnv": "9983adb2d4128ada",
+   "name": "opts-11011011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11011011",
+   "fnv": "c35b6063bc49a1cf",
+   "name": "opts-11011011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11011100",
+   "fnv": "a861596d73efccfc",
+   "name": "opts-11011100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11011101",
+   "fnv": "f8b91c2e7a49a4a2",
+   "name": "opts-11011101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11011101",
+   "fnv": "551ec2a662412e97",
+   "name": "opts-11011101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11011110",
+   "fnv": "2e1436731ec581dd",
+   "name": "opts-11011110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11011111",
+   "fnv": "e674ea6b87c2eeff",
+   "name": "opts-11011111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11011111",
+   "fnv": "2e36c5c5c52455ea",
+   "name": "opts-11011111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11100000",
+   "fnv": "c8e28e07c638d072",
+   "name": "opts-11100000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11100001",
+   "fnv": "c9780fa5b3df973c",
+   "name": "opts-11100001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11100001",
+   "fnv": "1a84ab9181ed44bd",
+   "name": "opts-11100001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11100010",
+   "fnv": "317be41e6cd02d97",
+   "name": "opts-11100010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11100011",
+   "fnv": "824b644383f84ffd",
+   "name": "opts-11100011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11100011",
+   "fnv": "17450af977b0f7fc",
+   "name": "opts-11100011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11100100",
+   "fnv": "5b0d341e23d47c37",
+   "name": "opts-11100100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11100101",
+   "fnv": "94138d7c35e66e5d",
+   "name": "opts-11100101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11100101",
+   "fnv": "f8c51095a6a0d49c",
+   "name": "opts-11100101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11100110",
+   "fnv": "bb81c1493b6dfd48",
+   "name": "opts-11100110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11100111",
+   "fnv": "92c095d0978860ae",
+   "name": "opts-11100111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11100111",
+   "fnv": "e4c303996591d2cb",
+   "name": "opts-11100111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11101000",
+   "fnv": "887587ed5862bc1c",
+   "name": "opts-11101000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11101001",
+   "fnv": "ae9ceb7a4da3c402",
+   "name": "opts-11101001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11101001",
+   "fnv": "1527ded991568037",
+   "name": "opts-11101001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11101010",
+   "fnv": "d6daa8e2b0845e71",
+   "name": "opts-11101010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11101011",
+   "fnv": "50c55961204205b3",
+   "name": "opts-11101011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11101011",
+   "fnv": "8f3abd851c789006",
+   "name": "opts-11101011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11101100",
+   "fnv": "0fa01938c185ba21",
+   "name": "opts-11101100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11101101",
+   "fnv": "9134ac03ff16c2a3",
+   "name": "opts-11101101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11101101",
+   "fnv": "a45a875b0b5d84b6",
+   "name": "opts-11101101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11101110",
+   "fnv": "4c8fbe981ec41c8a",
+   "name": "opts-11101110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11101111",
+   "fnv": "d5d2e2d1cb8c1014",
+   "name": "opts-11101111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11101111",
+   "fnv": "0443e9d2558598d5",
+   "name": "opts-11101111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11110000",
+   "fnv": "80be05783a54039e",
+   "name": "opts-11110000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11110001",
+   "fnv": "ed6b0ed9fa954298",
+   "name": "opts-11110001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11110001",
+   "fnv": "bd5e02dc3fa4cce1",
+   "name": "opts-11110001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11110010",
+   "fnv": "50875362e92148e5",
+   "name": "opts-11110010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11110011",
+   "fnv": "1564a543d0c38027",
+   "name": "opts-11110011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11110011",
+   "fnv": "8035a8c802a26652",
+   "name": "opts-11110011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11110100",
+   "fnv": "d8ab2699676ba677",
+   "name": "opts-11110100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11110101",
+   "fnv": "d7fff43a0102469d",
+   "name": "opts-11110101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11110101",
+   "fnv": "8473e9e5be62c2dc",
+   "name": "opts-11110101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11110110",
+   "fnv": "32978cecbb7d53b2",
+   "name": "opts-11110110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11110111",
+   "fnv": "cd12b040a95ff17c",
+   "name": "opts-11110111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11110111",
+   "fnv": "c4d2c265c39182fd",
+   "name": "opts-11110111-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11111000",
+   "fnv": "bde3db800219c0a0",
+   "name": "opts-11111000",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11111001",
+   "fnv": "09c8fdea04a8eba6",
+   "name": "opts-11111001",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11111001",
+   "fnv": "a9ad3ebd4711a403",
+   "name": "opts-11111001-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11111010",
+   "fnv": "259010590aa6e09b",
+   "name": "opts-11111010",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11111011",
+   "fnv": "e10367c02f19b5a1",
+   "name": "opts-11111011",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11111011",
+   "fnv": "f4b4c2e8bc94c908",
+   "name": "opts-11111011-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11111100",
+   "fnv": "c3a1d036a69ac9c9",
+   "name": "opts-11111100",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11111101",
+   "fnv": "97a3998bc24e062b",
+   "name": "opts-11111101",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11111101",
+   "fnv": "88b0bbcb17cad01e",
+   "name": "opts-11111101-novisual",
+   "noVisualTweaks": true
+  },
+  {
+   "bits": "11111110",
+   "fnv": "c0aebfed60244408",
+   "name": "opts-11111110",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11111111",
+   "fnv": "26a4e570ea52b56e",
+   "name": "opts-11111111",
+   "noVisualTweaks": false
+  },
+  {
+   "bits": "11111111",
+   "fnv": "101dbc7e87725c8b",
+   "name": "opts-11111111-novisual",
+   "noVisualTweaks": true
+  }
+ ],
+ "password": "Winbar-Test-Pa55!",
+ "reservedUsers": [
+  "access control assistance operators",
+  "administrador",
+  "administrateur",
+  "administrator",
+  "administrators",
+  "administratör",
+  "backup operators",
+  "cryptographic operators",
+  "defaultaccount",
+  "defaultuser0",
+  "device owners",
+  "distributed com users",
+  "event log readers",
+  "guest",
+  "guests",
+  "helpassistant",
+  "hyper-v administrators",
+  "iis_iusrs",
+  "järjestelmänvalvoja",
+  "krbtgt",
+  "local",
+  "local service",
+  "network configuration operators",
+  "network service",
+  "none",
+  "openssh users",
+  "performance log users",
+  "performance monitor users",
+  "power users",
+  "remote desktop users",
+  "remote management users",
+  "rendszergazda",
+  "replicator",
+  "system",
+  "users",
+  "wdagutilityaccount",
+  "администратор"
+ ],
+ "unlocked": [
+  "no_online_account",
+  "regional_from_mac",
+  "skip_privacy",
+  "no_bitlocker",
+  "qol",
+  "autologon",
+  "remote_desktop",
+  "winbar_tuning"
+ ]
+}

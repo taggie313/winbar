@@ -1,0 +1,428 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Winbar "winbar create" answer file: Windows 11 24H2/25H2 ARM64, fresh install into a new UTM (QEMU virt) VM.
+  Target: UEFI, one new blank NVMe disk (DiskID 0), no TPM, no Secure Boot keys, and no NIC driver during Setup
+  (UTM's aarch64 NIC is virtio-net-pci; Windows has no inbox driver), so Setup and OOBE run offline.
+  Delivered as \Autounattend.xml at the root of the answer CD (ISO9660+Joliet, volume label WINBAR_SETUP), next to
+  \FirstLogon.ps1 and the pinned UTM Guest Tools installer (utm-guest-tools-<version>.exe). Setup finds it by its
+  implicit search ("removable read-only media, in order of drive letter"); no other answer file is ever attached.
+
+  TEMPLATE CONVENTIONS (resolved by the renderer; nothing of this comment survives rendering):
+    {{NAME}}                  a value, XML-escaped by the renderer (& < > " ').
+    {{PASSWORD_B64}}          base64(UTF-16LE(password + "Password")), the Windows SIM "hide sensitive data" form
+                              (the suffix is the element name, "Password" for both elements that use it). Computed in
+                              memory from the hidden prompt; never logged, never on a command line.
+    {{SEQ}}                   numbered 1,2,3... per RunSynchronous / FirstLogonCommands list, after conditionals.
+    IF/END comment markers    block form: markers alone on their own lines; inline form: inside one line (used only
+                              in the first-logon CommandLine). "!id" keeps the content when the option is OFF.
+                              Besides the ids below there is one MODIFIER, no_visual_tweaks (CLI no-visual-tweaks
+                              flag, meaningful only with winbar_tuning); it is not a checklist row.
+                              Blocks of different ids may nest. Unknown ids are a renderer error.
+    Every other comment is stripped. Empty RunSynchronous lists and empty components are removed.
+  OPTION IDS (contract between jobs; the defaults and the locks live with the renderer):
+    Rufus parity: bypass_requirements (locked on), no_online_account, local_account (required), regional_from_mac,
+                  skip_privacy, no_bitlocker, qol
+    Winbar extras: autologon, remote_desktop, guest_tools (locked on), winbar_tuning, computer_name (text field;
+                  the renderer turns it on when the value is non-empty)
+    Derived by the renderer, not a checklist row: time_zone (regional_from_mac on and a Windows zone id known)
+  Every component is processorArchitecture="arm64": the ARM64 image holds only arm64_ component manifests and the
+  25H2 ARM64 Setup (sources\UnattendMgr.dll) queries component[...][processorArchitecture=arm64].
+-->
+<unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+  <!-- ============ windowsPE: Setup running from the Windows ISO (WinPE, X:) ============ -->
+  <settings pass="windowsPE">
+    <!--
+      Skips Setup's language page. PE_LANGUAGE = <LANGUAGES><DEFAULT> of boot.wim image 2 (en-US on
+      Win11_25H2_English_Arm64_v2.iso). Always the image language, never the Mac's: nobody types in WinPE, and a
+      language WinPE does not have would stop Setup.
+    -->
+    <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <SetupUILanguage>
+        <UILanguage>{{PE_LANGUAGE}}</UILanguage>
+      </SetupUILanguage>
+      <InputLocale>{{PE_LANGUAGE}}</InputLocale>
+      <SystemLocale>{{PE_LANGUAGE}}</SystemLocale>
+      <UILanguage>{{PE_LANGUAGE}}</UILanguage>
+      <UserLocale>{{PE_LANGUAGE}}</UserLocale>
+    </component>
+
+    <component name="Microsoft-Windows-Setup" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <!--IF skip_privacy-->
+      <!-- Setup's own diagnostic-data opt-in (UnattendMgr reads Diagnostics\OptIn; UTM's answer file sets it too). -->
+      <Diagnostics>
+        <OptIn>false</OptIn>
+      </Diagnostics>
+      <!--END skip_privacy-->
+      <!-- Always: WinPE has no NIC driver, this only stops Setup from trying (UnattendMgr reads DynamicUpdate\Enable). -->
+      <DynamicUpdate>
+        <Enable>false</Enable>
+        <WillShowUI>Never</WillShowUI>
+      </DynamicUpdate>
+      <!--
+        Rufus 4.15 "silent erase and install" layout, implicit in Winbar (the VM disk is new and empty), minus Rufus's
+        "Disk 1 / RUFUS_BOOT" tripwire (it guards extra physical disks; the VM has exactly one disk, and CDs are not
+        DiskConfiguration disks). ESP 300 MB (Microsoft minimum is 200 MB on 512e, 300 MB on 4Kn). No recovery
+        partition: Setup places WinRE itself (Rufus issue 2960).
+      -->
+      <DiskConfiguration>
+        <WillShowUI>OnError</WillShowUI>
+        <!--IF no_bitlocker-->
+        <DisableEncryptedDiskProvisioning>true</DisableEncryptedDiskProvisioning>
+        <!--END no_bitlocker-->
+        <Disk wcm:action="add">
+          <DiskID>0</DiskID>
+          <WillWipeDisk>true</WillWipeDisk>
+          <CreatePartitions>
+            <CreatePartition wcm:action="add">
+              <Order>1</Order>
+              <Type>EFI</Type>
+              <Size>300</Size>
+            </CreatePartition>
+            <CreatePartition wcm:action="add">
+              <Order>2</Order>
+              <Type>MSR</Type>
+              <Size>16</Size>
+            </CreatePartition>
+            <CreatePartition wcm:action="add">
+              <Order>3</Order>
+              <Type>Primary</Type>
+              <Extend>true</Extend>
+            </CreatePartition>
+          </CreatePartitions>
+          <ModifyPartitions>
+            <ModifyPartition wcm:action="add">
+              <Order>1</Order>
+              <PartitionID>1</PartitionID>
+              <Label>EFI</Label>
+              <Format>FAT32</Format>
+            </ModifyPartition>
+            <ModifyPartition wcm:action="add">
+              <Order>2</Order>
+              <PartitionID>3</PartitionID>
+              <Label>Windows</Label>
+              <Letter>C</Letter>
+              <Format>NTFS</Format>
+            </ModifyPartition>
+          </ModifyPartitions>
+        </Disk>
+      </DiskConfiguration>
+      <!--
+        Edition by /IMAGE/INDEX, as Rufus does. IMAGE_INDEX comes from sources\install.wim's XML of the ISO actually
+        attached, read right before the answer CD is built (Win11_25H2_English_Arm64_v2.iso: 1 Home,
+        2 Home Single Language, 3 Pro). Default Pro.
+      -->
+      <ImageInstall>
+        <OSImage>
+          <WillShowUI>OnError</WillShowUI>
+          <InstallFrom>
+            <MetaData wcm:action="add">
+              <Key>/IMAGE/INDEX</Key>
+              <Value>{{IMAGE_INDEX}}</Value>
+            </MetaData>
+          </InstallFrom>
+          <InstallTo>
+            <DiskID>0</DiskID>
+            <PartitionID>3</PartitionID>
+          </InstallTo>
+        </OSImage>
+      </ImageInstall>
+      <!--IF bypass_requirements-->
+      <!--
+        The same three LabConfig values Rufus 4.15 sets, studied in its wue.c and written here as answer-file
+        commands rather than in C. The key path and the value names are Windows Setup's own, so there is one way
+        to spell them, and only these three exist in the 25H2 ARM64 setupcompat.dll/winsetup.dll (BypassCPUCheck
+        and BypassStorageCheck are no-ops). Locked on: UTM scripting cannot add a TPM, and UTM's firmware has no
+        Secure Boot keys enrolled.
+      -->
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <Path>reg add HKLM\SYSTEM\Setup\LabConfig /v BypassTPMCheck /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <Path>reg add HKLM\SYSTEM\Setup\LabConfig /v BypassSecureBootCheck /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <Path>reg add HKLM\SYSTEM\Setup\LabConfig /v BypassRAMCheck /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+      <!--END bypass_requirements-->
+      <UserData>
+        <AcceptEula>true</AcceptEula>
+        <!-- Empty key + the /IMAGE/INDEX selector = no product-key page (Rufus 4.15). Activation happens later. -->
+        <ProductKey>
+          <Key />
+        </ProductKey>
+      </UserData>
+    </component>
+  </settings>
+
+  <!-- ============ specialize: first boot of the installed OS, runs as SYSTEM ============ -->
+  <settings pass="specialize">
+    <!--
+      Computer name, also the DNS host name. Renderer-validated: 1-15 of A-Z a-z 0-9 and "-", no leading/trailing
+      "-", not all digits, not equal to the user name. A blank field renders "*" (Windows' documented random name),
+      never an omitted element, so OOBE never has a naming step to show.
+    -->
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <!--IF computer_name-->
+      <ComputerName>{{COMPUTER_NAME}}</ComputerName>
+      <!--END computer_name-->
+      <!--IF !computer_name-->
+      <ComputerName>*</ComputerName>
+      <!--END !computer_name-->
+    </component>
+    <!--IF no_bitlocker-->
+    <!--
+      Rufus's pair, moved from oobeSystem to specialize: Microsoft Learn lists specialize as a valid pass for both,
+      and oobeSystem is NOT listed for TCGSecurityActivationDisabled. FirstLogon.ps1 -NoBitLocker re-checks C:.
+    -->
+    <component name="Microsoft-Windows-SecureStartup-FilterDriver" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <PreventDeviceEncryption>true</PreventDeviceEncryption>
+    </component>
+    <component name="Microsoft-Windows-EnhancedStorage-Adm" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <TCGSecurityActivationDisabled>1</TCGSecurityActivationDisabled>
+    </component>
+    <!--END no_bitlocker-->
+    <!--IF remote_desktop-->
+    <!--
+      Remote Desktop host on, NLA on (UserAuthentication 1), TLS security layer (2, what winbar doctor G6 checks),
+      "Remote Desktop" firewall group by its language-neutral resource id. Set here so RDP works even if the
+      first-logon script never runs. Pro and higher only: the renderer switches this off for Home editions.
+    -->
+    <component name="Microsoft-Windows-TerminalServices-LocalSessionManager" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <fDenyTSConnections>false</fDenyTSConnections>
+    </component>
+    <component name="Microsoft-Windows-TerminalServices-RDP-WinStationExtensions" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <UserAuthentication>1</UserAuthentication>
+      <SecurityLayer>2</SecurityLayer>
+    </component>
+    <component name="Networking-MPSSVC-Svc" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <FirewallGroups>
+        <FirewallGroup wcm:action="add" wcm:keyValue="RemoteDesktop">
+          <Active>true</Active>
+          <Group>@FirewallAPI.dll,-28752</Group>
+          <Profile>all</Profile>
+        </FirewallGroup>
+      </FirewallGroups>
+    </component>
+    <!--END remote_desktop-->
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <RunSynchronous>
+        <!--IF no_online_account-->
+        <!--
+          The same OOBE\BypassNRO value Rufus 4.15 sets (wue.c); the name and the 1 are what Windows reads, so
+          there is one way to write it. With a pre-created local account and HideOnlineAccountScreens (always on
+          below) OOBE never asks for a Microsoft account, and Microsoft neutralised this value in Insider
+          26220.6772: kept for parity, harmless where ignored.
+        -->
+        <RunSynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <Path>reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\OOBE" /v BypassNRO /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+        <!--END no_online_account-->
+        <!--IF qol-->
+        <!-- Rufus 4.15's quality-of-life settings, machine-wide half, as specialize RunSynchronous commands (wue.c). -->
+        <RunSynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <Path>reg add "HKLM\Software\Policies\Microsoft\Windows\OneDrive" /v DisableFileSyncNGSC /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <Path>PowerShell -NonInteractive -WindowStyle Hidden -Command "Remove-Item -Path $env:SystemRoot\System32\OneDriveSetup.exe -Force -Confirm:$false; Remove-Item -Path $env:SystemRoot\SysWOW64\OneDriveSetup.exe -Force -Confirm:$false;"</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <Path>PowerShell -NonInteractive -WindowStyle Hidden -Command "Get-AppxProvisionedPackage -Online | Where-Object {$_.PackageName -like '*Outlook*'} | Remove-AppxProvisionedPackage -Online"</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <Path>PowerShell -NonInteractive -WindowStyle Hidden -Command "Get-AppxPackage -AllUsers *Outlook* | Remove-AppxPackage -AllUsers"</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <Path>PowerShell -NonInteractive -WindowStyle Hidden -Command "Get-AppxProvisionedPackage -Online | Where-Object {$_.PackageName -like '*Teams*'} | Remove-AppxProvisionedPackage -Online"</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <Path>PowerShell -NonInteractive -WindowStyle Hidden -Command "Get-AppxPackage -AllUsers *Teams* | Remove-AppxPackage -AllUsers"</Path>
+        </RunSynchronousCommand>
+        <!--END qol-->
+      </RunSynchronous>
+    </component>
+  </settings>
+
+  <!-- ============ oobeSystem: OOBE, then the first (automatic) logon ============ -->
+  <settings pass="oobeSystem">
+    <!--
+      Always emitted: a complete locale set is what lets OOBE skip its region and keyboard pages (25H2 keyboard-page
+      stall report, NTLite 2026-05). UI_LANGUAGE is always the image language (it must be installed). With
+      regional_from_mac the renderer fills INPUT_LOCALE (LCID:KLID of the Mac keyboard), SYSTEM_LOCALE and
+      USER_LOCALE (the Mac region, as a Windows locale name); without it all four are the image language. Any of
+      the three the Mac can't supply (no Windows keyboard or locale to match) is the image language too.
+    -->
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <InputLocale>{{INPUT_LOCALE}}</InputLocale>
+      <SystemLocale>{{SYSTEM_LOCALE}}</SystemLocale>
+      <UILanguage>{{UI_LANGUAGE}}</UILanguage>
+      <UserLocale>{{USER_LOCALE}}</UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <!--
+        The four Hide* values are what Rufus's silent mode adds so no page appears without a network; Winbar is
+        always silent, so they are unconditional. ProtectYourPC needs SOME value or the privacy page waits for a
+        click: 3 = everything off (skip_privacy), 1 = Windows' own recommended settings.
+        Not used: SkipMachineOOBE / SkipUserOOBE (deprecated, break OOBE on 24H2+).
+      -->
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <!--IF skip_privacy-->
+        <ProtectYourPC>3</ProtectYourPC>
+        <!--END skip_privacy-->
+        <!--IF !skip_privacy-->
+        <ProtectYourPC>1</ProtectYourPC>
+        <!--END !skip_privacy-->
+      </OOBE>
+      <!--IF time_zone-->
+      <!--
+        Windows zone ID mapped from the Mac's IANA zone through CLDR windowsZones.xml. time_zone is derived by the
+        renderer: on when regional_from_mac is on and the Mac's zone has a Windows id. Otherwise the element is left
+        out and Windows uses its default zone (OOBE doesn't ask).
+      -->
+      <TimeZone>{{TIME_ZONE}}</TimeZone>
+      <!--END time_zone-->
+      <!--IF local_account-->
+      <!--
+        Local administrator with a real, non-empty password (a blank one cannot sign in over RDP:
+        LimitBlankPasswordUse). Differences from Rufus: no "net user /logonpasswordchg:yes" (it would stop the
+        unattended sign-in), group "Administrators" only (Shell-Setup maps this English name to the localized
+        group). Windows keeps only the NT hash of this password (SAM).
+      -->
+      <UserAccounts>
+        <LocalAccounts>
+          <LocalAccount wcm:action="add">
+            <Name>{{USERNAME}}</Name>
+            <DisplayName>{{DISPLAY_NAME}}</DisplayName>
+            <Group>Administrators</Group>
+            <Password>
+              <Value>{{PASSWORD_B64}}</Value>
+              <PlainText>false</PlainText>
+            </Password>
+          </LocalAccount>
+        </LocalAccounts>
+      </UserAccounts>
+      <!--
+        Present whatever the autologon option says: FirstLogonCommands only run when someone signs in, and nobody
+        is at the console. Shell-Setup stores this password as the LSA secret DefaultPassword (LsaStorePrivateData
+        in shsetup.dll), not as a registry value. Windows adds 1 to a LogonCount above 0 (Microsoft known issue);
+        FirstLogon.ps1 then makes autologon permanent (-Autologon) or applies Microsoft's AutoLogonCount=0 fix.
+      -->
+      <AutoLogon>
+        <Enabled>true</Enabled>
+        <LogonCount>1</LogonCount>
+        <Username>{{USERNAME}}</Username>
+        <Password>
+          <Value>{{PASSWORD_B64}}</Value>
+          <PlainText>false</PlainText>
+        </Password>
+      </AutoLogon>
+      <!--END local_account-->
+      <!--
+        One list only. Microsoft: these commands now all START AT ONCE and do not wait for each other, so every
+        entry is order-independent; all ordered Winbar work is inside FirstLogon.ps1 on the WINBAR_SETUP CD, which
+        is found by volume label (CD drive letters depend on enumeration order) and writes the status file last.
+      -->
+      <FirstLogonCommands>
+        <!--IF local_account-->
+        <SynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <Description>Local passwords never expire (Rufus)</Description>
+          <CommandLine>net accounts /maxpwage:unlimited</CommandLine>
+        </SynchronousCommand>
+        <!--END local_account-->
+        <!--IF qol-->
+        <!-- The same settings' per-user and policy half, as FirstLogonCommands (wue.c). -->
+        <SynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <CommandLine>reg add "HKLM\System\CurrentControlSet\Control\Session Manager\Power" /v HiberbootEnabled /t REG_DWORD /d 0 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <CommandLine>reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v ShowCopilotButton /t REG_DWORD /d 0 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <CommandLine>reg add "HKLM\Software\Policies\Microsoft\Windows\WindowsCopilot" /v TurnOffWindowsCopilot /t REG_DWORD /d 1 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <CommandLine>reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Search" /v SearchboxTaskbarMode /t REG_DWORD /d 1 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <CommandLine>reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Search" /v SearchboxTaskbarModeCache /t REG_DWORD /d 1 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <CommandLine>reg add "HKLM\Software\Policies\Microsoft\Windows\CloudContent" /v DisableWindowsConsumerFeatures /t REG_DWORD /d 1 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <CommandLine>reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v SystemPaneSuggestionsEnabled /t REG_DWORD /d 0 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <CommandLine>reg add "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Search" /v BingSearchEnabled /t REG_DWORD /d 0 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <CommandLine>reg add "HKLM\Software\Policies\Microsoft\Dsh" /v AllowNewsAndInterests /t REG_DWORD /d 0 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <CommandLine>reg add "HKLM\Software\Policies\Microsoft\Windows\Windows Feeds" /v EnableFeeds /t REG_DWORD /d 0 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <CommandLine>reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Communications" /v ConfigureChatAutoInstall /t REG_DWORD /d 0 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <CommandLine>reg add "HKLM\Software\Policies\Microsoft\Windows\CloudContent" /v DisableCloudOptimizedContent /t REG_DWORD /d 1 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <CommandLine>reg add "HKLM\Software\Policies\Microsoft\Edge" /v HideFirstRunExperience /t REG_DWORD /d 1 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <CommandLine>reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v Start_Layout /t REG_DWORD /d 1 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <CommandLine>PowerShell -NonInteractive -WindowStyle Hidden -Command "Set-ItemProperty -Path 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Start' -Name 'VisiblePlaces' -Value $([convert]::FromBase64String('ztU0LVr6Q0WC8iLm6vd3PC+zZ+PeiVVDv85h83sYqTe8JIoUDNaJQqCAbtm7okiCRIF1/g0IrkKL2jTtl7ZjlEqwvXRK+WhPi9ZDmAcdqLyGCHNSqlFDQp97J3ZYRlnU')) -Type 'Binary'"</CommandLine>
+        </SynchronousCommand>
+        <!--END qol-->
+        <!--
+          Always: the Winbar first-logon script. Waits up to 2 minutes for the answer CD, found by its volume label
+          WINBAR_SETUP or, should the label read differently, by \FirstLogon.ps1 at its root. Runs that script with
+          one switch per ticked Winbar option (inline conditionals). If the CD never shows up, or the script can't
+          run (a parse or parameter error, anything it doesn't catch itself), the launcher writes the status file
+          itself (result=failed, status.tmp renamed to status.txt as the script does), so a console or agent reader
+          sees why. At most 1024 characters with every switch, which the renderer checks.
+        -->
+        <SynchronousCommand wcm:action="add">
+          <Order>{{SEQ}}</Order>
+          <Description>Winbar first-logon script</Description>
+          <CommandLine>powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$e = 'WINBAR_SETUP CD not found'; $v = $null; for ($i = 0; $i -lt 60 -and -not $v; $i++) { $v = @([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'CDRom' -and $_.IsReady -and ($_.VolumeLabel -eq 'WINBAR_SETUP' -or (Test-Path ($_.Name + 'FirstLogon.ps1'))) })[0]; if (-not $v) { Start-Sleep 2 } }; if ($v) { try { &amp; ($v.Name + 'FirstLogon.ps1')<!--IF guest_tools--> -GuestTools<!--END guest_tools--><!--IF autologon--> -Autologon<!--END autologon--><!--IF remote_desktop--> -RemoteDesktop<!--END remote_desktop--><!--IF no_bitlocker--> -NoBitLocker<!--END no_bitlocker--><!--IF winbar_tuning--> -Tuning<!--IF no_visual_tweaks--> -NoVisualTweaks<!--END no_visual_tweaks--><!--END winbar_tuning-->; $e = $null } catch { $e = 'launcher: ' + $_ } }; if ($e) { $o = $env:SystemRoot + '\Temp\winbar-install'; $r = 'off'; if ((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server').fDenyTSConnections -eq 0) { $r = 'on' }; $null = New-Item $o -ItemType Directory -Force; $t = $o + '\status.tmp'; Set-Content $t @('result=failed', 'guest_tools=-1', ('rdp=' + $r), ('error=' + ($e -replace '\s+', ' '))) -Encoding Ascii; Move-Item $t ($o + '\status.txt') -Force }"</CommandLine>
+        </SynchronousCommand>
+      </FirstLogonCommands>
+    </component>
+  </settings>
+</unattend>
