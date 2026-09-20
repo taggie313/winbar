@@ -426,7 +426,8 @@ Three things are worth knowing, and Winbar says all three rather than leaving yo
   it: relaunch UTM and the drive comes back empty. Winbar restarts UTM for every display change, so
   it writes the folder again on the way through, checks from inside Windows, and tells you when it
   couldn't. **If you want one that simply stays, pick it in UTM itself:** shut the VM down and
-  choose a Shared Directory on its details screen. That one is a proper bookmark, and Winbar never
+  choose a Shared Directory on its details screen. That one is a proper bookmark: it survives UTM
+  restarting, and Windows has it from the very next start rather than the one after. Winbar never
   overwrites it — when a folder it didn't write stops working, `winbar share` says so and *offers*
   to write it again, explaining that its rewrite is the weaker kind.
 
@@ -502,6 +503,32 @@ reason not to, and tells you when it makes a choice.
 ## Troubleshooting
 
 Start with `winbar doctor`. It checks everything and says why anything is wrong.
+
+**Reporting something that's broken: `winbar diagnose`.** One command, one file, everything an
+answerable bug report needs — instead of copying and pasting from four places:
+
+```sh
+winbar diagnose
+```
+
+It writes a plain-text file to your Desktop and tells you where. In it: the versions involved
+(Winbar and where it was installed from, macOS, this Mac, free space, UTM, Windows App, the UTM
+Guest Tools), the whole `winbar doctor` table with the why and how for anything that isn't ✓, what
+the menu bar app itself sees (the VM's address on the network, whether Remote Desktop answered, and
+the permissions that belong to Winbar rather than to your terminal), Winbar's own settings, the tail
+of the most recent `winbar create` log and its serial log, and the headline of UTM's recent crash
+reports — UTM crashing is often the answer. Read it (it's plain text, and it's yours), then attach
+it to your issue.
+
+It works when things are broken, which is the point: with no VM, no UTM, UTM not answering, no
+logs and no settings, every section says so and the file is still written. It never contains your
+Windows password, and it's swept for anything shaped like a password, a key or a token.
+
+| | |
+|---|---|
+| `--anonymise` | replace this Mac's name, your Mac and Windows user names and your VM names with placeholders. The file says at the top which mode made it |
+| `--no-logs` | leave the `winbar create` logs out |
+| `--out PATH` | write it somewhere else (a folder gets today's file; a file name is taken at its word) |
 
 **Connect asks for a password, or shows a certificate warning.** The password prompt means the
 saved PC in Windows App has no stored password, or has the wrong one: edit the PC and add
@@ -602,14 +629,14 @@ Something wrong, or missing? Open an issue at
 [github.com/taggie313/winbar/issues](https://github.com/taggie313/winbar/issues). What makes a
 report answerable:
 
-- the output of `winbar doctor`, and of the command that went wrong run as
-  `WINBAR_DEBUG=1 winbar …`
-- your macOS version and Mac model (*Apple menu > About This Mac*), and your UTM version
-- your Windows edition and build (`winver` inside Windows), if the problem is in the VM
+- the file `winbar diagnose` writes (see [Troubleshooting](#troubleshooting)) — it has the doctor
+  table, the versions, the settings, the last create log and UTM's crash reports in it
+- the command that went wrong, run as `WINBAR_DEBUG=1 winbar …`
 - what you expected, and what happened instead
 
-Leave out anything you'd rather not publish: `winbar doctor` prints your VM's name, host name and
-Windows user name, and a debug run can too. Nothing prints a password.
+Leave out anything you'd rather not publish: the report prints your VM's name, host name and
+Windows user name, and a debug run can too. `winbar diagnose --anonymise` replaces those with
+placeholders. Nothing prints a password.
 
 Pull requests are welcome. For anything larger than a fix, open an issue first: Winbar's defaults
 are argued for in [docs/RECIPE.md](docs/RECIPE.md), and changing one is easier to agree on before

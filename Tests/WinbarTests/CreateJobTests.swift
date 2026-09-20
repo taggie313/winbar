@@ -62,19 +62,21 @@ struct CreateJobStateTests {
                                   mac: "52:54:00:12:34:56", networkShared: true, serial: .ptty, displays: 1,
                                   cores: 6, memoryMiB: 16384)
         state.installStartedAt = Date(timeIntervalSince1970: 1_790_000_000)
-        state.messages = [CreateMessage(code: "W_STALL", text: CreateCopy.wStall,
+        state.messages = [CreateMessage(code: "W_STALL", text: CreateCopy.wStall(vmName: state.plan.vmName),
                                         at: Date(timeIntervalSince1970: 1_790_000_100))]
-        state.stalled = true
+        state.stalled = .quiet
         try CreateJob.writeState(state, in: directory)
 
         let read = try #require(CreateJob.state(in: directory))
         #expect(read == state)
         #expect(read.created?.systemDiskID == "D1")
         #expect(read.messages.first?.code == "W_STALL")
-        // W_STALL is said once; `stalled` is what both front-ends watch to take the note down again.
-        #expect(read.stalled == true)
-        #expect(CreateCopy.wStall.hasPrefix("Nothing has changed for 10 minutes."))
-        #expect(CreateCopy.wStall.lowercased().hasPrefix(CreateCopy.wStallShort))
+        // W_STALL is said once; `stalled` is what both front-ends watch to take the note down again,
+        // and it carries which stall it was so they can say which.
+        #expect(read.stalled == .quiet)
+        #expect(CreateCopy.wStall(vmName: "Windows 11").hasPrefix("The VM has been idle for 10 minutes"))
+        #expect(CreateCopy.wStall(vmName: "Windows 11").lowercased()
+            .hasPrefix(CreateCopy.stallShort(.quiet).lowercased()))
     }
 
     @Test("A half-written state reads as no state at all, rather than as a wrong one")

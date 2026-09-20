@@ -55,12 +55,13 @@ struct CreateJobState: Codable, Equatable, Sendable {
     var bytesWritten: UInt64?
     /// Copy-deck ids already shown (W_STALL, N_…), so a warning is shown once per job.
     var shown: [String]
-    /// Whether the VM is quiet right now by the stall rule (nothing written and almost no CPU
-    /// for ten minutes). W_STALL is said once; this says whether it is still true, so both
-    /// front-ends can take the note down when the VM stirs again. nil where the rule doesn't
+    /// What the stall rules say about the VM right now, and — when one of them has fired — which
+    /// one: a quiet VM and a busy VM that writes nothing are different wedges and get different
+    /// words. The warning itself is said once; this says whether it is still true, so both
+    /// front-ends can take the note down when the VM stirs again. nil where the rules don't
     /// apply: before Setup starts copying, after it has finished, and in a state file from a
-    /// Winbar that didn't record it.
-    var stalled: Bool?
+    /// Winbar that didn't record it. A 0.1.0 state file wrote a bool here and still decodes.
+    var stalled: StallState?
     /// Those notes and warnings in full, in the order they were raised, for a front-end to print.
     var messages: [CreateMessage] = []
     var failure: CreateFailure?

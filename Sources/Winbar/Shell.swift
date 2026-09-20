@@ -244,6 +244,19 @@ enum Host {
         return Int(value)
     }
 
+    /// A sysctl that answers with text: `hw.model` ("Mac16,6"), `machdep.cpu.brand_string`
+    /// ("Apple M5 Max"), `kern.osversion` (the macOS build). Two calls, the first only to be told
+    /// how much room the answer needs. Used by `winbar diagnose` to say what Mac this is without
+    /// starting `system_profiler`, which takes seconds.
+    static func sysctlString(_ name: String) -> String? {
+        var length = 0
+        guard sysctlbyname(name, nil, &length, nil, 0) == 0, length > 0 else { return nil }
+        var buffer = [CChar](repeating: 0, count: length)
+        guard sysctlbyname(name, &buffer, &length, nil, 0) == 0 else { return nil }
+        let value = String(cString: buffer).trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
     /// nil when fdesetup can't say. Non-root `fdesetup status` is enough for the on/off answer.
     static var fileVaultOn: Bool? {
         let result = Shell.run("/usr/bin/fdesetup", ["status"], timeout: 10)

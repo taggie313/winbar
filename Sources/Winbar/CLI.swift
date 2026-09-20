@@ -2,8 +2,8 @@ import Foundation
 
 /// The `winbar` command line. Same binary as the menu bar app; see main.swift for how it decides.
 enum CLI {
-    static let commands: Set<String> = ["doctor", "setup", "create", "display", "share", "start", "stop", "restart",
-                                        "connect", "config", "help"]
+    static let commands: Set<String> = ["doctor", "diagnose", "setup", "create", "display", "share", "start", "stop",
+                                        "restart", "connect", "config", "help"]
     static let flags: Set<String> = ["--self-test", "--version", "-h", "--help"]
 
     enum Mode: Equatable {
@@ -68,6 +68,12 @@ enum CLI {
                         password (never a flag). winbar create --help lists every option
           doctor [--vm NAME]
                         check everything and explain; exits 0 only when all is well
+          diagnose [--out PATH] [--no-logs] [--anonymise]
+                        write one plain-text file with everything a bug report needs — versions,
+                        the doctor table, Winbar's settings, the tail of the last winbar create
+                        log and UTM's recent crash reports — to your Desktop, and say where it
+                        went. Read it, then attach it. --anonymise replaces this Mac's name,
+                        your user name and the VM names with placeholders
           start         start the VM and wait for Remote Desktop
           stop [--force]
                         shut Windows down cleanly (--force: pull the plug)
@@ -115,6 +121,16 @@ enum CLI {
         case "doctor":
             return withOptions(rest, values: ["--vm"], switches: []) { parsed in
                 Doctor.run(options: Context.Options(vmOverride: parsed.values["--vm"]))
+            }
+        case "diagnose":
+            // --anonymize as well as --anonymise: the flag is the one thing here a person may have
+            // to type twice, and being told off for spelling it the other way would be absurd.
+            return withOptions(rest, values: ["--out"], switches: ["--no-logs", "--anonymise", "--anonymize"]) { parsed in
+                var options = Diagnose.Options()
+                options.out = parsed.values["--out"]
+                options.includeLogs = !parsed.has("--no-logs")
+                options.mode = parsed.has("--anonymise") || parsed.has("--anonymize") ? .anonymised : .verbatim
+                return Diagnose.run(options)
             }
         case "setup":
             return withOptions(rest, values: ["--vm"],

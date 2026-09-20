@@ -5,6 +5,48 @@ All notable changes to Winbar are recorded here. The format follows
 [Semantic Versioning](https://semver.org/). `scripts/release.sh` publishes each version's section
 as its GitHub release notes.
 
+## [Unreleased]
+
+## [0.1.1] - 2026-09-20
+
+Two things aimed at the same problem: when an install goes wrong on someone else's Mac,
+neither of us can see it. Now there is one file to send, and a wedged install says so
+instead of sitting there.
+
+### Added
+
+- `winbar diagnose`: writes one plain-text file — to your Desktop by default — with everything an
+  answerable bug report needs, instead of asking someone to copy and paste from four places. The
+  versions and environment (Winbar and where it was installed from, macOS, the Mac, free space,
+  UTM, Windows App, the Guest Tools), the whole `winbar doctor` table with its why and how, what the
+  menu bar app itself sees (the address macOS leased the VM, the interface Winbar probed, whether
+  port 3389 answered, Launch at Login, and whether Accessibility is granted to Winbar rather than to
+  a terminal — the facts a "Connect doesn't work" report turns on, which the doctor table can only
+  collapse into a ✓ or a ·), Winbar's own settings, the tail of the most recent `winbar create` log
+  and its serial log, and the headline of UTM's recent crash reports. The install job's `state.json`
+  is named, so it can be asked for, rather than copied in. Every section reports its own absence, so it works with no VM, no
+  UTM, no logs and no settings — the case it exists for — and the doctor table has a deadline on it,
+  because a UTM that never answers can otherwise take the whole run with it. Nothing shaped like a
+  password, a key or a token gets through, whichever section it came from; `--anonymise` also
+  replaces this Mac's name, your Mac and Windows user names and your VM names, and the file says at
+  the top which mode made it. `--no-logs` leaves the create logs out, `--out PATH` puts it
+  somewhere else.
+
+### Fixed
+
+- `winbar create` now says something when Windows Setup wedges while the VM stays busy. The stall
+  rule only fired on a VM that was doing nothing at all, so an install that wrote 15.9 GB and then
+  wrote nothing for 16 minutes with QEMU at 99 % of a core produced no message at all — the run
+  would have waited out the whole two-hour limit in silence. During the copy, devices and getting-ready
+  stages, twelve minutes with nothing written is now reported whatever the CPU is doing (W_STALL_BUSY),
+  alongside the quiet-VM warning it already had (W_STALL). Both are said once, both disappear when the
+  VM writes again, and neither stops or restarts anything: Winbar reports, you decide.
+- Both stall warnings now say how to get out of it — stop the VM and start it again, then
+  `winbar create --resume "name"` — and that Setup redoes the stage it was in, so that stage's
+  progress is lost.
+- The window showed a stall warning twice, once in its orange box and once in the list of everything
+  the job has said. It appears once now.
+
 ## [0.1.0] - 2026-09-20
 
 The first public release: the hand-built, hand-measured setup this project started from,
@@ -94,6 +136,7 @@ generalised so it works on any Apple silicon Mac and any Windows 11 VM in UTM.
   the pinned UTM Guest Tools installer `create` downloads at run time and never redistributes, and
   the CLDR-derived time zone table.
 
+[0.1.1]: https://github.com/taggie313/winbar/releases/tag/v0.1.1
 [0.1.0]: https://github.com/taggie313/winbar/releases/tag/v0.1.0
 
 
@@ -172,4 +215,5 @@ generalised so it works on any Apple silicon Mac and any Windows 11 VM in UTM.
   asked. It is now asked on another thread with a three-second deadline, and "macOS didn't say" is
   an answer in its own right. `winbar create` asked the same question the same way.
 
+[0.1.1]: https://github.com/taggie313/winbar/releases/tag/v0.1.1
 [0.1.0]: https://github.com/taggie313/winbar/releases/tag/v0.1.0

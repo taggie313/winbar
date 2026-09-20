@@ -296,6 +296,28 @@ else
   ok "GitHub remote: $REMOTE ($(git remote get-url "$REMOTE"))"
 fi
 
+# What may reach GitHub. This repo publishes a scrubbed single commit rather than its real
+# history: `public` carries main's TREE with none of main's COMMITS, because those name the
+# author's VM, its UUID and his saved-PC id (docs/internal/PUBLISHING.md). So both the push and
+# the tag must refer to `public` — pushing or tagging HEAD would publish all of it.
+#
+# This is not hypothetical. For 0.1.0 this script tagged HEAD and printed `git push github main`;
+# the tag had to be moved by hand and only the local pre-push hook stopped the push. A hook is a
+# backstop, not a procedure — it isn't cloned, and it can't be there on someone else's machine.
+PUSH_SPEC="$BRANCH"
+TAG_AT="HEAD"
+if git rev-parse -q --verify refs/heads/public >/dev/null; then
+  PUSH_SPEC="public:$BRANCH"
+  TAG_AT="public"
+  if [ "$(git rev-parse public^{tree})" != "$(git rev-parse HEAD^{tree})" ]; then
+    needed_for_release "'public' doesn't hold the tree you are releasing, so the tag and the push" \
+      "would publish source that isn't what this build was made from. Rebuild it first" \
+      "(docs/internal/PUBLISHING.md step 3)."
+  else
+    ok "publishing 'public' as $BRANCH (same tree as HEAD, without its history)"
+  fi
+fi
+
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
   needed_for_release "tag $TAG already exists locally; if it is left over from an abandoned run:" \
     "git tag -d $TAG"
@@ -687,8 +709,8 @@ ok "$DMG  $(du -h "$DMG" | cut -f1)  sha256 $SHA"
 # ------------------------------------------------------------ tag + notes ---
 
 step "Tagging $TAG and writing the release notes"
-git tag -a "$TAG" -m "Winbar $VERSION"
-ok "tagged $TAG at $(git rev-parse --short HEAD)"
+git tag -a "$TAG" "$TAG_AT" -m "Winbar $VERSION"
+ok "tagged $TAG at $(git rev-parse --short "$TAG_AT")$([ "$TAG_AT" = HEAD ] || echo " ($TAG_AT)")"
 
 # Written to dist/ rather than the temp dir so the printed `gh release create`
 # still works after this script has exited.
@@ -792,7 +814,7 @@ PRERELEASE_FLAG="${GH_EXTRA[*]+ ${GH_EXTRA[*]}}"
 # from the point of failure when a --publish step fails, so the way forward is
 # always a copy-paste rather than a re-run (a re-run would stop at "tag exists").
 FINISH=(
-  "git push $REMOTE $BRANCH refs/tags/$TAG"
+  "git push $REMOTE $PUSH_SPEC refs/tags/$TAG"
   "gh release create $TAG $DMG --repo $REPO --title \"Winbar $VERSION\" --notes-file $NOTES_FILE --verify-tag$PRERELEASE_FLAG"
   "curl -sfL \"$ASSET_URL\" | shasum -a 256    # must print $SHA"
   "cp $CASK_NEW \"$CASK\" && git -C \"$TAP\" add Casks/winbar.rb && git -C \"$TAP\" commit -m \"winbar $VERSION\" && git -C \"$TAP\" push"
@@ -822,8 +844,8 @@ EOS
   exit 0
 fi
 
-step "Pushing $BRANCH and $TAG to $REMOTE"
-if ! git push "$REMOTE" "$BRANCH" "refs/tags/$TAG"; then
+step "Pushing $PUSH_SPEC and $TAG to $REMOTE"
+if ! git push "$REMOTE" "$PUSH_SPEC" "refs/tags/$TAG"; then
   finish_from 0 >&2
   die "push failed; nothing is published yet. Once it's fixed, run the commands above."
 fi

@@ -344,7 +344,7 @@ private func readyModel(_ given: CreateFormFacts = facts(), build: Int = 26200,
 // MARK: - The progress view
 
 private func state(stage: CreateStage, outcome: CreateJobState.Outcome? = nil, detail: String? = nil,
-                   started: Date, updated: Date, shown: [String] = [], stalled: Bool? = nil,
+                   started: Date, updated: Date, shown: [String] = [], stalled: StallState? = nil,
                    messages: [CreateMessage] = [], failure: CreateFailure? = nil, vmID: String? = "1",
                    mediaDir: String? = "/tmp/job.noindex", select: Bool = true,
                    stageStarted: Date? = nil) -> CreateJobState {
@@ -480,20 +480,57 @@ private func message(_ code: String, _ text: String, at: Date = Date()) -> Creat
         #expect(CreateProgress(state: ordinary, now: started).rows[5].detail == "3.4 GB written to the VM's disk")
     }
 
-    /// The note follows the job's own stall flag, so it goes as soon as the VM writes again — not
+    /// The note follows the job's own stall state, so it goes as soon as the VM writes again — not
     /// when the stage changes, and not when a job from an older Winbar says nothing.
     @Test func theStallNoteShowsOnlyWhileTheJobSaysTheVMIsQuiet() {
         let started = Date(timeIntervalSince1970: 1_000_000)
-        let stalled = state(stage: .devices, started: started, updated: started, shown: ["W_STALL"], stalled: true)
-        #expect(CreateProgress(state: stalled, now: started).stall == CreateCopy.wStall)
+        let stalled = state(stage: .devices, started: started, updated: started, shown: ["W_STALL"], stalled: .quiet)
+        #expect(CreateProgress(state: stalled, now: started).stall == CreateCopy.wStall(vmName: "Windows 11"))
         let writingAgain = state(stage: .devices, started: started, updated: started, shown: ["W_STALL"],
-                                 stalled: false)
+                                 stalled: .writing)
         #expect(CreateProgress(state: writingAgain, now: started).stall == nil)
         let unsaid = state(stage: .devices, started: started, updated: started, shown: ["W_STALL"])
         #expect(CreateProgress(state: unsaid, now: started).stall == nil)
         let done = state(stage: .finish, outcome: .done, started: started, updated: started, shown: ["W_STALL"],
-                         stalled: true)
+                         stalled: .quiet)
         #expect(CreateProgress(state: done, now: started).stall == nil)
+    }
+
+    /// The kind of stall reaches both front-ends: the box says which wedge it is, and so does the
+    /// one clause the CLI's spinner line has room for. A busy VM writing nothing must not be
+    /// described as an idle one.
+    @Test func bothFrontEndsSayWhichStallItIs() {
+        let started = Date(timeIntervalSince1970: 1_000_000)
+        let busy = state(stage: .copy, started: started, updated: started, shown: ["W_STALL_BUSY"], stalled: .busy)
+        let box = try! #require(CreateProgress(state: busy, now: started).stall)
+        #expect(box.hasPrefix("Windows hasn't written anything to the VM's disk for 12 minutes, though the VM is busy"))
+        #expect(box.contains("winbar create --resume “Windows 11”"))
+        let quiet = state(stage: .copy, started: started, updated: started, shown: ["W_STALL"], stalled: .quiet)
+        #expect(try! #require(CreateProgress(state: quiet, now: started).stall).contains("almost no CPU"))
+
+        let line = CreateProgressPrinter.line(busy, spinner: "⠋", elapsed: 90, width: 120)
+        #expect(line.contains("nothing written for 12 minutes, though the VM is busy"))
+        #expect(CreateProgressPrinter.line(quiet, spinner: "⠋", elapsed: 90, width: 120)
+            .contains("the VM has been idle for 10 minutes"))
+        #expect(!CreateProgressPrinter.line(state(stage: .copy, started: started, updated: started, stalled: .writing),
+                                            spinner: "⠋", elapsed: 90, width: 120).contains("minutes,"))
+    }
+
+    /// The box is the stall's one place in the window: without this the same paragraph appeared
+    /// twice, once boxed and once in the list of everything the job has said.
+    @Test func theStallIsBoxedOrListed_neverBoth() {
+        let started = Date(timeIntervalSince1970: 1_000_000)
+        let said = [message("W_STALL_BUSY", CreateCopy.wStallBusy(vmName: "Windows 11", restarted: false))]
+        let stalled = state(stage: .copy, started: started, updated: started, shown: ["W_STALL_BUSY"],
+                            stalled: .busy, messages: said)
+        // While it is true, the box carries the job's own words and the list leaves it out.
+        #expect(CreateProgress(state: stalled, now: started).stall == said[0].text)
+        #expect(CreateProgress(state: stalled, now: started).notes.isEmpty)
+        // Once the VM writes again the box goes, and the warning stays in the record.
+        var writing = stalled
+        writing.stalled = .writing
+        #expect(CreateProgress(state: writing, now: started).stall == nil)
+        #expect(CreateProgress(state: writing, now: started).notes.map(\.code) == ["W_STALL_BUSY"])
     }
 
     /// The stage's clock counts from when the stage began, not from the job's last save: during the

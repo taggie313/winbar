@@ -28,13 +28,17 @@ enum Status {
     case info(String)
     case error(String)
 
-    var symbol: String {
+    var symbol: String { symbol(color: Term.color) }
+
+    /// The symbol itself never changes; only whether it is coloured. A row bound for a file (see
+    /// `winbar diagnose`) asks for no colour, and reads the same ✓ / ! / ? / · / ✗ as the terminal.
+    func symbol(color: Bool) -> String {
         switch self {
-        case .ok: return Term.paint("✓", .green)
-        case .fixable: return Term.paint("!", .yellow)
-        case .manual: return Term.paint("?", .cyan)
-        case .info: return Term.paint("·", .dim)
-        case .error: return Term.paint("✗", .red)
+        case .ok: return Term.paint("✓", .green, if: color)
+        case .fixable: return Term.paint("!", .yellow, if: color)
+        case .manual: return Term.paint("?", .cyan, if: color)
+        case .info: return Term.paint("·", .dim, if: color)
+        case .error: return Term.paint("✗", .red, if: color)
         }
     }
 

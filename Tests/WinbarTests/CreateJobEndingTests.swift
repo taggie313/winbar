@@ -39,7 +39,7 @@ struct CreateEndingTests {
         let now = testMoment()
         var running = testState(stage: .oobe)
         running.detail = "7.9 GB written to the VM's disk"
-        running.stalled = true
+        running.stalled = .busy
         #expect(!running.isFinished)
 
         let failed = CreateRun.ending(running, outcome: .failed, failure: testFailure, at: now)

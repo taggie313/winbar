@@ -474,7 +474,12 @@ final class CreateLock {
 final class CreateLog {
     let url: URL
     /// The serial console's own log, beside it (firmware text and the keys Winbar typed).
-    var serialURL: URL { url.deletingPathExtension().appendingPathExtension("serial.log") }
+    var serialURL: URL { CreateLog.serialURL(for: url) }
+
+    /// The same rule, without a log to ask. `init` opens the file for writing and makes the folder
+    /// it goes in, which is exactly wrong for something that only wants to read it — `winbar
+    /// diagnose` quotes both logs and must leave them as it found them.
+    static func serialURL(for url: URL) -> URL { url.deletingPathExtension().appendingPathExtension("serial.log") }
     private let handle: FileHandle?
     private let queue = DispatchQueue(label: "net.elusive.winbar.create.log")
 

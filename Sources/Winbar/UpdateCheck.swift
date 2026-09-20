@@ -131,11 +131,18 @@ enum UpdateCheck {
     /// Homebrew's own `shellenv` sets and it is right even for a prefix nobody would guess; then
     /// the two standard ones, Apple silicon's and Intel's.
     static func caskroomPaths(environment: [String: String] = ProcessInfo.processInfo.environment) -> [String] {
+        homebrewPrefixes(environment: environment).map { $0 + "/Caskroom/winbar" }
+    }
+
+    /// Where Homebrew might be, most specific first. Split out from `caskroomPaths` because
+    /// `winbar diagnose` asks the same question of a different file (`<prefix>/bin/brew`), and one
+    /// list of prefixes is one place to be wrong.
+    static func homebrewPrefixes(environment: [String: String] = ProcessInfo.processInfo.environment) -> [String] {
         var prefixes: [String] = []
         if let prefix = environment["HOMEBREW_PREFIX"], prefix.hasPrefix("/") { prefixes.append(prefix) }
         prefixes += ["/opt/homebrew", "/usr/local"]
         var seen = Set<String>()
-        return prefixes.filter { seen.insert($0).inserted }.map { $0 + "/Caskroom/winbar" }
+        return prefixes.filter { seen.insert($0).inserted }
     }
 
     /// Whether this copy of Winbar came from the Homebrew cask, so its owner is told to

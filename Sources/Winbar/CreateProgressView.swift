@@ -66,8 +66,15 @@ struct CreateProgress: Equatable {
     var step: String
     var fraction: Double
     var rows: [Row]
-    /// W_STALL, while Winbar has seen nothing change.
+    /// W_STALL or W_STALL_BUSY, while that stall is still true.
     var stall: String?
+
+    /// What the box says when the job's own message isn't in the state — a state file whose messages
+    /// were trimmed, or a window opened on a job an older Winbar started. The words are the same.
+    static func stallFallback(_ alert: InstallAlert, vmName: String) -> String {
+        alert == .stallBusy ? CreateCopy.wStallBusy(vmName: vmName, restarted: false)
+                            : CreateCopy.wStall(vmName: vmName)
+    }
     /// Everything the job has said so far, in the order it said it.
     var notes: [Note]
 
@@ -104,10 +111,16 @@ struct CreateProgress: Equatable {
             }
             return Row(stage: stage, mark: .pending, title: stage.runningTitle)
         }
-        // The job says whether the VM is quiet right now, so the note goes as soon as it writes
-        // again, rather than staying up for the rest of the stage it appeared in.
-        stall = state.stalled == true && !state.isFinished ? CreateCopy.wStall : nil
-        notes = state.messages.map {
+        // The job says which stall is true right now, if either is, so the box says the right words
+        // and goes as soon as the VM writes again, rather than staying up for the rest of the stage
+        // it appeared in. It shows the very sentence the job said when it raised the warning — and
+        // that warning is then left out of the list below, which would otherwise print it twice.
+        let live = state.isFinished ? nil : state.stalled?.alert
+        stall = live.map { alert in
+            state.messages.last { $0.code == alert.rawValue }?.text
+                ?? CreateProgress.stallFallback(alert, vmName: state.plan.vmName)
+        }
+        notes = state.messages.filter { $0.code != live?.rawValue }.map {
             Note(code: $0.code, text: $0.text, boxed: CreateProgress.boxedCodes.contains($0.code))
         }
     }

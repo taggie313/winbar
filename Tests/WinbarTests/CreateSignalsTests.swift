@@ -597,6 +597,87 @@ private enum Firmware {
         #expect(InstallWatch.isStalled(history.samples, now: 2700))
     }
 
+    /// The install that added this rule, replayed. On 2026-09-20 `winbar create` wrote 15.9 GB in
+    /// the copy stage and then wrote nothing for 16 minutes while QEMU sat at 99 % of one core, with
+    /// no restart and nothing new on the serial console. The quiet rule only fires on an idle VM, so
+    /// Winbar said nothing and would have waited out the whole two hours.
+    @Test func aBusyVMThatWritesNothingIsAStallToo() {
+        let wedged = samples(from: 0, to: 960, bytes: 15_900_000_000, cores: 0.99)
+        #expect(InstallWatch.stall(wedged, now: 960) == .busy)
+        #expect(!InstallWatch.isStalled(wedged, now: 960))                          // not the quiet rule's
+        for stage in CreateRun.stallStages {
+            #expect(InstallWatch.evaluate(times(stage: stage), history: wedged, now: 960) == .stallBusy)
+        }
+        // Said once, like every other warning, and only while Setup is the one writing.
+        #expect(InstallWatch.evaluate(times(stage: .copy), history: wedged, now: 960,
+                                      shown: [.stallBusy]) == nil)
+        #expect(InstallWatch.evaluate(times(stage: .boot, qemuStartedAt: 900), history: wedged, now: 960) == nil)
+        #expect(InstallAlert.stallBusy.rawValue == "W_STALL_BUSY")
+    }
+
+    /// Twelve minutes, and the two minutes either side of it. A CPU-heavy Setup phase that still
+    /// writes is what the rule must never call a stall, so the last byte written restarts the clock.
+    @Test func theBusyStallNeedsTwelveMinutesWithoutAWrite() {
+        #expect(InstallWatch.stall(samples(from: 0, to: 600, cores: 0.99), now: 600) == .writing)
+        #expect(InstallWatch.stall(samples(from: 0, to: 690, cores: 0.99), now: 690) == .writing)
+        #expect(InstallWatch.stall(samples(from: 0, to: 720, cores: 0.99), now: 720) == .busy)
+        // Setup working hard and writing as it goes: slow, not stuck, however long it runs.
+        var progressing = samples(from: 0, to: 3600, cores: 3.5)
+        for index in progressing.indices { progressing[index].bytesWritten = UInt64(index) << 24 }
+        #expect(InstallWatch.stall(progressing, now: 3600) == .writing)
+        #expect(InstallWatch.evaluate(times(stage: .copy), history: progressing, now: 3600) == nil)
+        // One write inside the window is enough to clear it, even at the last moment.
+        var almost = samples(from: 0, to: 720, cores: 0.99)
+        almost[1].bytesWritten -= 4096
+        #expect(InstallWatch.stall(almost, now: 720) == .writing)
+    }
+
+    /// A Mac that slept is not a busy stall either: the gap rule guards both windows, and a job that
+    /// woke to a warning would have spent one it only says once.
+    @Test func aSleepingMacIsNotABusyStallEither() {
+        var history = ActivityHistory()
+        for sample in samples(from: 0, to: 720, cores: 0.99) { history.add(sample) }
+        #expect(InstallWatch.stall(history.samples, now: 720) == .busy)
+        let cpu = history.latest!.cpuNanoseconds
+        history.add(ProcessSample(pid: 500, time: 2220, bytesWritten: 1 << 30, cpuNanoseconds: cpu))
+        #expect(InstallWatch.stall(history.samples, now: 2220) == .writing)
+        #expect(InstallWatch.evaluate(times(stage: .copy), history: history.samples, now: 2220) == nil)
+        // Stale samples say nothing about now, at either window.
+        #expect(InstallWatch.stall(samples(from: 0, to: 720, cores: 0.99), now: 841) == .writing)
+    }
+
+    /// An idle VM matches both rules — it has written nothing too — so the more specific one wins and
+    /// the person is never told an idle VM was busy. The corroborating restart fact sharpens the
+    /// busy warning's words and never decides whether it is said.
+    @Test func theQuietRuleWinsWhenBothWouldFire() {
+        let idle = samples(from: 0, to: 900)
+        #expect(InstallWatch.stall(idle, now: 900) == .quiet)
+        #expect(InstallWatch.evaluate(times(stage: .oobe), history: idle, now: 900) == .stall)
+        #expect(InstallWatch.evaluate(times(stage: .oobe), history: idle, now: 900, shown: [.stall]) == nil)
+        // A VM that went quiet and then got busy is reported again, accurately, as the other kind.
+        #expect(InstallWatch.stall(samples(from: 0, to: 900, cores: 0.99), now: 900) == .busy)
+        #expect(!InstallWatch.restartedWhileStalled(times(stage: .copy), now: 960))
+        #expect(InstallWatch.restartedWhileStalled(times(stage: .devices, restarts: 1, lastRestartAt: 900), now: 960))
+        #expect(!InstallWatch.restartedWhileStalled(times(stage: .devices, restarts: 1, lastRestartAt: 100), now: 960))
+    }
+
+    /// 0.1.0 wrote a bool here, when a quiet VM was the only stall Winbar knew. A state file from it
+    /// has to keep decoding, or `winbar create --resume` can't pick up an install that was already
+    /// running when Winbar was updated — and that is exactly when a stall rule earns its keep.
+    @Test func aStateFileFromZeroOneZeroStillDecodesItsStallFlag() throws {
+        struct Holder: Codable { var stalled: StallState? }
+        let decoder = JSONDecoder()
+        #expect(try decoder.decode(Holder.self, from: Data(#"{"stalled":true}"#.utf8)).stalled == .quiet)
+        #expect(try decoder.decode(Holder.self, from: Data(#"{"stalled":false}"#.utf8)).stalled == .writing)
+        #expect(try decoder.decode(Holder.self, from: Data(#"{"stalled":"busy"}"#.utf8)).stalled == .busy)
+        #expect(try decoder.decode(Holder.self, from: Data("{}".utf8)).stalled == nil)
+        #expect(throws: (any Error).self) {
+            try decoder.decode(Holder.self, from: Data(#"{"stalled":"sideways"}"#.utf8))
+        }
+        #expect(String(decoding: try JSONEncoder().encode(Holder(stalled: .busy)), as: UTF8.self)
+            == #"{"stalled":"busy"}"#)
+    }
+
     @Test func aByteWrittenOrANewProcessEndsTheStall() {
         var history = samples(from: 0, to: 600)
         history[10].bytesWritten += 4096                                            // something was written at t=300
@@ -607,13 +688,18 @@ private enum Firmware {
         #expect(!InstallWatch.isStalled(restarted, now: 600))
     }
 
+    /// The history reaches back over the longer of the two rules' windows, not the quiet rule's: a
+    /// sample it drops is one the no-writes rule can no longer ask about, and that rule would then
+    /// never fire at all.
     @Test func theHistoryKeepsOnlyTheWindowAndDropsAnOlderProcess() {
         var history = ActivityHistory()
         for sample in samples(from: 0, to: 1800) { history.add(sample) }
+        let start = 1800 - InstallLimits.historyWindow
+        #expect(InstallLimits.historyWindow == InstallLimits.writeStallWindow)
         #expect(history.latest?.time == 1800)
-        #expect(history.samples.first!.time <= 1200)
-        #expect(history.samples.first!.time > 1200 - 60)
-        #expect(history.samples.count < 25)
+        #expect(history.samples.first!.time <= start)
+        #expect(history.samples.first!.time > start - 60)
+        #expect(history.samples.count < Int(InstallLimits.historyWindow / 30) + 3)
         history.add(ProcessSample(pid: 501, time: 1830, bytesWritten: 0, cpuNanoseconds: 0))
         #expect(history.samples.count == 1)
     }

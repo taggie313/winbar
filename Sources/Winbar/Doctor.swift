@@ -1,28 +1,39 @@
 import Foundation
 
 /// `winbar doctor`: evaluate every check and print where things stand.
+///
+/// Every line it shows is built before it is shown, and handed to an `emit` that prints by default.
+/// That is what lets `winbar diagnose` put the same table — the same rows, the same why and how — in
+/// a file, with `color: false` and no terminal anywhere in sight, without a second renderer that
+/// could drift from this one.
 enum Doctor {
     static func run(options: Context.Options) -> Int32 {
         let ctx = Context(options: options)
-        printHeader(ctx)
+        print(header(ctx))
         let results = report(ctx)
         printSummary(results)
         return exitCode(results)
     }
 
-    static func printHeader(_ ctx: Context) {
-        print("Winbar \(AppBundle.version)" + (ctx.vmName.map { ", VM \($0)" } ?? ", no VM chosen yet"))
+    static func header(_ ctx: Context) -> String {
+        "Winbar \(AppBundle.version)" + (ctx.vmName.map { ", VM \($0)" } ?? ", no VM chosen yet")
     }
 
-    /// Prints the table, one section at a time, and returns what it found.
+    static func printHeader(_ ctx: Context) { print(header(ctx)) }
+
+    /// The table, one section at a time, and what it found. Each line goes to `emit` the moment it
+    /// is decided rather than at the end, because a slow row is exactly when someone is watching.
     @discardableResult
-    static func report(_ ctx: Context) -> [(check: Check, status: Status)] {
+    static func report(_ ctx: Context, color: Bool = Term.color,
+                       emit: (String) -> Void = { print($0) }) -> [(check: Check, status: Status)] {
         var collected: [(check: Check, status: Status)] = []
         for section in Check.Section.allCases {
-            print("")
-            print(Term.paint(section.rawValue, .bold))
+            emit("")
+            emit(Term.paint(section.rawValue, .bold, if: color))
             collected += results(Recipe.checks.filter { $0.section == section }, status: { ctx.status(of: $0) },
-                                 show: { printLine($0, $1) })
+                                 show: { check, status in
+                                     for line in lines(check, status, color: color) { emit(line) }
+                                 })
         }
         return collected
     }
@@ -48,31 +59,40 @@ enum Doctor {
         return results
     }
 
-    static func printLine(_ check: Check, _ status: Status) {
+    /// One row: the status symbol, the check's id and title, its detail — and, for anything that
+    /// isn't ✓, why it matters and (for a manual step) how to do it.
+    static func lines(_ check: Check, _ status: Status, color: Bool = Term.color) -> [String] {
         let id = check.id.padding(toLength: 4, withPad: " ", startingAt: 0)
         let title = check.title.padding(toLength: 24, withPad: " ", startingAt: 0)
-        print("  \(status.symbol) \(id)\(title)\(status.detail)")
-        guard status.needsAttention else { return }
+        var lines = ["  \(status.symbol(color: color)) \(id)\(title)\(status.detail)"]
+        guard status.needsAttention else { return lines }
         let indent = String(repeating: " ", count: 8)
-        print(Term.paint(indent + "why: " + check.why, .dim))
-        if case .manual(_, let how) = status { print(indent + "how: " + how) }
+        lines.append(Term.paint(indent + "why: " + check.why, .dim, if: color))
+        if case .manual(_, let how) = status { lines.append(indent + "how: " + how) }
+        return lines
     }
 
-    static func printSummary(_ results: [(check: Check, status: Status)]) {
+    static func printLine(_ check: Check, _ status: Status) {
+        for line in lines(check, status) { print(line) }
+    }
+
+    static func summaryLines(_ results: [(check: Check, status: Status)], color: Bool = Term.color) -> [String] {
         let fixable = results.filter { $0.status.isFixable }.count
         let manual = results.filter { $0.status.isManual }.count
         let errors = results.filter { if case .error = $0.status { return true } else { return false } }.count
-        print("")
         guard fixable + manual + errors > 0 else {
-            print(Term.paint("Everything matches the recipe.", .green))
-            return
+            return ["", Term.paint("Everything matches the recipe.", .green, if: color)]
         }
         var parts: [String] = []
         if fixable > 0 { parts.append("\(fixable) winbar setup can fix") }
         // Not "setup walks you through them": some (G4 with nobody signed in, say) only say what to do.
         if manual > 0 { parts.append("\(manual) need you (setup explains each one)") }
         if errors > 0 { parts.append("\(errors) error\(errors == 1 ? "" : "s")") }
-        print(parts.joined(separator: "; ") + ".")
+        return ["", parts.joined(separator: "; ") + "."]
+    }
+
+    static func printSummary(_ results: [(check: Check, status: Status)]) {
+        for line in summaryLines(results) { print(line) }
     }
 
     /// 0 only when nothing is fixable, manual or an error.

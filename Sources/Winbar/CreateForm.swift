@@ -411,12 +411,42 @@ extension CreateCopy {
         "The VM's disk can grow to \(diskGB) GB, but your Mac has \(freeGB) GB free. That's enough to install, but "
             + "Windows will run out of room before its disk is full."
     }
-    static let wStall = wStallShort.prefix(1).uppercased() + wStallShort.dropFirst()
-        + ". Windows Setup may be showing a question or an error: look at the VM's window in UTM. If it's a question, "
-        + "answer it there; Winbar carries on when Windows does."
-    /// W_STALL's first line, for a line that has no room for the rest: the CLI's spinner shows it
-    /// while `CreateJobState.stalled` is true, and drops it when the VM writes again.
-    static let wStallShort = "nothing has changed for 10 minutes"
+    /// The two stalls. What separates them is the only thing the person can act on: a VM that is
+    /// doing nothing at all, and a VM working hard while Windows writes nothing, read very
+    /// differently in a window you have been watching for a quarter of an hour. Both end with the
+    /// recovery that actually worked on the install this rule came from, and with what it costs.
+    static func wStall(vmName: String) -> String {
+        "The VM has been idle for \(minutes(InstallLimits.stallWindow)): nothing written to its disk, and almost no "
+            + "CPU. Windows Setup may be showing a question or an error — look at the VM's window in UTM, and answer "
+            + "it there if it is. Winbar carries on when Windows does. " + wStallRecovery(vmName: vmName)
+    }
+    /// `restarted` is a corroborating fact, not a condition: when the VM hasn't restarted while it
+    /// wrote nothing, the one innocent explanation for a quiet disk is ruled out and this says so.
+    static func wStallBusy(vmName: String, restarted: Bool) -> String {
+        "Windows hasn't written anything to the VM's disk for \(minutes(InstallLimits.writeStallWindow)), though the "
+            + "VM is busy" + (restarted ? "" : ", and it hasn't restarted in that time")
+            + ". Setup writes all the way through the work it does, so this looks stuck rather than slow. Look at the "
+            + "VM's window in UTM, and answer anything it is asking. " + wStallRecovery(vmName: vmName)
+    }
+    /// Shared by both: what to do when the VM's window has nothing to answer. Measured on
+    /// 2026-09-20 — a Setup wedged this way came back from a force stop and a start, redid the stage
+    /// it was in and finished normally. Winbar never does it for you: the stall rule reports, and
+    /// waits.
+    static func wStallRecovery(vmName: String) -> String {
+        "If there's nothing to answer, stop the VM in UTM and start it again — force stop it if it won't stop — then "
+            + "run winbar create --resume “\(vmName)”. Setup redoes the stage it was in, so you lose that stage's "
+            + "progress, but not the install."
+    }
+    /// Each stall's first clause, for a line with no room for the rest: the CLI's spinner shows it
+    /// while `CreateJobState.stalled` names a stall, and drops it when the VM writes again.
+    static func stallShort(_ stall: StallState) -> String {
+        switch stall {
+        case .writing: return ""
+        case .quiet: return "the VM has been idle for \(minutes(InstallLimits.stallWindow))"
+        case .busy: return "nothing written for \(minutes(InstallLimits.writeStallWindow)), though the VM is busy"
+        }
+    }
+    private static func minutes(_ window: TimeInterval) -> String { "\(Int(window / 60)) minutes" }
 
     // Errors used by the window itself (the rest arrive as ISOProblem/ChoiceProblem/CreateFailure text).
     static let eUTMMissing = eUTMMissingTitle + " " + eUTMMissingNext

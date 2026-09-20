@@ -11,7 +11,13 @@ enum Term {
     enum Tint: String { case green = "32", yellow = "33", red = "31", cyan = "36", dim = "2", bold = "1" }
 
     static func paint(_ text: String, _ tint: Tint) -> String {
-        color ? "\u{1B}[\(tint.rawValue)m\(text)\u{1B}[0m" : text
+        paint(text, tint, if: color)
+    }
+
+    /// The same, for text whose destination isn't this process's stdout: `winbar diagnose` builds
+    /// the doctor table for a file, where an escape sequence is noise a person has to read past.
+    static func paint(_ text: String, _ tint: Tint, if enabled: Bool) -> String {
+        enabled ? "\u{1B}[\(tint.rawValue)m\(text)\u{1B}[0m" : text
     }
 
     static func error(_ message: String) {

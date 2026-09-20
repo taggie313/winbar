@@ -494,8 +494,10 @@ final class CreateProgressPrinter {
     static func line(_ state: CreateJobState, spinner: String, elapsed: TimeInterval, width: Int) -> String {
         var left = "\(spinner) \(state.stage.runningTitle)"
         if let detail = state.detail, !detail.isEmpty { left += " · \(detail)" }
-        // W_STALL was said once, when it happened; this says whether it is still true.
-        if state.stalled == true { left += " · \(CreateCopy.wStallShort)" }
+        // The warning was said once, when it happened; this says whether it is still true, and
+        // which of the two stalls it is — an idle VM and a busy one that writes nothing are not the
+        // same news.
+        if let stall = state.stalled, stall != .writing { left += " · \(CreateCopy.stallShort(stall))" }
         let seconds = Int(max(0, elapsed))
         let right = "step \(state.stage.number) of 10  " + String(format: "%d:%02d", seconds / 60, seconds % 60)
         if left.count + right.count + 2 > width { left = String(left.prefix(max(0, width - right.count - 3))) + "…" }

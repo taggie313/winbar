@@ -10,7 +10,18 @@ assignees: ''
 
 
 
-**`winbar doctor`**
+**The diagnostic report**
+
+Run `winbar diagnose` and attach the file it writes to your Desktop (drag it into this box). It has
+the `winbar doctor` table, the versions involved, Winbar's settings, the tail of the last
+`winbar create` log and UTM's recent crash reports in it — which is everything below, in one file,
+so you don't have to collect it yourself. It works even when nothing else does.
+
+Read it first: it names your VM, this Mac and your user names. `winbar diagnose --anonymise`
+replaces those with placeholders, and `--no-logs` leaves the create logs out. Neither ever contains
+a password.
+
+If you'd rather paste than attach, `winbar doctor` alone is the next best thing:
 
 <details>
 
@@ -33,7 +44,7 @@ paste the output here
 
 </details>
 
-**Your setup**
+**Your setup** (all of this is in the diagnostic report — only fill it in if you didn't attach one)
 
 - Winbar version (`winbar --version`):
 - macOS version and Mac model (*Apple menu > About This Mac*):
@@ -47,5 +58,6 @@ Screenshots, the VM's UTM settings, what you had already tried.
 
 ---
 
-Issues are public. `winbar doctor` and a debug run print your VM's name, its host name and your
-Windows user name; edit out anything you'd rather not publish. Neither prints a password.
+Issues are public. The diagnostic report, `winbar doctor` and a debug run all print your VM's name,
+its host name and your Windows user name; edit out anything you'd rather not publish, or run
+`winbar diagnose --anonymise`. None of them prints a password.

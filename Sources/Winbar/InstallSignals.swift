@@ -179,7 +179,7 @@ enum ProcessActivity {
     }()
 }
 
-/// The samples the stall rule needs: the current QEMU process's, back to just past the stall window.
+/// The samples the stall rules need: the current QEMU process's, back to just past the longest window.
 struct ActivityHistory: Codable, Equatable, Sendable {
     private(set) var samples: [ProcessSample] = []
 
@@ -188,7 +188,8 @@ struct ActivityHistory: Codable, Equatable, Sendable {
         samples.removeAll { $0.pid != sample.pid || $0.time >= sample.time }
         samples.append(sample)
         // Keep the newest sample at least one window old (the window's start) and everything after it.
-        if let start = samples.lastIndex(where: { $0.time <= sample.time - InstallLimits.stallWindow }), start > 0 {
+        // The window is the longer of the two rules': what the history drops, no rule can ask about.
+        if let start = samples.lastIndex(where: { $0.time <= sample.time - InstallLimits.historyWindow }), start > 0 {
             samples.removeFirst(start)
         }
     }
@@ -209,14 +210,71 @@ enum InstallAlert: String, Codable, CaseIterable, Sendable {
     case bootNoPrompt = "E_BOOT_NO_PROMPT"
     /// Stages 6-8: nothing written and QEMU under 5 % of a core for 10 minutes. Shown once.
     case stall = "W_STALL"
+    /// Stages 6-8: nothing written for 12 minutes while QEMU is busy. Shown once.
+    case stallBusy = "W_STALL_BUSY"
+}
+
+/// What the stall rules make of the VM right now. Three answers, not two, because a stuck install
+/// has two shapes that look nothing alike from the outside and want different words: a VM doing
+/// nothing at all, and a VM burning a core while Windows writes nothing. `nil` (the state's property
+/// is optional) is a fourth thing again — the rules don't apply here.
+enum StallState: String, Codable, Equatable, Sendable {
+    /// The rules apply and found nothing wrong — the VM is writing, or the samples can't say.
+    case writing
+    /// Nothing written and QEMU under 5 % of a core for the quiet window: the VM is doing nothing.
+    case quiet
+    /// Nothing written for the longer window while QEMU stays busy: Setup is spinning, not working.
+    case busy
+
+    /// The copy-deck id this is reported under, or nil when there is nothing to report.
+    var alert: InstallAlert? {
+        switch self {
+        case .writing: return nil
+        case .quiet: return .stall
+        case .busy: return .stallBusy
+        }
+    }
+
+    /// 0.1.0 wrote this as a bool, when a quiet VM was the only stall Winbar knew: `true` meant the
+    /// quiet rule had fired and `false` meant the VM was writing. An install that was already
+    /// running when Winbar was updated still has to decode, or `--resume` can't pick it up at all.
+    init(from decoder: any Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if let flag = try? value.decode(Bool.self) {
+            self = flag ? .quiet : .writing
+            return
+        }
+        let raw = try value.decode(String.self)
+        guard let state = StallState(rawValue: raw) else {
+            throw DecodingError.dataCorruptedError(in: value, debugDescription: "unknown stall state “\(raw)”")
+        }
+        self = state
+    }
 }
 
 /// Every limit the install is judged against, in one place.
 enum InstallLimits {
     static let noPrompt: TimeInterval = 5 * 60
+    /// The quiet-VM stall: nothing written *and* almost no CPU. Two signals agreeing, so ten minutes
+    /// is enough to be sure.
     static let stallWindow: TimeInterval = 10 * 60
     /// Of one core.
     static let stallCPU = 0.05
+    /// The busy stall: nothing written for this long is worth saying whatever QEMU's CPU is doing.
+    ///
+    /// Twelve minutes, not ten, because this rule has one signal where the quiet rule has two, and
+    /// the two extra minutes are cheap against a two-hour budget. What it has to sit out, measured
+    /// or bounded: Setup's CPU-heavy phases (expanding install.wim, applying the component store,
+    /// OOBE's "getting ready") all write while they work, and NTFS's lazy writer flushes every few
+    /// seconds besides; the longest legitimately quiet stretch inside stages 6-8 is a guest restart,
+    /// which is a minute or two of firmware and boot, not ten. What it has to catch: the install
+    /// that prompted this rule wrote 15.9 GB, then wrote nothing for 16 minutes with QEMU pinned at
+    /// 99 % of a core, and Winbar would have said nothing for another hour and three quarters.
+    /// Erring long is a couple of minutes of silence; erring short is a false alarm on a healthy
+    /// install, which teaches people to ignore the real one.
+    static let writeStallWindow: TimeInterval = 12 * 60
+    /// How far back `ActivityHistory` has to reach to answer either rule.
+    static var historyWindow: TimeInterval { max(stallWindow, writeStallWindow) }
     static let agentSilence: TimeInterval = 15 * 60
     static let whole: TimeInterval = 2 * 60 * 60
     /// The wait for status.txt after the agent answers; stage 9 has no limit of its own.
@@ -266,7 +324,7 @@ enum InstallWatch {
             due.append(.agentNever)
         }
         if promptUnanswered(times, history: history, now: now) { due.append(.bootNoPrompt) }
-        if setup.contains(times.stage), isStalled(history, now: now) { due.append(.stall) }
+        if setup.contains(times.stage), let stall = stall(history, now: now).alert { due.append(stall) }
         return due.first { !shown.contains($0) }
     }
 
@@ -283,24 +341,55 @@ enum InstallWatch {
         return latest.bytesWritten < InstallLimits.fallbackProgressBytes
     }
 
-    /// Nothing written, and under 5 % of a core on average, over the last 10 minutes of samples from
-    /// one process. Samples must be fresh, and the window continuous: a gap in sampling proves nothing.
+    /// What the two stall rules make of the samples. Observe only: nothing here stops the VM, and a
+    /// stall is reported, never acted on.
+    ///
+    /// Quiet wins when both hold. It is the more specific diagnosis — and since a quiet VM has also
+    /// written nothing, the busy rule would otherwise fire a second time two minutes later and tell
+    /// the person an idle VM was busy.
+    static func stall(_ history: [ProcessSample], now: TimeInterval) -> StallState {
+        if nothingWritten(history, now: now, over: InstallLimits.stallWindow, quietCPU: true) { return .quiet }
+        if nothingWritten(history, now: now, over: InstallLimits.writeStallWindow) { return .busy }
+        return .writing
+    }
+
+    /// The quiet-VM rule on its own, which is what the stage's title line and the W_STALL warning
+    /// have always meant by "stalled".
+    static func isStalled(_ history: [ProcessSample], now: TimeInterval) -> Bool {
+        stall(history, now: now) == .quiet
+    }
+
+    /// Nothing written by one process over `window`, and with `quietCPU` under 5 % of a core over it
+    /// as well. Samples must be fresh, and the window continuous: a gap in sampling proves nothing.
     /// `ActivityHistory.add` keeps exactly one sample from before the window, so a Mac that slept for
     /// half an hour leaves a window of two samples straddling the sleep — both with the same counters,
     /// because QEMU was frozen, not stalled. That is not a stall, and the person would hear about it
-    /// seconds after waking, burning the one W_STALL the job gets.
-    static func isStalled(_ history: [ProcessSample], now: TimeInterval) -> Bool {
+    /// seconds after waking, burning a warning the job says only once.
+    static func nothingWritten(_ history: [ProcessSample], now: TimeInterval, over window: TimeInterval,
+                               quietCPU: Bool = false) -> Bool {
         guard let latest = history.last, now - latest.time <= InstallLimits.sampleFreshness,
-              let startIndex = history.lastIndex(where: { $0.time <= latest.time - InstallLimits.stallWindow })
+              let startIndex = history.lastIndex(where: { $0.time <= latest.time - window })
         else { return false }
-        let window = history[startIndex...]
-        let start = window.first!
-        guard zip(window, window.dropFirst()).allSatisfy({ $1.time - $0.time <= InstallLimits.sampleFreshness }) else {
-            return false
-        }
-        guard window.allSatisfy({ $0.pid == latest.pid && $0.bytesWritten == latest.bytesWritten }),
-              latest.cpuNanoseconds >= start.cpuNanoseconds, latest.time > start.time else { return false }
+        let samples = history[startIndex...]
+        let start = samples.first!
+        guard zip(samples, samples.dropFirst()).allSatisfy({ $1.time - $0.time <= InstallLimits.sampleFreshness })
+        else { return false }
+        guard samples.allSatisfy({ $0.pid == latest.pid && $0.bytesWritten == latest.bytesWritten }),
+              latest.time > start.time else { return false }
+        guard quietCPU else { return true }
+        guard latest.cpuNanoseconds >= start.cpuNanoseconds else { return false }
         let cores = Double(latest.cpuNanoseconds - start.cpuNanoseconds) / 1e9 / (latest.time - start.time)
         return cores < InstallLimits.stallCPU
+    }
+
+    /// A fact that corroborates the busy stall; never a gate on it. The one healthy reason for a
+    /// Setup stage's disk to go quiet is a guest restart, so a VM that hasn't restarted while it was
+    /// writing nothing wasn't rebooting — and the warning says so. When a restart *is* in the window
+    /// the warning still goes out, only without that sentence: a person would rather hear "this
+    /// looks stuck" once too often than not at all.
+    static func restartedWhileStalled(_ times: InstallTimes, now: TimeInterval,
+                                      window: TimeInterval = InstallLimits.writeStallWindow) -> Bool {
+        guard let last = times.lastRestartAt else { return false }
+        return now - last <= window
     }
 }

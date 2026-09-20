@@ -78,7 +78,7 @@ final class MemoryStore: SettingsStore {
         MemoryStore([
             Config.Key.vmName: "winlab01",
             Config.Key.rdpHost: "winlab01.local",
-            Config.Key.rdpUser: "taggie",
+            Config.Key.rdpUser: "rosa",
             Config.Key.vmMAC: "72:F0:0A:01:02:03",
             Config.Key.savedPCName: "Winlab",
             Config.Key.savedPCHost: "winlab01.local",
@@ -89,7 +89,7 @@ final class MemoryStore: SettingsStore {
             Config.Key.sharedFolder: "/Users/x/Shared-with-Windows",
             Config.Key.sharedFolderByWinbar: true,
             Config.Key.sharedFolderUTM: [14779],
-            Config.Key.passwordCheckedFor: ["WINLAB01\\taggie"],
+            Config.Key.passwordCheckedFor: ["WINLAB01\\rosa"],
             Config.Key.lastUpdateCheck: Date(timeIntervalSince1970: 1_789_000_000),
             Config.Key.lastSeenVersion: "0.1.0",
             "NSWindow Frame winbar-create": "564 267 600 728 0 0 1728 1084 ",
@@ -101,7 +101,7 @@ final class MemoryStore: SettingsStore {
         let moved = VMSettings.migrate(name: "winlab01", id: nil, in: store)
         #expect(moved.contains(Config.Key.rdpHost) && moved.contains(Config.Key.vmMAC))
         #expect(store.string(Config.Key.rdpHost, "winlab01") == "winlab01.local")
-        #expect(store.string(Config.Key.rdpUser, "winlab01") == "taggie")
+        #expect(store.string(Config.Key.rdpUser, "winlab01") == "rosa")
         #expect(store.string(Config.Key.savedPCName, "winlab01") == "Winlab")
         #expect(store.object(forKey: VMSettings.key(Config.Key.consoleEnabled, for: "winlab01")) as? Bool == false)
         #expect(store.object(forKey: VMSettings.key(Config.Key.bitLockerOn, for: "winlab01")) as? Bool == true)
@@ -110,7 +110,7 @@ final class MemoryStore: SettingsStore {
         for setting in Config.Key.perVM { #expect(store.object(forKey: setting) == nil, "\(setting) left behind") }
         // Which VM is chosen, and what describes the Mac, stay where they are.
         #expect(store.object(forKey: Config.Key.vmName) as? String == "winlab01")
-        #expect(store.object(forKey: Config.Key.passwordCheckedFor) as? [String] == ["WINLAB01\\taggie"])
+        #expect(store.object(forKey: Config.Key.passwordCheckedFor) as? [String] == ["WINLAB01\\rosa"])
         #expect(store.object(forKey: Config.Key.lastSeenVersion) as? String == "0.1.0")
         #expect(store.object(forKey: Config.Key.lastUpdateCheck) != nil)
         #expect(store.object(forKey: "NSWindow Frame winbar-create") != nil)
@@ -178,7 +178,7 @@ final class MemoryStore: SettingsStore {
     func winlab01() -> MemoryStore {
         let store = MemoryStore()
         store.set("winlab01.local", forKey: VMSettings.key(Config.Key.rdpHost, for: "winlab01"))
-        store.set("taggie", forKey: VMSettings.key(Config.Key.rdpUser, for: "winlab01"))
+        store.set("rosa", forKey: VMSettings.key(Config.Key.rdpUser, for: "winlab01"))
         store.set("72:F0:0A:01:02:03", forKey: VMSettings.key(Config.Key.vmMAC, for: "winlab01"))
         VMSettings.remember(name: "winlab01", for: "winlab01", in: store)
         return store
@@ -192,7 +192,7 @@ final class MemoryStore: SettingsStore {
         store.set("winbar-test.local", forKey: VMSettings.key(Config.Key.rdpHost, for: test.token))
         // Nothing of the VM being left has gone.
         #expect(store.string(Config.Key.rdpHost, "winlab01") == "winlab01.local")
-        #expect(store.string(Config.Key.rdpUser, "winlab01") == "taggie")
+        #expect(store.string(Config.Key.rdpUser, "winlab01") == "rosa")
         #expect(store.string(Config.Key.vmMAC, "winlab01") == "72:F0:0A:01:02:03")
         // And back again: the same record, not a fresh one.
         let back = VMSettings.select(name: "winlab01", id: nil, in: store)
@@ -212,7 +212,7 @@ final class MemoryStore: SettingsStore {
         // Renamed in UTM, chosen again under the new name: still the same record.
         let renamed = VMSettings.select(name: "winlab", id: "id-1", in: store)
         #expect(renamed.token == "id-1")
-        #expect(store.string(Config.Key.rdpUser, "id-1") == "taggie")
+        #expect(store.string(Config.Key.rdpUser, "id-1") == "rosa")
         #expect(VMSettings.recordedName(of: "id-1", in: store) == "winlab")
     }
 

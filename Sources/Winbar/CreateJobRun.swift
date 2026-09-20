@@ -217,17 +217,17 @@ final class CreateRun {
         Automation.willPrompt(bundleID: Config.utmBundleID) ? CreateCopy.automationDetail(app: Automation.host.name) : nil
     }
 
-    /// The stages the stall rule watches: Windows Setup writing to the disk.
+    /// The stages the stall rules watch: Windows Setup writing to the disk.
     static let stallStages: [CreateStage] = [.copy, .devices, .oobe]
 
-    /// Records whether the VM is quiet right now, so the front-ends can take their stall note down
-    /// again when it stirs. W_STALL itself is still said once, by `raise`.
-    private func stalled(_ quiet: Bool?) {
-        guard state.stalled != quiet else { return }
-        state.stalled = quiet
-        if quiet == false, state.shown.contains(InstallAlert.stall.rawValue) {
-            log.write("the VM is writing again")
-        }
+    /// Records what the stall rules say right now — including which of them fired — so the
+    /// front-ends can show the right words and take their stall note down again when the VM stirs.
+    /// The warning itself is still said once, by `raise`.
+    private func stalled(_ now: StallState?) {
+        guard state.stalled != now else { return }
+        let before = state.stalled
+        state.stalled = now
+        if now == .writing, before?.alert != nil { log.write("the VM is writing again") }
         save()
     }
 
@@ -887,10 +887,10 @@ final class CreateRun {
             if state.stage != .firstLogon { detail(stageDetail()) }
 
             let times = installTimes(now: now, serialConsole: !(serial == nil || fallbackUsed))
-            stalled(CreateRun.stallStages.contains(state.stage) ? InstallWatch.isStalled(history.samples, now: now) : nil)
+            stalled(CreateRun.stallStages.contains(state.stage) ? InstallWatch.stall(history.samples, now: now) : nil)
             if let alert = InstallWatch.evaluate(times, history: history.samples, now: now,
                                                  shown: Set(state.shown.compactMap(InstallAlert.init(rawValue:)))) {
-                try raise(alert)
+                try raise(alert, times: times, now: now)
             }
             pause(1)
         }
@@ -962,11 +962,16 @@ final class CreateRun {
     private var lastRestartAt: TimeInterval?
 
     /// What a limit means for the run: the two that say Windows is stuck end it (the VM keeps
-    /// running, and `--resume` can try again); the other two are shown once and waited out.
-    private func raise(_ alert: InstallAlert) throws {
+    /// running, and `--resume` can try again); the others are shown once and waited out. The stalls
+    /// report and never act — no restart of Winbar's doing, however stuck the VM looks.
+    private func raise(_ alert: InstallAlert, times: InstallTimes, now: TimeInterval) throws {
         switch alert {
         case .stall:
-            message(alert.rawValue, CreateCopy.wStall)
+            message(alert.rawValue, CreateCopy.wStall(vmName: vmName))
+        case .stallBusy:
+            message(alert.rawValue,
+                    CreateCopy.wStallBusy(vmName: vmName,
+                                          restarted: InstallWatch.restartedWhileStalled(times, now: now)))
         case .bootNoPrompt:
             message(alert.rawValue, "The VM started, but the installer's “Press any key” prompt never appeared on its "
                     + "serial console. Look at the VM's window in UTM: if it says “Press any key to boot from CD or "
