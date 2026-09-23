@@ -108,8 +108,17 @@ extension CreateCopy {
 
     static func pStep(_ n: Int) -> String { "step \(n) of 10" }
 
-    /// The heading above the command on the Done screen; the command itself is `setupCommand`.
-    static let nNextCommand = "One more step, about 5 minutes, in Terminal:"
+    /// The heading above the command on the Done screen; the command itself is `setupCommand`. While
+    /// the menu offers **Set Up Winbar…** (`SetupWindow.availableToEveryone`) that comes first: the
+    /// person reading this opened New Windows VM… from the menu, and may never have opened Terminal.
+    /// The command and its Copy button stay, as the Terminal route. With the new VM left unselected
+    /// the menu still looks after the old one, so the window has to be told which VM, as the command is.
+    static func nNextCommand(plan: CreatePlan, setUpInMenu: Bool = SetupWindow.availableToEveryone) -> String {
+        guard setUpInMenu else { return "One more step, about 5 minutes, in Terminal:" }
+        let which = plan.select ? "" : " and pick “\(plan.vmName)” as its VM"
+        return "One more step, about 5 minutes: choose \(SetupCopy.menuItem) in Winbar's menu\(which), "
+            + "or run this in Terminal:"
+    }
 
     /// What to run next, worked out from the plan rather than assumed: with the new VM left
     /// unselected (`--no-select`, or the window's "Use this VM in Winbar's menu" unticked) Winbar's
@@ -313,6 +322,24 @@ extension CreateCopy {
         return "Winbar couldn't save this PC in Windows App. Run winbar setup once Windows is installed: it offers to "
             + "save the PC for \(host), or shows you how to add it yourself."
     }
+
+    /// Wizard-origin installs carry these notes through the handoff, so their recovery names
+    /// screens, not a command the person must run. Unknown notes retain all their original detail.
+    static func setupNote(code: String, text: String) -> String {
+        switch code {
+        case "N_PC_APP_RUNNING", "N_PC_FAILED":
+            return "The PC wasn't saved in Windows App. The Saved PC step after installation will help you save it."
+        case "N_KEPT_CONSOLE":
+            return "The VM keeps its UTM window. Setup offers headless mode only after you confirm that Remote Desktop works."
+        case "W_RDP_OFF": return "Remote Desktop didn't turn on. Check Remote Desktop on the Tune step after installation."
+        case "W_BITLOCKER_ON": return "Windows encrypted its disk with BitLocker after all. Winbar left it alone. The Tune step will ask whether to keep it on."
+        case "W_PANTHER":
+            return text.replacingOccurrences(of: "or let winbar setup report them", with: "then use Report a Problem… in Winbar's menu if you need help")
+        case "W_AUTOLOGON_PLAINTEXT":
+            return text.replacingOccurrences(of: "winbar setup", with: "the Tune step")
+        default: return text
+        }
+    }
     static let nPWLong = """
         Windows Setup needs your password in its answer file. Winbar writes it there scrambled (Base64), the way \
         Microsoft's tools do: that hides it from a glance but isn't encryption, and anyone who can read the file can \
@@ -404,8 +431,15 @@ extension CreateCopy {
         "\(file) is on \(volume), which can be disconnected. Keep it connected until Windows finishes installing: UTM "
             + "reads the ISO from there and doesn't copy it."
     }
-    static func wUTMUntested(version: String) -> String {
-        "UTM \(version) hasn't been tested with winbar create (tested: \(CreatePreflight.testedVersion)). Carrying on."
+    static func wUTMUntested(version: String, tested: String) -> String {
+        "UTM \(version) hasn't been tested with winbar create (tested: \(tested)). Carrying on."
+    }
+    /// The pre-release sentence says both halves of what is known, because the vague one threw the
+    /// better half away: UTM 5's source was read and the parts Winbar drives are unchanged
+    /// (docs/internal/specs/utm5-support.md §2) — and nothing has been run on a UTM 5.
+    static func wUTMPrerelease(version: String, tested: String) -> String {
+        "UTM \(version) is a pre-release, and winbar create has only been run against \(tested). The parts Winbar "
+            + "uses are the same in UTM 5.0.5's source, but nothing has been run on a UTM 5. Carrying on."
     }
     static func wSpace(diskGB: Int, freeGB: Int) -> String {
         "The VM's disk can grow to \(diskGB) GB, but your Mac has \(freeGB) GB free. That's enough to install, but "
@@ -437,6 +471,26 @@ extension CreateCopy {
             + "run winbar create --resume “\(vmName)”. Setup redoes the stage it was in, so you lose that stage's "
             + "progress, but not the install."
     }
+    /// The same recovery in a window, which has buttons for it: force-stopping the VM ends the install
+    /// with E_VM_STOPPED, which is resumable, so the window's Try Again starts the VM again and
+    /// carries on — `--resume`, without Terminal.
+    static let wStallRecoveryWindow = "If there's nothing to answer, force stop the VM in UTM. The install then stops "
+        + "here, and Try Again starts the VM again: Setup redoes the stage it was in, so you lose that stage's "
+        + "progress, but not the install."
+
+    /// A job's text as a window shows it: the job writes one sentence for both front-ends, and the
+    /// recovery that says "run winbar create --resume" is Terminal's. Everything else is unchanged.
+    static func forWindow(_ text: String, vmName: String) -> String {
+        text.replacingOccurrences(of: wStallRecovery(vmName: vmName), with: wStallRecoveryWindow)
+    }
+
+    /// A failure's next step in a window: a `--resume` is the Try Again button beside it when the job
+    /// can carry on, and nothing to say when it can't (Close and Delete VM… are the only ways on).
+    static func windowNextStep(_ next: String, resumable: Bool) -> String? {
+        guard next.contains("--resume") else { return next }
+        return resumable ? "Try Again starts the VM again and carries on from where the install stopped." : nil
+    }
+
     /// Each stall's first clause, for a line with no room for the rest: the CLI's spinner shows it
     /// while `CreateJobState.stalled` names a stall, and drops it when the VM writes again.
     static func stallShort(_ stall: StallState) -> String {
@@ -449,11 +503,18 @@ extension CreateCopy {
     private static func minutes(_ window: TimeInterval) -> String { "\(Int(window / 60)) minutes" }
 
     // Errors used by the window itself (the rest arrive as ISOProblem/ChoiceProblem/CreateFailure text).
-    static let eUTMMissing = eUTMMissingTitle + " " + eUTMMissingNext
+    static var eUTMMissing: String { eUTMMissingTitle + " " + eUTMMissingNext }
     /// The job reports the same thing as a failure, which has a title and a next step (E_UTM_MISSING).
     static let eUTMMissingTitle = "UTM isn't installed."
-    static let eUTMMissingNext = "winbar create in Terminal offers to install UTM for you. Or install it yourself "
-        + "(brew install --cask utm, or getutm.app), then run this again."
+    /// Names **Set Up Winbar…** first while the menu offers it, for the same reason as `nNextCommand`;
+    /// `winbar create` stays named, as the Terminal route that offers the same install.
+    static var eUTMMissingNext: String { eUTMMissingNext(setUpInMenu: SetupWindow.availableToEveryone) }
+    static func eUTMMissingNext(setUpInMenu: Bool) -> String {
+        (setUpInMenu
+            ? "\(SetupCopy.menuItem) in Winbar's menu offers to install UTM for you, and so does winbar create in Terminal. "
+            : "winbar create in Terminal offers to install UTM for you. ")
+            + "Or install it yourself (brew install --cask utm, or getutm.app), then run this again."
+    }
     static func eSpace(freeGB: Int, volume: String) -> String {
         eSpaceTitle(freeGB: freeGB, volume: volume) + " " + eSpaceNext
     }
@@ -719,7 +780,7 @@ final class CreateFormModel: ObservableObject {
     var generalWarnings: [String] {
         var warnings: [String] = []
         if let version = facts.utmVersion, let untested = CreatePreflight.utmVersionWarning(version) {
-            warnings.append(untested)
+            warnings.append(untested.message)
         }
         if let free = facts.freeGB, free >= CreateFormFacts.minimumFreeGB, free < diskGB {
             warnings.append(CreateCopy.wSpace(diskGB: diskGB, freeGB: free))
@@ -759,6 +820,14 @@ final class CreateFormModel: ObservableObject {
     }
 
     var canCreate: Bool { status.isReady }
+
+    /// Whether the status names something wrong rather than the next thing to fill in. A form that has
+    /// just opened is missing its ISO and its password, and saying so in red read as an error before
+    /// anyone had touched it; a bad ISO, a clash or a mismatch still is one.
+    var statusIsProblem: Bool {
+        guard case .blocked(let reason) = status else { return false }
+        return ![CreateCopy.fNeedISO, CreateCopy.isoReading, CreateCopy.fNeedPassword(user: userName)].contains(reason)
+    }
 
     // MARK: - What Create sends to the job
 

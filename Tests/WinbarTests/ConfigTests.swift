@@ -58,7 +58,8 @@ final class MemoryStore: SettingsStore {
         for setting in [Config.Key.vmName, Config.Key.vmID, Config.Key.passwordCheckedFor,
                         Config.Key.lastUpdateCheck, Config.Key.lastSeenVersion, Config.Key.pendingUTMRestart,
                         Config.Key.offeredAccessibility, Config.Key.backupExclusionConfirmed,
-                        Config.Key.settingsMigrated, Config.Key.recordedName] {
+                        Config.Key.settingsMigrated, Config.Key.recordedName,
+                        Config.Key.setupWizardShown, Config.Key.armieHidden] {
             #expect(!Config.Key.perVM.contains(setting), "\(setting) isn't one VM's")
         }
         // The name a VM was last seen under is bookkeeping: a VM with nothing else has no record.

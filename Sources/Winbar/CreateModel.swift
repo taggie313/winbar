@@ -115,6 +115,20 @@ struct CreatePlan: Codable, Equatable, Sendable {
     /// `--guest-tools PATH`: a local copy of the pinned Guest Tools installer to use instead of
     /// downloading it. Checked against the pin like any other copy. nil = download (or use the cache).
     var guestToolsPath: String?
+    /// The Set Up Winbar window started this install, as its step 2 (gui-wizard.md §2.3); nil for
+    /// `winbar create` and the New Windows VM window. Kept in the plan, so it holds for the whole job:
+    /// a Try Again, `--resume`, and the app picking the job up after a relaunch all see it.
+    ///
+    /// Such an install leaves two things to the window, and so does neither itself: it doesn't probe
+    /// the Remote Desktop port at the end (`CreateRun.probesRemoteDesktop`), and it doesn't go
+    /// headless (`CreateRun.headlessDecision`). The probe is the one thing an install does that
+    /// raises macOS's Local Network prompt, and inside the window it would raise it unannounced,
+    /// twenty minutes in, when the person has likely walked away: the window predicts that prompt at
+    /// its Connect step (§2.2). And headless needs the probe's answer, so the choice goes to set-up,
+    /// which asks it only once Remote Desktop has worked — a stronger test than an open port.
+    ///
+    /// Optional, so a state file written before it existed still decodes.
+    var inSetupWindow: Bool?
 
     func has(_ option: CreateOption) -> Bool { options.contains(option) }
 }

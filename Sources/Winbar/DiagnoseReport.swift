@@ -93,7 +93,7 @@ extension Diagnose {
         lines += [
             "",
             "Nothing here has left your Mac. Read it, take out anything you'd rather not publish, and attach",
-            "it to your issue at https://github.com/\(UpdateCheck.repo)/issues.",
+            "it to your issue at \(UpdateCheck.issuesURL.absoluteString).",
         ]
         return lines
     }
@@ -277,15 +277,21 @@ extension Diagnose {
     ///
     /// Verbatim, because none of it is a secret and every one of them is a fact somebody will want:
     /// which VM is chosen, which host name Connect goes to, whether BitLocker was seen on. The
-    /// report's own sweep still runs over them, and `--anonymise` still replaces the names.
+    /// report's own sweep still runs over them, and `--anonymise` still replaces the names — and, as
+    /// of the id pass, the ids too. This is the section the ids actually live in: `vmID` is one, and
+    /// so is every `vm.<id>.*` key prefix, repeated once per key. Masking them costs this section
+    /// nothing a reader needs, because the placeholder is numbered for the VM it belongs to and the
+    /// key keeps its shape; leaving them would have left the settings as the one place a published
+    /// report still named a machine.
     static func settingsLines(_ values: [String: Any]) -> [String] {
         let keys = winbarKeys(Array(values.keys))
         guard !keys.isEmpty else {
             return ["Winbar has no settings on this Mac: nothing has chosen a VM yet.",
                     "(A fresh install looks exactly like this.)"]
         }
-        var lines = ["Read straight out of net.elusive.winbar. Every vm.<id>.* key belongs to one VM;",
-                     "the id is the one UTM gave it, or its name for a record made before Winbar knew the id."]
+        var lines = ["Read straight out of net.elusive.winbar. Every vm.<id>.* key belongs to one VM; the id is",
+                     "the one UTM gave it — a placeholder, in an anonymised report — or its name for a record",
+                     "made before Winbar knew the id."]
 
         let global = keys.filter { VMSettings.split($0) == nil }.sorted()
         if !global.isEmpty {
@@ -339,28 +345,55 @@ extension Diagnose {
     /// The last `lines` lines, and then no more than `bytes` bytes of those — with a sentence saying
     /// what that cost. A create log of a failed install runs to thousands of lines and its serial
     /// log to more; the end is where the failure is, and the whole thing is not sendable.
+    ///
+    /// **Whole lines come off first, and a cut inside a line never leaves half a word.** This used
+    /// to take the byte limit off the front in characters, which put it wherever the arithmetic
+    /// landed — in the middle of a UUID as readily as between two words. `--anonymise` runs over the
+    /// finished report, and the last twenty characters of an id are not id-shaped, so the sweep saw
+    /// nothing and a fragment of a real identifier went into a public issue beside placeholders that
+    /// had dealt with every whole one. So: drop lines until it fits, and only when a single line is
+    /// still too big cut inside it — then drop the partial token the cut made, unless the whole
+    /// remainder is one token, which is the case this can cut inside a line for in the first place
+    /// (a serial log can be one burst of firmware text with no newline in it, and the choice there
+    /// is a fragment or nothing at all).
     static func trim(_ text: String, lines limit: Int, bytes maxBytes: Int) -> Trimmed {
         var all = text.components(separatedBy: "\n")
         if all.last == "" { all.removeLast() }   // the trailing newline, not a line
         guard !all.isEmpty else { return Trimmed(text: "", note: "The file is empty.") }
 
-        let kept = all.suffix(limit)
-        let cutLines = all.count - kept.count
+        var kept = Array(all.suffix(limit))
+        let forCount = all.count - kept.count
+        var forSize = 0
+        while kept.count > 1, kept.joined(separator: "\n").utf8.count > maxBytes {
+            kept.removeFirst()
+            forSize += 1
+        }
         var body = kept.joined(separator: "\n")
         var cutBytes = 0
         if body.utf8.count > maxBytes {
-            // One enormous line (a serial log can be a single burst of firmware text) must still
-            // leave something behind, so this cuts characters rather than whole lines.
-            let over = body.utf8.count - maxBytes
-            cutBytes = over
-            body = String(body.suffix(max(0, body.count - over)))
+            let before = body.utf8.count
+            body = String(body.suffix(max(0, body.count - (before - maxBytes))))
+            // Whatever word the cut landed in goes with it — unless it is the only word left, which
+            // is the one case cutting inside a line exists for.
+            if let space = body.firstIndex(where: \.isWhitespace),
+               !body[body.index(after: space)...].isEmpty {
+                body = String(body[body.index(after: space)...])
+            }
+            cutBytes = before - body.utf8.count      // what was actually taken, not what was over
         }
 
+        let cutLines = forCount + forSize
         var note = cutLines == 0
             ? (all.count == 1 ? "All 1 line is here." : "All \(number(all.count)) lines are here.")
             : "The last \(number(kept.count)) lines of \(number(all.count)); \(number(cutLines)) earlier lines are not here."
+        if forSize > 0 {
+            note += " \(number(forSize)) of those went because the tail was still too big to send,"
+                + " not because of the line limit."
+        }
         if cutBytes > 0 {
-            note += " Those lines were still too big to send, so about \(number(cutBytes / 1024)) KB was cut from the front of them as well."
+            note += " The line that was left was still too big, so about \(number(cutBytes / 1024)) KB was"
+                + " cut from the front of it — up to the first space, where there is one, so nothing is"
+                + " left half-written."
         }
         return Trimmed(text: body, note: note)
     }
@@ -374,6 +407,13 @@ extension Diagnose {
     /// macOS writes .ips as a JSON header line followed by a JSON body. Older ones (and some
     /// third-party writers) are the plain-text crash log instead, so that is read too rather than
     /// reported as unreadable.
+    ///
+    /// Worth knowing before adding a field to this: a .ips is full of ids that identify this Mac
+    /// rather than UTM — `incident_id` and `slice_uuid` in the header, `bootSessionUUID`,
+    /// `sleepWakeUUID` and every `usedImages[].uuid` in the body. None of them is read, which is why
+    /// section 6 has nothing for `--anonymise` to take out; the file name carries a timestamp and no
+    /// id. Anything added here that is one of those is a host identifier in a published file, and
+    /// `--anonymise` would reduce it to `<id-N>`, which is worth less than not printing it.
     static func crashHeadline(fileName: String, contents: String, modified: Date?) -> [String] {
         let when = crashDate(contents) ?? modified.map { settingDate.string(from: $0) } ?? "date unknown"
         var first = "\(fileName) — \(when)"

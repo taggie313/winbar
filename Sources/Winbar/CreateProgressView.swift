@@ -6,7 +6,8 @@ import SwiftUI
 // ordering can be tested without a window.
 //
 // The stage titles themselves live with the job (CreateJob.swift), so Terminal and this
-// window can't drift apart.
+// window can't drift apart. The rows, their marks and the orange box are StepList.swift's, so the
+// setup wizard can draw with the same ones.
 
 /// How long something has been going, in the two shapes the design uses.
 enum CreateElapsed {
@@ -31,7 +32,9 @@ enum CreateElapsed {
 
 /// Everything the progress and ending views show, worked out from the job's state alone.
 struct CreateProgress: Equatable {
-    enum Mark: Equatable { case done, running, pending, failed }
+    /// `attention` is never an install's: it is the set-up window's `!`, for a row waiting on the
+    /// person rather than broken (UTM not installed yet, utmctl silent behind the Automation prompt).
+    enum Mark: Equatable { case done, running, pending, failed, attention }
 
     struct Row: Equatable {
         var stage: CreateStage
@@ -117,11 +120,12 @@ struct CreateProgress: Equatable {
         // that warning is then left out of the list below, which would otherwise print it twice.
         let live = state.isFinished ? nil : state.stalled?.alert
         stall = live.map { alert in
-            state.messages.last { $0.code == alert.rawValue }?.text
-                ?? CreateProgress.stallFallback(alert, vmName: state.plan.vmName)
+            CreateCopy.forWindow(state.messages.last { $0.code == alert.rawValue }?.text
+                ?? CreateProgress.stallFallback(alert, vmName: state.plan.vmName), vmName: state.plan.vmName)
         }
         notes = state.messages.filter { $0.code != live?.rawValue }.map {
-            Note(code: $0.code, text: $0.text, boxed: CreateProgress.boxedCodes.contains($0.code))
+            Note(code: $0.code, text: CreateCopy.forWindow($0.text, vmName: state.plan.vmName),
+                 boxed: CreateProgress.boxedCodes.contains($0.code))
         }
     }
 }
@@ -130,6 +134,8 @@ struct CreateProgress: Equatable {
 struct CreateJobView: View {
     @ObservedObject var controller: CreateWindowController
     let state: CreateJobState
+    /// The wizard's Armie, while these views are its step 2 (`CreateRootView.armie`).
+    var armie: ArmieHost? = nil
 
     private var progress: CreateProgress { CreateProgress(state: state, now: controller.now) }
 
@@ -167,12 +173,23 @@ struct CreateJobView: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(progress.step)
-            stageList(progress)
-            if let stall = progress.stall { box(stall) }
+            StepList(rows: progress.rows)
+            if let stall = progress.stall { NoteBox(stall) }
             noteList(progress.notes)
             Text(controller.readOnly ? CreateCopy.pFooterCLI : CreateCopy.pFooter)
                 .font(.callout).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            // Last on the page, under the stages and anything the job has said: those are the install,
+            // and he mustn't push the running row, a stall or a note further down it. Only the running
+            // body has him; the ending and the failure are drawn without.
+            //
+            // No rule above him, unlike step 1's card. At the first-open size a note or two from the job
+            // (a preflight caution, the saved PC) and the app's two-line footer put him below the fold,
+            // and a rule of his own would be all that showed of him: a second line just above the
+            // button bar's, which reads as something cut off. The page's spacing sets him apart.
+            if let armie, let cue = ArmieCue.installing(state) {
+                ArmieSays(line: cue.line, art: armie.art, clip: cue.clip, send: armie.send)
+            }
         }
     }
 
@@ -184,7 +201,7 @@ struct CreateJobView: View {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(notes, id: \.code) { note in
                     if note.boxed {
-                        box(note.text)
+                        NoteBox(note.text)
                     } else {
                         Text(note.text)
                             .font(.callout)
@@ -194,47 +211,6 @@ struct CreateJobView: View {
                     }
                 }
             }
-        }
-    }
-
-    /// The orange box W_STALL gets, shared by the warnings that need the same weight.
-    private func box(_ text: String) -> some View {
-        Text(text)
-            .font(.callout)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.15)))
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.orange))
-    }
-
-    private func stageList(_ progress: CreateProgress) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(progress.rows, id: \.stage) { row in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        mark(row.mark)
-                        Text(row.title).foregroundStyle(row.mark == .pending ? Color.secondary : Color.primary)
-                        Spacer()
-                        if let elapsed = row.elapsed {
-                            Text(elapsed).monospacedDigit().font(.callout).foregroundStyle(.secondary)
-                        }
-                    }
-                    if let detail = row.detail, !detail.isEmpty {
-                        Text(detail).font(.callout).foregroundStyle(.secondary).padding(.leading, 24)
-                    }
-                }
-                .accessibilityElement(children: .combine)
-            }
-        }
-    }
-
-    @ViewBuilder private func mark(_ mark: CreateProgress.Mark) -> some View {
-        switch mark {
-        case .done: Text("✓").frame(width: 16)
-        case .running: ProgressView().controlSize(.small).frame(width: 16)
-        case .pending: Text("·").foregroundStyle(.secondary).frame(width: 16)
-        case .failed: Text("✗").foregroundStyle(.red).frame(width: 16)
         }
     }
 
@@ -259,7 +235,11 @@ struct CreateJobView: View {
                     Text(CreateChoices.hostName(computerName: state.plan.computerName))
                 }
             }
-            Text(CreateCopy.nNextCommand)
+            if controller.isEmbedded {
+                Text("Close this result to return to setup. Choose this VM there if you want Winbar to look after it.")
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+            Text(CreateCopy.nNextCommand(plan: state.plan)).fixedSize(horizontal: false, vertical: true)
             HStack {
                 // Not the literal "winbar setup": with this VM left unselected, Winbar's menu still
                 // looks after the old one, and setup has to be told which VM this is.
@@ -272,6 +252,7 @@ struct CreateJobView: View {
                 Button(CreateCopy.bCopy) { controller.copySetupCommand() }
             }
             Text(CreateCopy.nNextSetup(savedPC: state.wroteSavedPC)).fixedSize(horizontal: false, vertical: true)
+            }
             VStack(alignment: .leading, spacing: 4) {
                 bullet(state.usedProductKey ? CreateCopy.nActivating : CreateCopy.nNotActivated)
                 bullet(CreateCopy.nUpdates)
@@ -301,11 +282,11 @@ struct CreateJobView: View {
                 if !detail.isEmpty {
                     Text(detail).fixedSize(horizontal: false, vertical: true)
                 }
-                if let next = failure.nextStep {
+                if let next = failure.nextStep.flatMap({ CreateCopy.windowNextStep($0, resumable: state.isResumable) }) {
                     Text(next).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
-            stageList(progress)
+            StepList(rows: progress.rows)
             noteList(progress.notes)
         }
     }
@@ -354,6 +335,11 @@ struct CreateJobView: View {
             if state.outcome == .failed, state.logPath != nil {
                 Button(CreateCopy.bShowLog) { controller.showLog() }
             }
+            // Deleting the VM is the one thing here that can't be undone, so it sits apart from the way
+            // forward, marked as destructive, rather than beside Try Again in the same style.
+            if state.outcome == .failed {
+                Button(CreateCopy.bDeleteVM, role: .destructive) { controller.cancelInstall() }
+            }
             Spacer()
             switch state.outcome {
             case nil:
@@ -369,12 +355,18 @@ struct CreateJobView: View {
             case .failed:
                 // The job's own test for what `--resume` (and so Try Again) can carry on with: the
                 // VM is still there, its setup disk is still there, and Windows had started.
+                // When the install can carry on, carrying on is the default and Close is Escape; Close
+                // being the default sent Return to the button that gives up.
                 if state.isResumable {
+                    Button(CreateCopy.bClose) { controller.dismissJob() }
+                        .keyboardShortcut(.cancelAction)
                     Button(CreateCopy.bTryAgain) { controller.tryAgain() }
+                        .keyboardShortcut(.defaultAction)
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    Button(CreateCopy.bClose) { controller.dismissJob() }
+                        .keyboardShortcut(.defaultAction)
                 }
-                Button(CreateCopy.bDeleteVM) { controller.cancelInstall() }
-                Button(CreateCopy.bClose) { controller.dismissJob() }
-                    .keyboardShortcut(.defaultAction)
             case .cancelled:
                 Button(CreateCopy.bClose) { controller.dismissJob() }
                     .keyboardShortcut(.defaultAction)

@@ -6,6 +6,12 @@ import UniformTypeIdentifiers
 /// shows the form, then the install's progress, then how it ended — always in the same window, so
 /// closing it never loses the job.
 ///
+/// The same views are also the Set Up Winbar window's step 2 (gui-wizard.md §2.3, §3.5): **Make One**
+/// shows them there (`embed(_:)`) instead of in a window of their own. There is still one controller
+/// and one job, and while they're embedded nothing opens this window: **New Windows VM…**, **Show
+/// Install Progress…** and an install ending all bring the wizard forward instead (`bringForward()`),
+/// and the buttons that would close this window hand back to the wizard (`close()`).
+///
 /// Opening the window must not launch UTM, so nothing here asks UTM anything until either
 /// UTM is already running or Create is pressed. Reading the ISO and asking UTM for its VM names both
 /// block, so both run off the main thread and report back on it.
@@ -15,11 +21,11 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
     enum Phase: Equatable { case form, job }
 
     @Published private(set) var phase: Phase = .form
-    @Published private(set) var form = CreateFormModel(facts: .current())
+    @Published private(set) var form: CreateFormModel
     /// The install this window is showing, once there is one.
     @Published private(set) var job: CreateJobState?
     /// Something else (the CLI) holds the lock: no Cancel button, and a different footer.
-    var readOnly: Bool { !CreateWindowController.ownsJob }
+    var readOnly: Bool { !environment.ownsJob() }
 
     /// Whether this process is the one driving the install (it started it, resumed it, or picked it
     /// up at launch) rather than only watching the CLI's. The menu bar reads it too.
@@ -37,31 +43,83 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
     /// Install… can't be pressed again while the run is getting to its next poll point.
     @Published private(set) var cancelling = false
 
-    private var window: NSWindow?
+    var window: NSWindow?
+    struct Environment {
+        var currentJob: () -> CreateJobState? = CreateJob.current
+        var refreshForm: (CreateWindowController) -> Void = { $0.refreshForm() }
+        var show: (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+        var workGate: AppWorkGate = .shared
+        /// Whether this process drives the install, as the views read it (`readOnly`). The app's is the
+        /// process-wide `ownsJob`. A render passes its own answer so it can draw the page of an install
+        /// the app started without claiming that flag, which every other drawing reads at the same time.
+        var ownsJob: () -> Bool = { CreateWindowController.ownsJob }
+    }
+    private let environment: Environment
+    @Published private(set) var busyMessage: String?
     private var clock: Timer?
+    /// Set while the Set Up Winbar window shows these views as its step 2 (`embed(_:)`).
+    private(set) var isEmbedded = false
+    /// The wizard, while embedded: how to bring it forward, close it, and hand back to it.
+    private var host: EmbedHost?
+    /// The job the window last let go of. The same ended state arrives twice — from the run's own
+    /// callback and from the menu bar's follower, a second apart — and the second must not put an
+    /// install that was just dismissed back on screen, where the next **New Windows VM…** would find
+    /// its ending instead of a form.
+    private var dismissedJobID: String?
     /// Set while a job this process is driving is on screen in this window and hasn't finished, so
     /// the window comes back by itself when it ends. Not for a job the app is only
     /// watching: an install running in Terminal must not pull the focus off the terminal that is
     /// asking its next question, and not for a window the person has never opened.
     private var reopenWhenJobEnds = false
 
-    /// The hidden way in from the CLI (`winbar create --window`) and from the menu. Safe to call
-    /// again: it brings the existing window forward.
-    static func present() { shared.show() }
+    /// The app only ever has `shared`, which reads the form's facts from this Mac. `facts` is for
+    /// the tests that draw these views: `.current()` reads Winbar's settings and asks whether UTM is
+    /// installed, and a test must not reach the settings of the Mac it runs on.
+    init(facts: CreateFormFacts = .current(), environment: Environment = Environment()) {
+        self.environment = environment
+        form = CreateFormModel(facts: facts)
+        super.init()
+    }
 
-    /// **Show Install Progress…**: the same window, on the job.
-    static func presentProgress() { shared.show() }
+    /// The hidden way in from the CLI (`winbar create --window`) and from the menu. Safe to call
+    /// again: it brings the existing window forward — or the wizard, while it shows these views.
+    static func present(controller: CreateWindowController = shared,
+                        setupBusy: Bool = SetupWindowController.coordinatesVM,
+                        showSetup: () -> Void = SetupWindowController.present) {
+        controller.present(setupBusy: setupBusy, showSetup: showSetup)
+    }
+    func present(setupBusy: Bool, showSetup: () -> Void) {
+        if setupBusy, !isEmbedded { showSetup(); return }
+        bringForward()
+    }
+
+    /// **Show Install Progress…**: the same window, on the job — or the wizard, while it shows it.
+    static func presentProgress(controller: CreateWindowController = shared) { controller.bringForward() }
+
+    /// Where the views are brought forward: this window, or the wizard while it shows them. One
+    /// controller drives one job, so a second window onto it — the menu's **New Windows VM…** while
+    /// the wizard's install runs — would be two sets of buttons on one install.
+    enum Presentation: Equatable { case ownWindow, host }
+
+    /// Pure, so the rule can be checked without a window.
+    static func presentation(embedded: Bool) -> Presentation { embedded ? .host : .ownWindow }
+
+    func bringForward() {
+        switch CreateWindowController.presentation(embedded: isEmbedded) {
+        case .host: host?.present()
+        case .ownWindow: show()
+        }
+    }
 
     // MARK: - Opening
 
     private func show() {
-        if job == nil, let current = CreateJob.current(), !current.isFinished {
+        if job == nil, let current = environment.currentJob(), !current.isFinished {
             adopt(current)
         }
         let window = existingWindow()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        if phase == .form { refreshForm() }
+        environment.show(window)
+        if phase == .form { environment.refreshForm(self) }
         startClockIfNeeded()
     }
 
@@ -104,7 +162,10 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
     /// up when there was a job here to give up: closing a form must not release a job the app picked
     /// up at launch and hasn't shown yet.
     private func forgetJob() {
-        if job != nil { CreateWindowController.releaseJob() }
+        if let job {
+            CreateWindowController.releaseJob()
+            dismissedJobID = job.id
+        }
         job = nil
         phase = .form
         reopenWhenJobEnds = false
@@ -112,8 +173,36 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
         cancelNote = nil
     }
 
+    /// **Cancel** on the form, **Hide** while the install runs, and — through `dismissJob()` — **Done**
+    /// and **Close** on its ending. In this window each of them closes it; inside the wizard there is
+    /// no window of its own to close, and what each one means there is `closing(embedded:job:)`.
     func close() {
-        window?.performClose(nil)
+        switch CreateWindowController.closing(embedded: isEmbedded, job: job) {
+        case .ownWindow: window?.performClose(nil)
+        case .hideHost: host?.hide()
+        case .handBack: finishEmbedded(.handedBack)
+        }
+    }
+
+    /// What `close()` does.
+    enum Closing: Equatable {
+        /// Closes this window. Closing is Hide: the job carries on (`windowWillClose`).
+        case ownWindow
+        /// **Hide** inside the wizard: the wizard's window closes and the install carries on, as it
+        /// does when this window closes; reopening the wizard lands back on it (§2.4). Handing back to
+        /// step 2 instead would put the person on a step whose only screen is this install.
+        case hideHost
+        /// The form's **Cancel**, or **Done** or **Close** once the install has ended and been let go
+        /// (`dismissJob()`): the wizard takes its step back (§2.3: "Close returns to step 2").
+        case handBack
+    }
+
+    /// Pure, so the rule can be checked without a window (spec §5, "a pure test on a small close
+    /// decision function").
+    static func closing(embedded: Bool, job: CreateJobState?) -> Closing {
+        guard embedded else { return .ownWindow }
+        if let job, !job.isFinished { return .hideHost }
+        return .handBack
     }
 
     // MARK: - Facts about this Mac
@@ -153,11 +242,14 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
         panel.canChooseDirectories = false
         panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
         panel.prompt = "Choose"
-        guard let window else { return }
-        panel.beginSheetModal(for: window) { [weak self] response in
+        // A sheet on the window the form is in: the wizard's while embedded, where this one is closed
+        // or was never opened, and a sheet on it would be a panel nobody can see.
+        let parent = isEmbedded ? host?.window() : window
+        let chosen: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
             self?.readISO(url)
         }
+        if let parent { panel.beginSheetModal(for: parent, completionHandler: chosen) } else { panel.begin(completionHandler: chosen) }
     }
 
     /// True when the drop is a `.iso` this window can take.
@@ -197,8 +289,15 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
     // MARK: - Create
 
     func create() {
+        // Check before even accepting a form: an older window must not race setup's restart.
+        let lease: AppWorkGate.Lease
+        switch environment.workGate.begin(.create, label: "installing Windows", vm: form.vmName) {
+        case .failure(let error): busyMessage = error.detail; return
+        case .success(let held): lease = held
+        }
+        busyMessage = nil
         form.submitted = true
-        guard let plan = form.plan else { return }
+        guard let plan = form.plan.map({ CreateWindowController.plan($0, embedded: isEmbedded) }) else { return }
         let password = form.password
         let productKey = form.normalizedProductKey
         form.forgetPassword()
@@ -208,6 +307,7 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
                              updatedAt: Date(), finishedAt: nil, outcome: nil, restarts: 0, bytesWritten: nil,
                              shown: [], failure: nil, mediaDir: nil, logPath: nil, watched: true))
         DispatchQueue.global(qos: .userInitiated).async {
+            defer { lease.finish() }
             do {
                 try CreateJob.start(plan: plan, password: password, productKey: productKey) { state in
                     CreateWindowController.shared.jobChanged(state)
@@ -216,6 +316,15 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
                 DispatchQueue.main.async { self.runEnded(with: error, vmName: plan.vmName) }
             }
         }
+    }
+
+    /// The plan Create sends: marked as the wizard's when the form is its step 2, so the install leaves
+    /// the Local Network prompt and headless to set-up (`CreatePlan.inSetupWindow`). Pure.
+    static func plan(_ plan: CreatePlan, embedded: Bool) -> CreatePlan {
+        var plan = plan
+        plan.inSetupWindow = embedded ? true : nil
+        if embedded { plan.select = true }
+        return plan
     }
 
     /// A run in this process threw: how it ended decides what the window shows.
@@ -312,30 +421,52 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
     /// New state from `CreateJob.follow` (the menu bar's subscription) or from our own `start`.
     func jobChanged(_ state: CreateJobState) {
         DispatchQueue.main.async {
+            guard CreateWindowController.adopts(state, dismissed: self.dismissedJobID) else { return }
             let reopen = self.reopenWhenJobEnds
             self.adopt(state)
             if state.isFinished, reopen {
-                // The window comes back by itself when the job it was showing ends.
-                self.show()
+                // The window comes back by itself when the job it was showing ends — the wizard, when
+                // it was showing it there.
+                self.bringForward()
+            }
+            if let end = CreateWindowController.embeddedEnd(for: state, embedded: self.isEmbedded) {
+                self.finishEmbedded(end)
             }
         }
     }
 
+    /// Whether a state from the job is put on screen: every one, except the ending of the job this
+    /// window has just let go of, which arrives a second time from the follower. Pure.
+    static func adopts(_ state: CreateJobState, dismissed: String?) -> Bool {
+        !(state.isFinished && state.id == dismissed)
+    }
+
     private func adopt(_ state: CreateJobState) {
+        // The job is running again (Try Again, `--resume`): its ending, when it comes, is a new one.
+        if !state.isFinished { dismissedJobID = nil }
         job = state
         phase = .job
         if state.isFinished { cancelling = false }
         reopenWhenJobEnds = CreateWindowController.reopensWhenJobEnds(state, ownsJob: CreateWindowController.ownsJob,
-                                                                     windowExists: window != nil)
+                                                                     windowExists: window != nil, embedded: isEmbedded)
         startClockIfNeeded()
     }
 
     /// Whether this window should come back by itself when the job ends: only for one this process
-    /// is driving that has already been on screen here. The app follows the CLI's installs too, and
-    /// activating Winbar as one of those ends would take the keystrokes meant for Terminal's last
-    /// question. Pure, so the rule can be checked without a window.
-    static func reopensWhenJobEnds(_ state: CreateJobState, ownsJob: Bool, windowExists: Bool) -> Bool {
-        !state.isFinished && ownsJob && windowExists
+    /// is driving that has already been on screen here — or in the wizard, which is where the person
+    /// watched it. The app follows the CLI's installs too, and activating Winbar as one of those ends
+    /// would take the keystrokes meant for Terminal's last question. Pure, so the rule can be checked
+    /// without a window.
+    static func reopensWhenJobEnds(_ state: CreateJobState, ownsJob: Bool, windowExists: Bool,
+                                   embedded: Bool = false) -> Bool {
+        !state.isFinished && ownsJob && (windowExists || embedded)
+    }
+
+    /// Draws `state` without following it: no clock, and no claim on the job. For the renders of the
+    /// wizard's step 2, which show an install without running one.
+    func draw(_ state: CreateJobState) {
+        job = state
+        phase = .job
     }
 
     /// Back to the form after a job is done with: Done, Close, or a cancelled install.
@@ -376,8 +507,15 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
     /// be carried on with (`isResumable`), which is the same test `--resume` uses.
     func tryAgain() {
         guard let name = job?.plan.vmName else { return }
+        let lease: AppWorkGate.Lease
+        switch environment.workGate.begin(.create, label: "resuming the Windows install", vm: name) {
+        case .failure(let error): busyMessage = error.detail; return
+        case .success(let held): lease = held
+        }
+        busyMessage = nil
         CreateWindowController.claimJob()
         DispatchQueue.global(qos: .userInitiated).async {
+            defer { lease.finish() }
             do {
                 try CreateJob.resume(vmName: name) { state in
                     CreateWindowController.shared.jobChanged(state)
@@ -464,14 +602,21 @@ extension CreateFormFacts {
 
 struct CreateRootView: View {
     @ObservedObject var controller: CreateWindowController
+    /// Lent by the Set Up Winbar window while these views are its step 2; nil in this window of its
+    /// own. Only the running install is given it: the form has a password field, and nothing cute
+    /// stands next to one (gui-wizard.md §2b).
+    var armie: ArmieHost? = nil
 
     var body: some View {
         Group {
             if controller.phase == .job, let job = controller.job {
-                CreateJobView(controller: controller, state: job)
+                CreateJobView(controller: controller, state: job, armie: armie)
             } else {
                 CreateFormView(controller: controller, model: controller.form)
             }
+        }
+        .safeAreaInset(edge: .top) {
+            if let message = controller.busyMessage { Text(message).padding().fixedSize(horizontal: false, vertical: true) }
         }
         .frame(minWidth: 600, maxWidth: .infinity, alignment: .topLeading)
     }
@@ -779,7 +924,12 @@ struct CreateFormView: View {
             }
             caption(model.computerNameError, bad: true)
             if model.facts.menuVMName != nil {
-                Toggle(CreateCopy.lSelect, isOn: $model.select)
+                if controller.isEmbedded {
+                    Text("Winbar will look after this VM from now on—setup, Connect and the menu bar item—instead of “\(model.facts.menuVMName ?? "the current VM")”.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Toggle(CreateCopy.lSelect, isOn: $model.select)
+                }
             }
         }
     }
@@ -846,8 +996,8 @@ struct CreateFormView: View {
                 Text(warning).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Text(model.status.text)
-                .fontWeight(model.canCreate ? .regular : .medium)
-                .foregroundStyle(model.canCreate ? Color.primary : Color.red)
+                .fontWeight(model.statusIsProblem ? .medium : .regular)
+                .foregroundStyle(model.canCreate ? Color.primary : model.statusIsProblem ? Color.red : Color.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 // A live region, so VoiceOver reads the reason Create is off as it changes.
@@ -890,4 +1040,120 @@ private struct FormSection<Content: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
+
+// MARK: - Inside the Set Up Winbar window (gui-wizard.md §2.3, §3.5)
+
+extension CreateWindowController: EmbeddableCreate {
+    /// What the wizard hands these views while they're its step 2.
+    struct EmbedHost {
+        /// Brings the wizard's window forward: the menu's **New Windows VM…** and **Show Install
+        /// Progress…**, and an install that ends while it's shown there.
+        var present: () -> Void
+        /// Closes the wizard's window and leaves the install running: **Hide**.
+        var hide: () -> Void
+        /// The wizard's window, for the ISO chooser's sheet.
+        var window: () -> NSWindow?
+        /// The views are done with: `EmbeddedEnd` says how.
+        var finished: (EmbeddedEnd) -> Void
+    }
+
+    /// How the views hand back to the wizard.
+    enum EmbeddedEnd: Equatable {
+        /// The install ended well. The wizard reads the Mac again — a new VM exists now, and the job
+        /// chose it — and moves on to step 3 once that read says step 2 is done (§2.3).
+        case installed(id: String, name: String, messages: [CreateMessage])
+        /// The form's **Cancel**, or **Close** or **Done** on an ending: back to step 2.
+        case handedBack
+    }
+
+    /// The hand-back an adopted state calls for, or nil. Only an install that ended well moves the
+    /// wizard on by itself; a failure stays on screen with its **Try Again**, **Delete VM…** and **Show
+    /// Log**, and a cancel with its note, until **Close** (§2.3). Pure.
+    static func embeddedEnd(for state: CreateJobState, embedded: Bool) -> EmbeddedEnd? {
+        // A CLI-owned --no-select install can be watched here, but watching isn't permission to
+        // change the selected VM. Leave its ending visible and let the person choose explicitly.
+        guard embedded, state.outcome == .done, state.plan.select, let id = state.vmID else { return nil }
+        return .installed(id: id, name: state.plan.vmName, messages: state.messages)
+    }
+
+    /// What embedding does to this window and the job it holds.
+    struct Embedding: Equatable {
+        /// This window is open: close it, and its content moves into the wizard. Its job is kept
+        /// (closing keeps a running one), so the wizard shows the same install, never a second.
+        var closesOwnWindow: Bool
+        /// The job on screen has ended: let it go, so **Make One** is a fresh form and **Show Install
+        /// Progress** the install that's running, not an old ending.
+        var letsEndedJobGo: Bool
+    }
+
+    /// Pure.
+    static func embedding(ownWindowOpen: Bool, job: CreateJobState?) -> Embedding {
+        Embedding(closesOwnWindow: ownWindowOpen, letsEndedJobGo: job?.isFinished == true)
+    }
+
+    /// Whether there is an install for these views to show: one on screen that hasn't ended, or one
+    /// running on this Mac (this app's, the New Windows VM window's, or the CLI's).
+    var hasRunningJob: Bool {
+        if let job, !job.isFinished { return true }
+        return environment.currentJob().map { !$0.isFinished } ?? false
+    }
+
+    /// The wizard's **Make One**, **Make a New One** and **Show Install Progress**: from here until
+    /// `unembed()` these views are its step 2. The running install, if there is one, is what they show.
+    func embed(_ host: EmbedHost) {
+        let plan = CreateWindowController.embedding(ownWindowOpen: window != nil, job: job)
+        if plan.closesOwnWindow, let window {
+            if let sheet = window.attachedSheet { window.endSheet(sheet); sheet.orderOut(nil) }
+            window.close() // performClose can refuse a sheet, and isVisible misses minimized windows
+            windowWillClose(Notification(name: NSWindow.willCloseNotification, object: window))
+        }
+        if plan.letsEndedJobGo { forgetJob() }
+        isEmbedded = true
+        self.host = host
+        hostShown()
+    }
+
+    /// Back to being this window's views. The wizard calls it when they hand back.
+    func unembed() {
+        isEmbedded = false
+        host = nil
+        form.forgetPassword()
+        stopClock()
+    }
+
+    /// The wizard's window is up with these views in it: what opening this window does.
+    func hostShown() {
+        if job == nil, let current = environment.currentJob(), !current.isFinished { adopt(current) }
+        if phase == .form { environment.refreshForm(self) }
+        startClockIfNeeded()
+    }
+
+    /// The wizard's window closed with these views in it: what closing this window does, except that
+    /// an ended job stays on screen, since the wizard keeps its place and reopens on it (§2.4). The
+    /// install itself is never touched: closing is never cancelling.
+    func hostClosed() {
+        form.forgetPassword()
+        stopClock()
+    }
+
+    /// Hands back to the wizard. An install that ended well is let go first, so the next **New Windows
+    /// VM…** opens a form rather than its ending.
+    private func finishEmbedded(_ end: EmbeddedEnd) {
+        let host = self.host
+        if case .installed = end { forgetJob() }
+        host?.finished(end)
+    }
+}
+
+/// What the Set Up Winbar window asks of `CreateWindowController` when it shows the New Windows VM
+/// views as its step 2. A protocol so the wizard's side of the hand-over can be tested with a stand-in:
+/// the real controller reads this Mac's settings and install state, and asks UTM for its VMs.
+protocol EmbeddableCreate: AnyObject {
+    var isEmbedded: Bool { get }
+    var hasRunningJob: Bool { get }
+    func embed(_ host: CreateWindowController.EmbedHost)
+    func unembed()
+    func hostShown()
+    func hostClosed()
 }

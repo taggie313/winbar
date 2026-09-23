@@ -17,9 +17,16 @@ the `winbar doctor` table, the versions involved, Winbar's settings, the tail of
 `winbar create` log and UTM's recent crash reports in it — which is everything below, in one file,
 so you don't have to collect it yourself. It works even when nothing else does.
 
-Read it first: it names your VM, this Mac and your user names. `winbar diagnose --anonymise`
-replaces those with placeholders, and `--no-logs` leaves the create logs out. Neither ever contains
-a password.
+Never opened Terminal? Choose **Report a Problem…** from the Winbar menu instead. It writes the same
+file, shows it to you in the Finder and opens this page, so you can drag it in.
+
+Read it first. It names this Mac, your Mac user name and full name, your Windows user name and the
+Windows PC name, and each of your VMs — by name, by the id UTM gave it and by its MAC address.
+`winbar diagnose --anonymise` — or the checkbox in **Report a Problem…** — writes the same report
+with every one of those replaced by a placeholder (`<mac>`, `<user>`, `<user-full-name>`,
+`<windows-user-1>`, `<windows-pc-1>`, `<vm-1>`, `<vm-1-id>`, `<vm-1-mac>`), and any other id- or
+MAC-shaped string as `<id-1>` or `<mac-address-1>`. `--no-logs` leaves the create logs out. Neither
+ever contains a password.
 
 If you'd rather paste than attach, `winbar doctor` alone is the next best thing:
 
@@ -34,7 +41,9 @@ paste the output here
 **The command that went wrong, run with debug output on**
 
 `WINBAR_DEBUG=1 winbar <the command>` prints the decisions Winbar usually keeps quiet, to standard
-error.
+error. There is no `--anonymise` for it: among the decisions it prints is what `utmctl list`
+answered, which is the id UTM gave every VM on this Mac, and their names. Read it before you paste
+it, and edit out anything you'd rather not publish.
 
 <details>
 
@@ -59,5 +68,9 @@ Screenshots, the VM's UTM settings, what you had already tried.
 ---
 
 Issues are public. The diagnostic report, `winbar doctor` and a debug run all print your VM's name,
-its host name and your Windows user name; edit out anything you'd rather not publish, or run
-`winbar diagnose --anonymise`. None of them prints a password.
+its host name and your Windows user name. The id UTM gave the VM is in two of the three: the
+report's settings section, and a debug run, which logs what `utmctl list` said — a line of
+`<uuid> <status> <name>` for every VM you have. Its MAC address is in the report only.
+`winbar diagnose --anonymise` replaces all of those in the report; `winbar doctor` and a debug run
+have no such flag, so edit those two yourself before pasting them above. None of them prints a
+password.

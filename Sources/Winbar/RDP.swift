@@ -185,7 +185,12 @@ enum RDP {
     static let scopeTrustToHost = true
 
     /// Trusts the certificate for SSL only, in the login keychain. macOS shows its own approval dialog.
-    static func trustCertificate(der: Data, host: String) -> Result<Void, WinbarError> {
+    ///
+    /// The dialog is SecurityAgent's, and the tool waits on it for up to five minutes. `abort` ends
+    /// that wait early — the setup window's **Stop Waiting**, so a person who can't find the dialog
+    /// isn't held for five minutes. What ending the tool does to the dialog hasn't been watched, so
+    /// nothing assumes an answer: whoever stopped it reads H7 again to say what is trusted.
+    static func trustCertificate(der: Data, host: String, abort: (() -> Bool)? = nil) -> Result<Void, WinbarError> {
         let directory = Host.applicationSupport
         let safeName = host.filter { $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }
         let file = directory.appendingPathComponent("\(safeName)-rdp.cer")
@@ -199,7 +204,7 @@ enum RDP {
         let scope = scopeTrustToHost ? ["-s", host] : []
         let result = Shell.run("/usr/bin/security",
                                ["add-trusted-cert", "-r", "trustRoot", "-p", "ssl"] + scope + ["-k", keychain, file.path],
-                               timeout: 300)
+                               timeout: 300, abort: abort)
         guard result.status == 0 else { return .failure(WinbarError("macOS didn't trust the certificate", result.output)) }
         return .success(())
     }

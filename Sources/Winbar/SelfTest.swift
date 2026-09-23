@@ -8,7 +8,21 @@ import ServiceManagement
 /// "ready" while the real app couldn't connect. So doctor launches the app itself through
 /// LaunchServices with `--self-test` and reads its output (`launchAsApp`).
 enum SelfTest {
-    static func run(requestAccessibility: Bool) -> Int32 {
+    /// `--self-test` with this leaves out the "rdp readiness" row, and so never probes the Remote
+    /// Desktop port. That probe is what raises macOS's Local Network prompt, and the setup window
+    /// runs the self-test for its Accessibility and Launch at Login rows (C3, C4) on every read from
+    /// step 6 on — before Connect, where the window says that prompt is coming (spec §2.2).
+    static let noPortProbe = "--no-rdp-probe"
+
+    /// The arguments that make a self-test probe the port, or leave it alone. What `Context.selfTest`
+    /// passes; `probesPort(arguments:)` is what the launched app reads back.
+    static func arguments(probingPort: Bool) -> [String] { probingPort ? [] : [noPortProbe] }
+
+    /// Whether a self-test launched with `arguments` probes the port. Unless told otherwise, it does:
+    /// doctor and diagnose report the answer.
+    static func probesPort(arguments: [String]) -> Bool { !arguments.contains(noPortProbe) }
+
+    static func run(requestAccessibility: Bool, probePort: Bool) -> Int32 {
         if requestAccessibility && !WindowsApp.accessibilityTrusted {
             WindowsApp.requestAccessibility()
             pause(2)   // give the system prompt time to appear before this process exits
@@ -18,7 +32,7 @@ enum SelfTest {
         if let vm, let process { VMProcesses.cache(process, for: vm) }
         let mac = process?.mac ?? Config.vmMAC
         let ip = RDP.leasedIP(mac: mac)
-        let rows: [(String, String)] = [
+        var rows: [(String, String)] = [
             ("winbar", AppBundle.version),
             ("vm", vm ?? "(not configured)"),
             ("qemu running", String(process != nil)),
@@ -32,14 +46,24 @@ enum SelfTest {
             ("vm mac", mac ?? "unknown"),
             ("leased ip", ip ?? "none"),
             ("vm bridge", ip.flatMap(RDP.bridgeInterface(for:)) ?? "not found"),
-            ("rdp readiness", process == nil ? "vm off" : RDP.probeNow(mac: mac).rawValue),
         ]
+        if let row = readinessRow(vmRunning: process != nil, probePort: probePort, probe: { RDP.probeNow(mac: mac) }) {
+            rows.append(row)
+        }
         if Debug.enabled {
             Debug.log("UTM executable=\(UTM.executablePath ?? "?") processIDs=\(UTM.processIDs)")
         }
         for (key, value) in rows { print("\(key + ":")\(String(repeating: " ", count: max(1, 17 - key.count)))\(value)") }
         print("self-test: done")   // end marker for AppBundle.runAsApp
         return 0
+    }
+
+    /// The "rdp readiness" row: nil when the port is to be left alone, and then `probe` is never
+    /// called. Otherwise "vm off" without probing — there is nothing to ask — or what the probe said.
+    /// Pure, given `probe`, so what `--no-rdp-probe` leaves alone is testable without a network.
+    static func readinessRow(vmRunning: Bool, probePort: Bool, probe: () -> RDP.Readiness) -> (String, String)? {
+        guard probePort else { return nil }
+        return ("rdp readiness", vmRunning ? probe().rawValue : "vm off")
     }
 
     static var loginItemStatus: String {

@@ -228,6 +228,22 @@ enum Homebrew {
         return found
     }
 
+    /// Where Homebrew keeps what it knows about a cask it installed: `Caskroom/<cask>/.metadata`,
+    /// under the prefix whose `bin` holds `brew`. `brew upgrade --cask` needs it, and refuses a cask
+    /// Homebrew didn't install ("Cask 'utm' is not installed.", cask/upgrade.rb) whatever is in
+    /// /Applications. Pure.
+    static func caskMetadata(_ cask: String, brew: String) -> String {
+        URL(fileURLWithPath: brew).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Caskroom").appendingPathComponent(cask).appendingPathComponent(".metadata").path
+    }
+
+    /// Whether Homebrew installed `cask`, so it can update it. One file-system check; false without
+    /// Homebrew.
+    static func hasCask(_ cask: String, brew: String?) -> Bool {
+        guard let brew else { return false }
+        return FileManager.default.fileExists(atPath: caskMetadata(cask, brew: brew))
+    }
+
     /// `brew --prefix` through the login shell's PATH. `/usr/bin/env` because the path is exactly
     /// what isn't known here; nothing is installed or changed by asking.
     static func prefixFromPATH() -> String? {
@@ -283,12 +299,21 @@ enum InstallPlan: Equatable {
 
     /// Whether carrying this out needs someone to do something in another app (the App Store).
     var isHandOff: Bool { if case .appStore = self { return true } else { return false } }
+
+    /// Whether this replaces a copy that's there rather than installing one.
+    var isUpdate: Bool { if case .brewUpgrade = self { return true } else { return false } }
 }
 
 extension Dependencies {
     /// The decision table: state × Homebrew → what to offer. Pure. nil means there is nothing to
     /// offer, which for `.installed` is the point.
-    static func plan(for dependency: Dependency, state: DependencyState, brew: String?) -> InstallPlan? {
+    ///
+    /// `brewHasCask`: Homebrew installed this copy (`Homebrew.hasCask`). Only an update asks: Homebrew
+    /// updates only what it installed, and a UTM from its own download or the App Store makes
+    /// `brew upgrade --cask` stop with "not installed", which the person would then be told to run
+    /// again themselves. Unknown counts as no, so the default offers nothing that can't work.
+    static func plan(for dependency: Dependency, state: DependencyState, brew: String?,
+                     brewHasCask: Bool = false) -> InstallPlan? {
         switch state {
         case .installed:
             return nil
@@ -297,7 +322,7 @@ extension Dependencies {
             // built themselves, and deleting either would be its own kind of damage.
             return .manual(DependencyCopy.wrongSignatureAdvice(dependency))
         case .tooOld:
-            guard let brew else { return .manual(DependencyCopy.updateByHand(dependency)) }
+            guard let brew, brewHasCask else { return .manual(DependencyCopy.updateByHand(dependency)) }
             return .brewUpgrade(brew: brew, cask: dependency.cask)
         case .missing:
             if let brew { return .brew(brew: brew, cask: dependency.cask) }
@@ -310,7 +335,39 @@ extension Dependencies {
 
     /// The same, asking the Mac where things stand. Blocking.
     static func plan(for dependency: Dependency) -> InstallPlan? {
-        plan(for: dependency, state: state(of: dependency), brew: Homebrew.path)
+        plan(for: dependency, state: state(of: dependency), brew: Homebrew.path,
+             brewHasCask: Homebrew.hasCask(dependency.cask, brew: Homebrew.path))
+    }
+
+    /// What the setup window may carry out, which is narrower than the CLI's (gui-wizard.md §3.6).
+    /// Pure. nil means there is nothing to offer.
+    ///
+    /// UTM is the CLI's table unchanged: its cask is an app and a symlink, which needs no
+    /// administrator password, so Homebrew installs it from a window as well as from a terminal.
+    ///
+    /// **Windows App is always the App Store here, never the cask** — the proven path, not a
+    /// fallback (§4 experiment 2, settled 2026-09-22). The cask installs Microsoft's installer
+    /// package, and Homebrew runs that through `sudo`; with no `SUDO_ASKPASS` set, sudo needs a
+    /// terminal to read the password from, and Winbar.app has none, so the install would stop with
+    /// nothing done. Making it work would mean Winbar showing its own dialog for the Mac's admin
+    /// password and feeding it to sudo — a phishing-shaped screen for exactly the audience this
+    /// window is for. The App Store build is also the one Winbar's saved-PC automation was proven
+    /// against. So the App Store whether or not Homebrew is there, and `winbar setup` in Terminal
+    /// still offers Homebrew to anyone who wants it. A copy that isn't Microsoft's is never replaced,
+    /// as everywhere else.
+    static func windowPlan(for dependency: Dependency, state: DependencyState, brew: String?,
+                           brewHasCask: Bool = false) -> InstallPlan? {
+        switch dependency {
+        case .utm:
+            return plan(for: dependency, state: state, brew: brew, brewHasCask: brewHasCask)
+        case .windowsApp:
+            switch state {
+            case .installed: return nil
+            case .wrongSignature: return .manual(DependencyCopy.wrongSignatureAdvice(dependency))
+            // Nothing sets a minimum for Windows App today, but an update is the App Store's too.
+            case .missing, .tooOld: return .appStore(id: Dependency.windowsAppStoreID)
+            }
+        }
     }
 }
 
@@ -365,12 +422,111 @@ enum DependencyCommand {
         let exited = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in exited.signal() }
         do { try process.run() } catch { return nil }
+        return wait(for: process, exited: exited, timeout: timeout)
+    }
+
+    /// Like `runAttached`, but the child's output is captured and relayed a line at a time instead
+    /// of inherited. For the setup window, which has no terminal for a child to inherit: Homebrew's
+    /// own words still appear as it goes, rather than a silent few minutes that look like a hang.
+    ///
+    /// The same refusal of anything privileged, checked before anything starts, and the same
+    /// timeout and kill. Standard input is empty rather than inherited, so nothing the child asks
+    /// can wait for an answer that isn't coming: a question gets end-of-file, not a hang. `line` is
+    /// called one line at a time, never twice at once, and every line is delivered before this
+    /// returns (give or take a grandchild that keeps a pipe open, which is waited on for five
+    /// seconds, as `Shell.run` does). Both streams go to it: Homebrew writes its progress to one
+    /// and its warnings to the other, and a person watching wants both.
+    ///
+    /// Returns the exit status, or nil if it was refused, couldn't be started or ran past `timeout`.
+    static func runStreaming(_ tool: String, _ arguments: [String], timeout: TimeInterval,
+                             line: @escaping (String) -> Void) -> Int32? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tool)
+        process.arguments = arguments
+        return stream(process, timeout: timeout, line: line)
+    }
+
+    /// `runStreaming`'s work, on a process already made: the privilege check, an empty input
+    /// whatever the process came with, both streams relayed, the timeout. Its own function so a
+    /// test can hand it a process whose input was set to something else first — the one way to see
+    /// the input emptied when the test's own is empty already.
+    static func stream(_ process: Process, timeout: TimeInterval, line: @escaping (String) -> Void) -> Int32? {
+        guard let tool = process.executableURL?.path,
+              !isPrivileged(tool: tool, arguments: process.arguments ?? []) else { return nil }
+        process.standardInput = FileHandle.nullDevice
+        let out = Pipe(), err = Pipe()
+        process.standardOutput = out
+        process.standardError = err
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        do { try process.run() } catch { return nil }
+
+        // One queue for `line`, so the two readers never call it at the same time.
+        let relay = DispatchQueue(label: "net.elusive.winbar.stream")
+        let group = DispatchGroup()
+        for pipe in [out, err] {
+            DispatchQueue.global(qos: .utility).async(group: group) {
+                var splitter = LineSplitter()
+                let handle = pipe.fileHandleForReading
+                while true {
+                    let chunk = handle.availableData
+                    let lines = chunk.isEmpty ? splitter.finish() : splitter.feed(chunk)
+                    if !lines.isEmpty { relay.sync { lines.forEach(line) } }
+                    if chunk.isEmpty { break }
+                }
+            }
+        }
+        let status = wait(for: process, exited: exited, timeout: timeout)
+        _ = group.wait(timeout: .now() + 5)
+        return status
+    }
+
+    /// The timeout and kill both runners share: a polite terminate, then SIGKILL five seconds later.
+    private static func wait(for process: Process, exited: DispatchSemaphore, timeout: TimeInterval) -> Int32? {
         if exited.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
             if exited.wait(timeout: .now() + 5) == .timedOut { kill(process.processIdentifier, SIGKILL) }
             return nil
         }
         return process.terminationStatus
+    }
+}
+
+/// Bytes from a pipe, as lines. Pure, so the splitting can be tested without a process.
+///
+/// A line ends at a newline or at a carriage return: Homebrew draws its download progress by
+/// rewriting one line with `\r`, and each rewrite is worth showing as the latest word rather than
+/// held back until a newline that only comes at 100%. `\r\n` is one ending, not two. Bytes are split
+/// before they are decoded, which is safe for UTF-8 (neither byte can occur inside a multi-byte
+/// character) and means a character cut in half between two reads is joined back up before it is
+/// decoded. Empty lines are dropped: in a one-line detail area they would only blank it.
+struct LineSplitter {
+    private var pending = Data()
+    /// The last byte fed was a `\r`, so a `\n` at the start of the next chunk belongs to it.
+    private var afterReturn = false
+
+    mutating func feed(_ chunk: Data) -> [String] {
+        var lines: [String] = []
+        for byte in chunk {
+            if byte == 0x0A, afterReturn {
+                afterReturn = false
+                continue
+            }
+            afterReturn = byte == 0x0D
+            if byte == 0x0A || byte == 0x0D {
+                if !pending.isEmpty { lines.append(String(decoding: pending, as: UTF8.self)) }
+                pending.removeAll(keepingCapacity: true)
+            } else {
+                pending.append(byte)
+            }
+        }
+        return lines
+    }
+
+    /// Whatever came after the last line ending, once the stream has closed.
+    mutating func finish() -> [String] {
+        defer { pending.removeAll() }
+        return pending.isEmpty ? [] : [String(decoding: pending, as: UTF8.self)]
     }
 }
 

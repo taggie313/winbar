@@ -78,6 +78,8 @@ enum WindowsAppBookmarks {
     }
 
     enum Copy {
+        static let readsPaused = "Windows App's automatic setup command stopped responding. Winbar won't keep retrying it in the background. You can still sign in through Windows App."
+
         /// The refusal, in the voice the rest of Winbar uses: what to do, then why.
         static let quitFirst =
             "Quit Windows App first. Winbar saves the PC through Windows App's own command line, which opens the same "
@@ -100,6 +102,59 @@ enum WindowsAppBookmarks {
     }
 
     // MARK: - Running the command line
+
+    /// A timed-out reader must not run again on every wizard page. Windows App 11.4.2 was
+    /// observed deadlocking during provider startup before processing `bookmark list`.
+    /// Remember only that timeout, not the list itself: an unanswered read is never an empty list.
+    /// An explicit retry, relaunching Winbar, or replacing the executable permits another attempt.
+    struct ExecutableIdentity: Hashable {
+        var path: String
+        var modified: Date?
+        var size: Int?
+
+        init(path: String, modified: Date? = nil, size: Int? = nil) {
+            self.path = path
+            self.modified = modified
+            self.size = size
+        }
+
+        init(_ url: URL) {
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            self.init(path: url.resolvingSymlinksInPath().path,
+                      modified: values?.contentModificationDate, size: values?.fileSize)
+        }
+    }
+
+    final class ReadGate {
+        static let readTimeout: TimeInterval = 10
+        private let lock = NSLock()
+        private var blocked = Set<ExecutableIdentity>()
+
+        func reset() {
+            lock.lock(); defer { lock.unlock() }
+            blocked.removeAll()
+        }
+
+        func run(executable: ExecutableIdentity, arguments: [String], what: String,
+                 timeout: TimeInterval,
+                 operation: (TimeInterval) -> CommandResult) throws -> CommandResult {
+            let reads = arguments.first == "list" || arguments.first == "export"
+            lock.lock()
+            let unavailable = reads && blocked.contains(executable)
+            lock.unlock()
+            if unavailable { throw Failure.failed(what: what, output: Copy.readsPaused) }
+            // Writes retain their existing deadline and are never retried here.
+            let result = operation(reads ? min(timeout, Self.readTimeout) : timeout)
+            if reads && result.timedOut {
+                lock.lock(); blocked.insert(executable); lock.unlock()
+            }
+            return result
+        }
+    }
+
+    private static let readGate = ReadGate()
+
+    static func retryReadCommands() { readGate.reset() }
 
     /// The binary inside the bundle. `--script` has to reach a *new* process, so this is the path
     /// that gets executed; `open -a` would hand the arguments to a running copy instead.
@@ -134,7 +189,10 @@ enum WindowsAppBookmarks {
     private static func script(_ arguments: [String], secret: String? = nil, what: String,
                                timeout: TimeInterval = 45) throws -> String {
         guard let executable = executableURL else { throw Failure.notInstalled }
-        let result = Shell.run(executable.path, ["--script", "bookmark"] + arguments, timeout: timeout)
+        let result = try readGate.run(executable: ExecutableIdentity(executable), arguments: arguments,
+                                      what: what, timeout: timeout) { limit in
+            Shell.run(executable.path, ["--script", "bookmark"] + arguments, timeout: limit)
+        }
         guard !result.timedOut else { throw Failure.failed(what: what, output: "Windows App didn't answer in time") }
         let output = redact(result.output, secret: secret)
         guard result.status == 0 else { throw Failure.failed(what: what, output: output) }

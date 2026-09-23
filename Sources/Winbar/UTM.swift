@@ -4,7 +4,7 @@ import AppKit
 ///
 /// Everything here blocks; the menu bar app calls it off the main thread. Apple Events sent by
 /// utmctl (and by osascript, see UTMScripting) are attributed to the responsible app, so macOS asks
-/// once per host app — "Winbar wants to control UTM" from the menu, "Terminal …" from the CLI.
+/// once per host app — "“Winbar” wants access to control “UTM”" from the menu, "“Terminal” …" from the CLI.
 enum UTM {
     static var appURL: URL? { NSWorkspace.shared.urlForApplication(withBundleIdentifier: Config.utmBundleID) }
 
@@ -208,7 +208,7 @@ enum UTM {
         case denied
         /// It started and said nothing until the deadline. The first call after UTM is installed or
         /// reinstalled is the one that does this: every utmctl call is an Apple Event, and macOS
-        /// holds the first one until somebody answers "… wants to control UTM" — a prompt that can
+        /// holds the first one until somebody answers "“…” wants access to control “UTM”" — a prompt that can
         /// open behind another window, and that a Mac nobody is sitting at never gets.
         case silent(seconds: Int)
         /// It answered, with a failure of its own.

@@ -218,6 +218,79 @@ enum Reconfigure {
             UTM.recordPendingRestart(for: vm)
         }
 
+        // `update configuration` makes UTM touch the VM's registry, and a shared folder Winbar wrote
+        // by script is a bookmark UTM cannot resolve: the whole change then fails with
+        //   UTM got an error: The file "<folder>" couldn't be opened. (-2700)
+        // naming a folder that has nothing to do with what was asked. Reproduced deliberately on
+        // 2026-09-21, twice: a share set and verified from inside Windows two minutes earlier failed
+        // exactly the same way, so this is not a bookmark going stale with age — UTM can never
+        // resolve it, it is only ever good to the QEMU process handed it at start.
+        //
+        // So set it aside for the duration and put it back afterwards. Two things this must not do:
+        //
+        //  - Park a folder picked in UTM's own details screen. That one holds a durable
+        //    security-scoped bookmark, which is the whole difference and the reason the picker works
+        //    at all. Clearing it would destroy something the person chose and hand back a fragile
+        //    scripted copy, so only a folder Winbar wrote is ever touched.
+        //  - Rely on `SharedFolder.reestablish` to put it back: that asks UTM what the share *is* and
+        //    writes it again, and after parking there is nothing there to read. The path is carried
+        //    here instead.
+        var parkedFolder: String?
+        if changes.changesHardware, changes.sharedFolder == nil, vm == Config.vmName,
+           case .success(let shared) = SharedFolder.current(vm: vm),
+           parksSharedFolder(requestedShare: changes.sharedFolder, current: shared,
+                             remembered: Config.sharedFolder, wasOurs: Config.sharedFolderByWinbar) {
+            progress("Setting \(vm)'s shared folder aside for the change…")
+            if case .success = SharedFolder.setWhileStopped(.off, vm: vm) { parkedFolder = shared }
+        }
+
+        /// Carries a failure out of the parked window. Everything between the parking and the restore
+        /// can fail, and walking away then would leave the person's folder silently unshared — the
+        /// exact damage this fix exists to stop, done by the fix itself. So try to put it back, and
+        /// say either way: the folder is named so the message is actionable even when the retry fails.
+        func failing(_ error: WinbarError) -> WinbarError {
+            guard let parked = parkedFolder else { return error }
+            parkedFolder = nil
+            let put = SharedFolder.setWhileStopped(.folder(parked), vm: vm)
+            if case .success(let now) = put, SharedFolder.matches(now, .folder(parked)) {
+                Config.rememberSharedFolderWritten(parked, for: vm)
+                return WinbarError(error.title, error.detail
+                                       + " \(vm)'s shared folder was set aside for the change and has been put back.")
+            }
+            return WinbarError(error.title, error.detail
+                                   + " \(vm)'s shared folder was set aside for the change and couldn't be put back: "
+                                   + "set it again with winbar share \(SharedFolder.abbreviate(parked))")
+        }
+
+        /// Puts a parked folder back. Only ever called where the VM is stopped and, for a display
+        /// change, only after UTM has restarted — writing it before that restart would hand back a
+        /// bookmark the new UTM cannot use, which is the bug this whole dance exists for.
+        func restoreParked() -> WinbarError? {
+            guard let parked = parkedFolder else { return nil }
+            progress("Putting \(vm)'s shared folder back…")
+            switch SharedFolder.setWhileStopped(.folder(parked), vm: vm) {
+            case .failure(let error):
+                return WinbarError("The change applied, but \(vm)'s shared folder couldn't be put back",
+                                   "Winbar set \(SharedFolder.abbreviate(parked)) aside so UTM would accept the change, "
+                                       + "and UTM refused it back: \(error.description) Set it again with "
+                                       + "winbar share \(SharedFolder.abbreviate(parked))")
+            case .success(let now):
+                guard SharedFolder.matches(now, .folder(parked)) else {
+                    let reported = now.map { "“\(SharedFolder.abbreviate($0))”" } ?? "no folder"
+                    return WinbarError("The change applied, but \(vm)'s shared folder couldn't be put back",
+                                       "Winbar set \(SharedFolder.abbreviate(parked)) aside so UTM would accept the "
+                                           + "change, and UTM now reports \(reported). Set it again with "
+                                           + "winbar share \(SharedFolder.abbreviate(parked))")
+                }
+                Config.rememberSharedFolderWritten(parked, for: vm)
+                // Handed back like any other shared-folder change, so the caller asks Windows what
+                // became of it rather than trusting the registry.
+                changes.sharedFolder = .folder(parked)
+                parkedFolder = nil
+                return nil
+            }
+        }
+
         if changes.changesHardware {
             progress("Changing \(vm)'s configuration…")
             let applied: UTMScripting.Applied
@@ -230,9 +303,9 @@ enum Reconfigure {
                 let untouched = AppleScriptRunner.errorNumber(in: error.detail).map { (1001...1003).contains($0) } ?? false
                 if untouched || changes.display == nil {
                     if changes.display != nil { Config.pendingUTMRestart = restartBefore }
-                    return .failure(startAgain(after: failure))
+                    return .failure(startAgain(after: failing(failure)))
                 }
-                return .failure(WinbarError(failure.title, failure.detail + " " + restartOwed(vm)))
+                return .failure(failing(WinbarError(failure.title, failure.detail + " " + restartOwed(vm))))
             case .success(let result):
                 applied = result
             }
@@ -247,7 +320,7 @@ enum Reconfigure {
             if let count = applied.displayCount { Config.rememberConsoleEnabled(count > 0, for: vm) }
             guard mismatches.isEmpty else {
                 let detail = mismatches.joined(separator: "; ") + (changes.display != nil ? ". " + restartOwed(vm) : "")
-                return .failure(WinbarError("UTM didn't apply everything", detail))
+                return .failure(failing(WinbarError("UTM didn't apply everything", detail)))
             }
         }
         if changes.display != nil {
@@ -257,21 +330,31 @@ enum Reconfigure {
             // and takes the VM with it. A freshly launched UTM picks the window type from the current
             // configuration, so quit it now; the next utmctl call relaunches it. Any display change gets
             // this treatment, not only console → headless. (UTM.start refuses too, until this is done.)
-            if let refusal = otherVMsRefusal(vm, changed: true) { return .failure(refusal) }
+            if let refusal = otherVMsRefusal(vm, changed: true) { return .failure(failing(refusal)) }
             progress("Restarting UTM so it forgets the old display window…")
             if case .failure(let error) = UTM.quit() {
+                // Not through `failing`: UTM is still up and owes a restart, so writing the folder
+                // back now would hand the next UTM a bookmark it can't use. Say where it went instead.
                 return .failure(WinbarError("The configuration changed, but UTM has to restart before \(vm) starts again",
-                                            error.detail + " " + restartOwed(vm)))
+                                            error.detail + " " + restartOwed(vm)
+                                                + (parkedFolder.map { " \(vm)'s shared folder was set aside for the change; "
+                                                    + "set it again with winbar share \(SharedFolder.abbreviate($0))" } ?? "")))
             }
             // The UTM that just quit took the shared folder's bookmark with it (see `SharedFolder`),
             // so a share that was working is dead from here on — including one this very run just
             // set. The VM is still stopped, which is the only moment it can be written again, so do
             // that now where it is Winbar's to write, and either way hand the folder back so the
             // caller asks Windows what became of it.
+            // While parked the registry is empty, so this reads nothing and writes nothing; the
+            // restore just below does the single write. Unparked, it does its usual job.
             if let folder = SharedFolder.reestablish(vm: vm, progress: progress) {
                 changes.sharedFolder = .folder(folder)
             }
+            if let error = restoreParked() { return .failure(error) }
         }
+        // A vCPU or RAM change doesn't restart UTM, so nothing has invalidated the folder and it can
+        // go back as soon as the change has landed.
+        if let error = restoreParked() { return .failure(error) }
 
         if wasRunning {
             progress("Starting \(vm)…")
@@ -282,11 +365,31 @@ enum Reconfigure {
         return .success(changes)
     }
 
+    /// Whether a configuration change has to set this VM's shared folder aside before asking UTM for
+    /// it. Pure, so the one case that must never be got wrong — a folder picked in UTM's own details
+    /// screen, which holds a durable bookmark — is provable without a VM.
+    ///
+    /// `update configuration` makes UTM touch the registry, and a scripted share is a bookmark UTM
+    /// cannot resolve, so the change fails naming a folder nobody asked about. Parking avoids that.
+    /// It is only ever right for a folder Winbar wrote: a picked one does not cause the failure, and
+    /// clearing it would trade the person's durable share for a fragile copy.
+    static func parksSharedFolder(requestedShare: SharedFolder.Setting?, current: String?,
+                                  remembered: String?, wasOurs: Bool) -> Bool {
+        // A request that carries its own shared-folder change already writes the folder before the
+        // configuration change and again after UTM restarts; parking would fight it.
+        guard requestedShare == nil, let current else { return false }
+        return SharedFolder.stillOurs(read: current, remembered: remembered, wasOurs: wasOurs)
+    }
+
     /// Why UTM mustn't be restarted now, if it mustn't: other VMs are running (or UTM couldn't say),
     /// and restarting it would stop them. `changed` says whether the display change already happened.
     private static func otherVMsRefusal(_ vm: String, changed: Bool) -> WinbarError? {
+        otherVMsRefusal(vm, changed: changed, others: UTM.otherRunningVMs(than: vm))
+    }
+
+    static func otherVMsRefusal(_ vm: String, changed: Bool, others: Result<[String], WinbarError>) -> WinbarError? {
         let title: String, why: String
-        switch UTM.otherRunningVMs(than: vm) {
+        switch others {
         case .failure(let error):
             title = "Couldn't confirm no other VMs are running"
             why = "Winbar couldn't ask UTM (\(error.detail)), and restarting UTM would stop any other VM"

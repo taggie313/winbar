@@ -12,6 +12,35 @@ extension GuestOutput {
 
 /// What Connect needs, shared by the menu and `winbar connect`. All blocking.
 enum Connection {
+    /// The menu's Connect when Windows App couldn't be opened. It names the menu's own route first
+    /// while the menu has one (`SetupWindow.availableToEveryone`): the person reading it clicked a
+    /// menu, and may never have opened Terminal. `winbar setup` stays named, as the other route.
+    static var menuFailureDetail: String { menuFailureDetail(setUpInMenu: SetupWindow.availableToEveryone) }
+    static func menuFailureDetail(setUpInMenu: Bool) -> String {
+        setUpInMenu
+            ? "\(SetupCopy.menuItem) in Winbar's menu walks you through installing Windows App (so does winbar setup "
+                + "in Terminal), or get it from the Mac App Store. Then try Connect again."
+            : "Run winbar setup in Terminal and it offers to install Windows App for you, or get it from the Mac App "
+                + "Store. Then try Connect again."
+    }
+    /// Shared by the menu and setup. Call off-main; Windows App's tile search is blocking.
+    /// Returning means a connection was opened, not that Windows accepted the sign-in.
+    @discardableResult
+    static func openDesktop(host: String, user: String?,
+                            failureDetail: String = "Install Windows App from the Mac App Store, then try Connect again.",
+                            fallback: () -> Void = {},
+                            accessibility: () -> Bool = { WindowsApp.accessibilityTrusted },
+                            saved: (String) -> Bool = WindowsApp.openSavedPC,
+                            oneOff: (String, String?) -> Bool = RDP.openOneOff) throws -> Bool {
+        if accessibility() {
+            if saved(host) { return true }
+            fallback()
+        }
+        guard oneOff(host, user) else {
+            throw WinbarError("Couldn't open Windows App", failureDetail)
+        }
+        return false
+    }
     /// The configured host, else `<DNS host name>.local` asked from the guest and remembered (with the
     /// signed-in user, if no user is configured either). nil if neither is possible.
     ///

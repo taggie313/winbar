@@ -234,6 +234,7 @@ final class CreateRun {
     /// A note or warning, once per job (UX: "shown where they apply, once").
     @discardableResult
     private func message(_ code: String, _ text: String) -> Bool {
+        let text = plan.inSetupWindow == true ? CreateCopy.setupNote(code: code, text: text) : text
         guard !state.shown.contains(code) else { return false }
         state.shown.append(code)
         state.messages.append(CreateMessage(code: code, text: text, at: Date()))
@@ -410,7 +411,8 @@ final class CreateRun {
         }
         let version = UTM.version ?? "an unknown version"
         if let problem = CreatePreflight.utmVersionProblem(UTM.version) { throw problem }
-        if let warning = CreatePreflight.utmVersionWarning(UTM.version) { message("W_UTM_UNTESTED", warning) }
+        // The key says which standing it is, so a bug report names the case without anyone asking.
+        if let warning = CreatePreflight.utmVersionWarning(UTM.version) { message(warning.code, warning.message) }
         log.write("UTM \(version)")
 
         detail(automationDetail ?? "Asking UTM for its VMs…")
@@ -436,7 +438,7 @@ final class CreateRun {
             throw CreateJobError.input("E_NAME_TAKEN", ChoiceProblem.nameTaken(vmName).description)
         }
         let others = list.filter { $0.isRunning }.map(\.name)
-        if !others.isEmpty {
+        if !others.isEmpty, plan.inSetupWindow != true, !plan.keepConsole {
             message("N_OTHER_VMS", "When Windows is installed, Winbar restarts UTM once to take the VM headless. "
                     + "Close your other VMs by then (\(others.joined(separator: ", "))), or the VM keeps its window.")
         }
@@ -1085,7 +1087,7 @@ final class CreateRun {
         if VMProcesses.isRunning(vmName, id: state.vmID) {
             bitLockerOn = audit(vmID: vmID)
             collectGuestLog(vmID: vmID, status: result)
-            if plan.has(.remoteDesktop), result?.remoteDesktopOn == true {
+            if CreateRun.probesRemoteDesktop(plan: plan, status: result) {
                 detail("Waiting for Remote Desktop…")
                 readiness = RDP.probeNow(mac: created.mac, timeout: 3)
                 log.write("RDP probe: \(readiness.rawValue)")
@@ -1137,9 +1139,10 @@ final class CreateRun {
         if let result, !result.ok {
             let steps = result.failedStepNames.isEmpty ? "" : " (" + result.failedStepNames.joined(separator: ", ") + ")"
             throw CreateJobError.install("E_RESULT_FAILED", "Some of Winbar's first sign-in steps failed\(steps).",
-                                         "Windows is installed and Winbar can reach it, so winbar setup can "
-                                             + "check everything and fix what it can.",
-                                         nextStep: "winbar setup")
+                                         plan.inSetupWindow == true
+                                             ? "Windows is installed and Winbar can reach it. Close this install result to return to setup and check the new VM."
+                                             : "Windows is installed and Winbar can reach it, so winbar setup can check everything and fix what it can.",
+                                         nextStep: plan.inSetupWindow == true ? "Close this result, choose the new VM, then continue to Tune." : "winbar setup")
         }
         guard result != nil else {
             // Windows is installed — the disks came off and it started again — but nothing said how
@@ -1149,7 +1152,7 @@ final class CreateRun {
                                              + "sign-in steps.",
                                          "The file Windows writes them to was gone by the time Winbar looked, so it "
                                              + "can't say whether Remote Desktop and the rest are on.",
-                                         nextStep: "winbar setup")
+                                         nextStep: plan.inSetupWindow == true ? "Close this result, choose the new VM, then continue to Tune." : "winbar setup")
         }
         finished(.done)
     }
@@ -1353,7 +1356,27 @@ final class CreateRun {
         }
     }
 
+    /// Whether the end of the install asks the Remote Desktop port whether it answers. Only when there
+    /// is something to ask — Remote Desktop was asked for and Windows says it turned on — and never for
+    /// an install the Set Up Winbar window started (`CreatePlan.inSetupWindow`): the probe raises macOS's
+    /// Local Network prompt the first time Winbar.app makes it, and the window predicts that prompt at
+    /// its Connect step, not twenty minutes into an install nobody may be watching. Pure.
+    static func probesRemoteDesktop(plan: CreatePlan, status: InstallStatus?) -> Bool {
+        plan.has(.remoteDesktop) && status?.remoteDesktopOn == true && plan.inSetupWindow != true
+    }
+
+    /// Why an install the Set Up Winbar window started keeps its console: set-up decides that, after
+    /// Remote Desktop has worked. Both of set-up's front-ends ask only then — `winbar setup` asks "Has a
+    /// Remote Desktop connection worked?" before it offers headless, and the window's finish step waits
+    /// for **Yes** on its Connect step — so the sentence is true whichever one the person goes on with.
+    static let keptForSetUp = "Winbar's set-up asks about going without it once Remote Desktop has worked."
+
     /// Whether to go headless, and why not when not. Pure.
+    ///
+    /// An install the Set Up Winbar window started never probes the port (`probesRemoteDesktop`), so it
+    /// is refused here with set-up's reason, placed where the probe's answer would have been read: every
+    /// reason before it is still said as it is, and "didn't answer on this Mac" is never said of a
+    /// question nobody asked.
     static func headlessDecision(plan: CreatePlan, status: InstallStatus?, readiness: RDP.Readiness,
                                  otherVMsRunning: [String]) -> (go: Bool, why: String) {
         if plan.keepConsole { return (false, "you asked for --console.") }
@@ -1364,6 +1387,7 @@ final class CreateRun {
         guard plan.has(.remoteDesktop) else { return (false, "Remote Desktop is off, so nothing could reach Windows.") }
         guard let status, status.ok else { return (false, "Windows' first sign-in steps didn't all finish.") }
         guard status.remoteDesktopOn else { return (false, "Remote Desktop didn't turn on in Windows.") }
+        if plan.inSetupWindow == true { return (false, keptForSetUp) }
         guard readiness == .ready else { return (false, "Remote Desktop didn't answer on this Mac yet.") }
         return (true, "")
     }
@@ -1537,10 +1561,59 @@ final class CreateRun {
 // MARK: - Preflight pieces that are worth testing on their own
 
 enum CreatePreflight {
-    /// UTM 4.7 is the floor (create semantics, serial addresses, `input keystroke`); 4.7.5 is what
-    /// create was researched and tested against.
+    /// UTM 4.7 is the floor (create semantics, serial addresses, `input keystroke`). Below it,
+    /// create refuses; above it, how *tested* a version is, is a separate question with its own
+    /// three answers — `testedVersions` and `standing(_:)`.
     static let minimumVersion = (4, 7)
-    static let testedVersion = "4.7.5"
+
+    /// The exact versions `winbar create` has been *run* against, never a range and never "5.0.x".
+    /// A version joins this list only after the live list in
+    /// `docs/internal/specs/utm5-support.md` §5 has passed on it.
+    static let testedVersions = ["4.7.5"]
+
+    /// UTM 5 has never had a stable release. Checked 2026-09-20: v5.0.0–v5.0.5 are all marked
+    /// pre-release on GitHub, and /releases/latest is v4.7.5. When a 5.x ships as a full release this
+    /// goes away (see docs/internal/specs/utm5-support.md §7).
+    static let prereleaseMajor = 5
+
+    /// How far the installed UTM is from one create has been run against. Three answers, because a
+    /// 4.x patch release and a pre-release of the next major version are not the same risk.
+    enum Standing: Equatable {
+        /// This exact version is in `testedVersions`: nothing is said anywhere.
+        case tested
+        /// Major ≥ `prereleaseMajor` and nothing tested shares that major (W_UTM_PRERELEASE).
+        case prerelease
+        /// Anything else that parses (W_UTM_UNTESTED).
+        case untested
+    }
+
+    /// `nil` when the version doesn't parse: an unreadable version string is not something to warn
+    /// about, it is something to say nothing about (`utmVersionProblem` treats it the same way).
+    /// `tested` is injectable so §3.3's one-constant change can be tested before it happens.
+    static func standing(_ version: String, tested: [String] = testedVersions) -> Standing? {
+        guard let parsed = parseVersion(version) else { return nil }
+        if tested.contains(version) { return .tested }
+        // Once a version of that major has actually been run, the pre-release sentence is the
+        // weaker claim, so the plain untested one takes over.
+        let testedMajors = tested.compactMap { parseVersion($0)?.major }
+        if parsed.major >= prereleaseMajor, !testedMajors.contains(parsed.major) { return .prerelease }
+        return .untested
+    }
+
+    /// The tested versions in plain English, for the copy's `{tested}`: `4.7.5`, then
+    /// `4.7.5 and 5.0.5`, then `4.7.5, 5.0.5 and 5.1.0`.
+    static func testedList(_ versions: [String] = testedVersions) -> String {
+        guard let last = versions.last else { return "" }
+        guard versions.count > 1 else { return last }
+        return versions.dropLast().joined(separator: ", ") + " and " + last
+    }
+
+    /// A warning and the key it is filed under, because which of the two it is *is* the finding: a
+    /// bug report that names W_UTM_PRERELEASE says more than one that names W_UTM_UNTESTED.
+    struct VersionWarning: Equatable {
+        var code: String
+        var message: String
+    }
 
     static func utmVersionProblem(_ version: String?) -> CreateJobError? {
         guard let version else { return nil }   // UTM is installed but won't say; carry on
@@ -1554,9 +1627,19 @@ enum CreatePreflight {
         return nil
     }
 
-    static func utmVersionWarning(_ version: String?) -> String? {
-        guard let version, version != testedVersion, parseVersion(version) != nil else { return nil }
-        return CreateCopy.wUTMUntested(version: version)
+    static func utmVersionWarning(_ version: String?, tested: [String] = testedVersions) -> VersionWarning? {
+        guard let version, let standing = standing(version, tested: tested) else { return nil }
+        let list = testedList(tested)
+        switch standing {
+        case .tested:
+            return nil
+        case .prerelease:
+            return VersionWarning(code: "W_UTM_PRERELEASE",
+                                  message: CreateCopy.wUTMPrerelease(version: version, tested: list))
+        case .untested:
+            return VersionWarning(code: "W_UTM_UNTESTED",
+                                  message: CreateCopy.wUTMUntested(version: version, tested: list))
+        }
     }
 
     static func parseVersion(_ version: String) -> (major: Int, minor: Int, patch: Int)? {

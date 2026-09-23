@@ -243,7 +243,7 @@ import Testing
         #expect(said.contains("command line"))
         #expect(said.contains("read it"))
         #expect(CreateCopy.beforePassword(fileVaultOn: true).joined(separator: " ").contains(said))
-        #expect(Setup.savedPCWhyPassword(user: "alex").contains(said))
+        #expect(SetupCopy.SavedPC.why(user: "alex").contains(said))
     }
 
     /// The state file follows the job across processes and restarts. It may hold the bookmark id,

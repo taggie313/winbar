@@ -398,9 +398,37 @@ import Testing
 
     @Test func usageListsEverySubcommand() {
         for command in CLI.commands { #expect(CLI.usage.contains(command)) }
-        for flag in ["--self-test", "--version", "--keep-bitlocker", "--no-visual-tweaks", "--headless", "--console"] {
+        for flag in ["--self-test", "--version", "--keep-bitlocker", "--no-visual-tweaks", "--headless", "--console",
+                     "--anonymise", "--no-logs", "--out"] {
             #expect(CLI.usage.contains(flag))
         }
+    }
+
+    /// `winbar help` is a fourth copy of what `--anonymise` promises, alongside the report's own
+    /// mode line, the menu's alert and the README — and it is the copy that drifted, because nothing
+    /// checked it. It spent 0.1.1 two omissions behind the others. This is not a proof that the
+    /// sentence is right, which no test can be; it is a floor, so that the next thing the flag
+    /// starts replacing can't be added to three copies and forgotten in the one nobody tests.
+    /// The flag's one-line summary is a promise about somebody's privacy, so it is checked against
+    /// what the code does rather than against the word "id" — which the sentence "replaces every id
+    /// in the file" satisfied while the rule was, and still is, scoped to two shapes. That wording
+    /// was wider than the code: an identifier of some other shape has never been touched.
+    @Test func usageDescribesWhatAnonymiseReplaces() {
+        let line = CLI.usage.components(separatedBy: "\n")
+            .drop { !$0.contains("--anonymise replaces") }.prefix(3).joined(separator: " ")
+        for promised in ["Mac's name", "user names", "VM names", "Windows PC name",
+                         "id-shaped", "MAC-shaped", "placeholders"] {
+            #expect(line.contains(promised), "winbar help no longer says --anonymise replaces the \(promised)")
+        }
+        // The claim the code cannot keep, in either of the two forms it has been written in.
+        #expect(!line.contains("every id in the file"))
+        #expect(!line.contains("every id "))
+        // And the two shapes it does name are the two the Redactor really replaces, while something
+        // of a third shape is left exactly as it was.
+        let redactor = Redactor(mode: .anonymised, identity: .init(userName: "rosa", vmNames: ["winlab01"]))
+        #expect(redactor.apply("deadbeef-cafe-4a1b-9c2d-0123456789ab") == "<id-1>")
+        #expect(redactor.apply("5A:2B:3C:4D:5E:6F") == "<mac-address-1>")
+        #expect(redactor.apply("serial C02XK1JYJG5H") == "serial C02XK1JYJG5H")
     }
 
     @Test func hostNames() {

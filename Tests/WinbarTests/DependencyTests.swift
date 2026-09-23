@@ -124,13 +124,62 @@ import Testing
 
     @Test func tooOldIsAnUpdate() {
         let old = DependencyState.tooOld(version: "4.6.4", minimum: "4.7")
-        #expect(Dependencies.plan(for: .utm, state: old, brew: brew) == .brewUpgrade(brew: brew, cask: "utm"))
+        #expect(Dependencies.plan(for: .utm, state: old, brew: brew, brewHasCask: true)
+                == .brewUpgrade(brew: brew, cask: "utm"))
         // No Homebrew: Winbar doesn't replace a copy someone installed another way.
         guard case .manual(let advice)? = Dependencies.plan(for: .utm, state: old, brew: nil) else {
             Issue.record("a too-old UTM without Homebrew should be manual")
             return
         }
         #expect(advice.contains("brew upgrade --cask utm"))
+    }
+
+    /// Homebrew updates only what it installed: `brew upgrade --cask utm` on a UTM from its own
+    /// download stops with "Cask 'utm' is not installed" (cask/upgrade.rb), and the window would then
+    /// tell the person to run the same failing command. So with Homebrew there but not the owner of
+    /// this copy — or not known to be — it's advice, as without Homebrew.
+    @Test func homebrewUpdatesOnlyWhatItInstalled() {
+        let old = DependencyState.tooOld(version: "4.6.4", minimum: "4.7")
+        for plan in [Dependencies.plan(for: .utm, state: old, brew: brew, brewHasCask: false),
+                     Dependencies.plan(for: .utm, state: old, brew: brew),
+                     Dependencies.windowPlan(for: .utm, state: old, brew: brew)] {
+            #expect(plan == .manual(DependencyCopy.updateByHand(.utm)))
+        }
+        #expect(Dependencies.windowPlan(for: .utm, state: old, brew: brew, brewHasCask: true)
+                == .brewUpgrade(brew: brew, cask: "utm"))
+        // Installing is still Homebrew's whether or not it has anything installed yet.
+        #expect(Dependencies.plan(for: .utm, state: .missing, brew: brew, brewHasCask: false) == .brew(brew: brew, cask: "utm"))
+    }
+
+    /// Where Homebrew records a cask it installed, beside its own bin, for both standard prefixes.
+    @Test func whereHomebrewKeepsItsCasks() {
+        #expect(Homebrew.caskMetadata("utm", brew: "/opt/homebrew/bin/brew") == "/opt/homebrew/Caskroom/utm/.metadata")
+        #expect(Homebrew.caskMetadata("utm", brew: "/usr/local/bin/brew") == "/usr/local/Caskroom/utm/.metadata")
+        #expect(!Homebrew.hasCask("utm", brew: nil))
+        #expect(!Homebrew.hasCask("utm", brew: "/nonexistent/winbar-tests/bin/brew"))
+    }
+
+    /// The update's plan says whose copy it replaces and what quitting UTM does to a running VM.
+    @Test func anUpdateSaysWhatItStops() {
+        let text = DependencyCopy.plan(.utm, .brewUpgrade(brew: brew, cask: "utm")).joined(separator: " ")
+        #expect(text.hasPrefix("Homebrew (\(brew)) installed this UTM, so Winbar can ask it to update it"))
+        #expect(text.contains("brew upgrade --cask utm"))
+        #expect(text.contains("If UTM is open, Homebrew quits it first — any VM running in it stops — and opens it again"))
+        #expect(text.contains("never uses sudo"))
+    }
+
+    /// Homebrew's path goes beside Homebrew in both of its plans. Put after "this UTM", it read as
+    /// where UTM is — and UTM is in /Applications, not in Homebrew's bin.
+    @Test func homebrewsPathIsBesideHomebrew() {
+        for plan in [InstallPlan.brew(brew: brew, cask: "utm"), .brewUpgrade(brew: brew, cask: "utm")] {
+            let first = DependencyCopy.plan(.utm, plan)[0]
+            #expect(!first.contains("UTM (\(brew))"), "\(plan)")
+            let homebrew = first.range(of: "Homebrew")!.upperBound
+            let path = first.range(of: "(\(brew))")!.lowerBound
+            #expect(!first[homebrew..<path].contains("UTM"), "\(plan)")
+        }
+        // The control: the update's plan as it was put the path straight after "this UTM".
+        #expect("Homebrew installed this UTM (\(brew)), so Winbar can ask it to update it".contains("UTM (\(brew))"))
     }
 
     @Test func nothingToDoWhenItIsInstalled() {
@@ -394,6 +443,36 @@ import Testing
                 == "4.6.4; Winbar needs 4.7 or later")
         #expect(Recipe.dependencyDetail(.windowsApp, state: .installed(version: nil)) == "Windows App (unknown version)")
     }
+
+    /// H1 says which UTM this is, so a bug report carries it without anyone having to ask. The row
+    /// stays `.ok` — this is a fact about the Mac, not a fault, and doctor still exits 0.
+    @Test func h1SaysHowTestedThisUTMIs() {
+        #expect(Recipe.dependencyDetail(.utm, state: .installed(version: "4.7.6"))
+                == "UTM 4.7.6 (Winbar is tested against 4.7.5)")
+        #expect(Recipe.dependencyDetail(.utm, state: .installed(version: "5.0.5"))
+                == "UTM 5.0.5 (a pre-release; Winbar is tested against 4.7.5)")
+        // The tested version says nothing extra, and a UTM that won't give a version can't be
+        // judged, so it says nothing either.
+        #expect(Recipe.dependencyDetail(.utm, state: .installed(version: "4.7.5")) == "UTM 4.7.5")
+        #expect(Recipe.dependencyDetail(.utm, state: .installed(version: nil)) == "UTM (unknown version)")
+        #expect(Recipe.dependencyDetail(.utm, state: .installed(version: "banana")) == "UTM banana")
+        // C1 is untouched: the clause belongs to UTM, whose version create is tested against.
+        #expect(Recipe.dependencyDetail(.windowsApp, state: .installed(version: "11.1.10"))
+                == "Windows App 11.1.10")
+        #expect(Recipe.dependencyDetail(.windowsApp, state: .installed(version: "99.0.0"))
+                == "Windows App 99.0.0")
+    }
+
+    /// The clause is words, not a verdict: an installed UTM still has nothing for setup to fix,
+    /// whichever version it is, so H1 stays `.ok` and `winbar doctor` still exits 0 on a Mac
+    /// running a 5.x pre-release.
+    @Test func anUntestedUTMIsStillNothingToFix() {
+        #expect(Dependencies.plan(for: .utm, state: .installed(version: "5.0.5"), brew: "/opt/homebrew/bin/brew")
+                == nil)
+        #expect(Dependencies.plan(for: .utm, state: .installed(version: "4.7.6"), brew: nil) == nil)
+        // Contrast: below the floor is a real fault, and that row is not .ok.
+        #expect(Dependencies.plan(for: .utm, state: .tooOld(version: "4.6.4", minimum: "4.7"), brew: nil) != nil)
+    }
 }
 
 @Suite struct DrivingUTMAfterAnInstall {
@@ -426,7 +505,7 @@ import Testing
     @Test func whatToDoAboutSilence() {
         let outstanding = UTMFirstUse.how(consent: .wouldPrompt, quarantined: false, host: "Terminal",
                                           bundleID: "com.apple.Terminal")
-        #expect(outstanding.contains("Terminal wants to control UTM"))
+        #expect(outstanding.contains("“Terminal” wants access to control “UTM”"))
         #expect(outstanding.contains("still outstanding"))
         #expect(!outstanding.contains("tccutil"))
 
@@ -518,5 +597,260 @@ import Testing
         if case .error = Recipe.utmctlStatus(.failed("boom"), consent: .decided, quarantined: false) {} else {
             Issue.record("a utmctl failure should be an error")
         }
+    }
+}
+
+// MARK: - The setup window
+
+/// What the setup window may carry out, which is narrower than the CLI's (gui-wizard.md §3.6, and §4
+/// experiment 2, settled): Windows App from the App Store, as the proven path, whether or not
+/// Homebrew is here; UTM as the CLI does it. Pure.
+@Suite struct WindowPlans {
+    let brew = "/opt/homebrew/bin/brew"
+
+    /// The cask runs Microsoft's installer package through sudo, which has no terminal to ask in from
+    /// Winbar.app. The control is the CLI's own table, which does offer the cask with Homebrew here.
+    @Test func windowsAppIsTheAppStoreWithHomebrewOrWithout() {
+        for brew in [brew, nil] {
+            #expect(Dependencies.windowPlan(for: .windowsApp, state: .missing, brew: brew)
+                        == .appStore(id: Dependency.windowsAppStoreID))
+        }
+        #expect(Dependencies.plan(for: .windowsApp, state: .missing, brew: brew) == .brew(brew: brew, cask: "windows-app"))
+        #expect(Dependencies.windowPlan(for: .windowsApp, state: .tooOld(version: "10.9", minimum: "11.0"), brew: brew)
+                    == .appStore(id: Dependency.windowsAppStoreID))
+    }
+
+    /// UTM's cask is an app and a symlink: no password, so Homebrew does it from a window too.
+    @Test func utmIsTheCLIsTable() {
+        let states: [DependencyState] = [.missing, .tooOld(version: "4.6.4", minimum: "4.7"), .installed(version: "4.7.5"),
+                                         .wrongSignature("signed by team ABCDE12345")]
+        for state in states {
+            for brew in [brew, nil] {
+                #expect(Dependencies.windowPlan(for: .utm, state: state, brew: brew)
+                            == Dependencies.plan(for: .utm, state: state, brew: brew))
+            }
+        }
+        #expect(Dependencies.windowPlan(for: .utm, state: .missing, brew: brew) == .brew(brew: brew, cask: "utm"))
+        #expect(Dependencies.windowPlan(for: .utm, state: .missing, brew: nil) == .download(url: Dependency.utmDownloadURL))
+    }
+
+    @Test func nothingForAnAppThatIsThereAndNeverAReplacement() {
+        for brew in [brew, nil] {
+            #expect(Dependencies.windowPlan(for: .windowsApp, state: .installed(version: "11.1.10"), brew: brew) == nil)
+            guard case .manual(let advice)? = Dependencies.windowPlan(for: .windowsApp,
+                                                                      state: .wrongSignature("signed by team X"),
+                                                                      brew: brew) else {
+                Issue.record("a Windows App that isn't Microsoft's should be manual, brew=\(brew ?? "none")")
+                continue
+            }
+            #expect(advice.contains("won't replace"))
+        }
+    }
+
+    /// Step 1 draws C1's row long before step 5 acts on it, and the row has to say what step 5's
+    /// button will do. With Homebrew here, the CLI's row offers Homebrew; the window never does, so
+    /// its row is built from the window's plan. The control is the terminal's own row, which still
+    /// offers Homebrew.
+    @Test func theWindowsRowsSayWhatTheWindowDoes() {
+        for brew in [brew, nil] {
+            for state: DependencyState in [.missing, .tooOld(version: "10.9", minimum: "11.0")] {
+                let row = SetupRunner.dependencyRow(.windowsApp, state: state, brew: brew)
+                #expect(row.isFixable)
+                #expect(row.detail.hasSuffix("; setup can open its App Store page"), "\(state), brew=\(brew ?? "none")")
+                #expect(!row.detail.contains("Homebrew"))
+            }
+        }
+        #expect(Recipe.dependencyStatus(.windowsApp, state: .missing, brew: brew).detail
+                    == "not installed; setup can ask Homebrew to install it")
+        // UTM's plan is the CLI's, and so is its row.
+        #expect(SetupRunner.dependencyRow(.utm, state: .missing, brew: brew).detail
+                    == "not installed; setup can ask Homebrew to install it")
+        #expect(SetupRunner.dependencyRow(.utm, state: .missing, brew: nil).detail
+                    == Recipe.dependencyStatus(.utm, state: .missing, brew: nil).detail)
+        #expect(SetupRunner.dependencyRow(.windowsApp, state: .installed(version: "11.1.10"), brew: brew).isOK)
+    }
+
+    /// Nothing the window can carry out runs a command that asks for a password.
+    @Test func nothingItCarriesOutIsPrivileged() {
+        let states: [DependencyState] = [.missing, .tooOld(version: "1.0", minimum: "4.7"), .wrongSignature("x")]
+        for dependency in Dependency.allCases {
+            for state in states {
+                for brew in [brew, nil] {
+                    guard let command = Dependencies.windowPlan(for: dependency, state: state, brew: brew)?.command else {
+                        continue
+                    }
+                    #expect(!DependencyCommand.isPrivileged(tool: command.tool, arguments: command.arguments))
+                    #expect(!command.arguments.contains("windows-app"), "the window never runs the Windows App cask")
+                }
+            }
+        }
+    }
+}
+
+/// `runStreaming`, the window's way of running Homebrew. These run `/bin/sh`, `/bin/echo` and
+/// `/bin/sleep` — nothing that reaches UTM, a VM, the network or anything privileged.
+@Suite struct StreamingACommand {
+    /// Refused before anything starts, exactly as `runAttached` refuses it. The control is what the
+    /// command would do if it ran: `echo` prints its arguments, so a line arriving means it started.
+    @Test func refusesAPrivilegedCommandBeforeItStarts() {
+        let lines = Lines()
+        #expect(DependencyCommand.runStreaming("/bin/echo", ["sudo", "installer", "-pkg", "x"], timeout: 5,
+                                               line: lines.add) == nil)
+        #expect(DependencyCommand.runStreaming("/usr/sbin/installer", ["-pkg", "x", "-target", "/"], timeout: 5,
+                                               line: lines.add) == nil)
+        #expect(lines.all.isEmpty)
+        // The same arguments without the privileged word do run, and are heard.
+        #expect(DependencyCommand.runStreaming("/bin/echo", ["installing", "x"], timeout: 5, line: lines.add) == 0)
+        #expect(lines.all == ["installing x"])
+    }
+
+    /// Both streams, a line at a time, the unterminated last one too, and the exit status.
+    @Test func relaysBothStreamsLineByLine() {
+        let lines = Lines()
+        let status = DependencyCommand.runStreaming(
+            "/bin/sh", ["-c", "printf '==> Downloading UTM.dmg\\n'; printf 'Warning: already tapped\\n' >&2; printf 'done'; exit 3"],
+            timeout: 10, line: lines.add)
+        #expect(status == 3)
+        #expect(Set(lines.all) == ["==> Downloading UTM.dmg", "Warning: already tapped", "done"])
+    }
+
+    /// Nothing the child asks can wait for an answer that isn't coming: its input is /dev/null,
+    /// whatever the process came with. The process here comes with a pipe that never closes — what
+    /// an inherited terminal would be — so without the emptying the child reports the pipe and its
+    /// `read` waits out the timeout.
+    @Test func itsInputIsEmptyWhateverItCameWith() {
+        let lines = Lines()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "[ /dev/stdin -ef /dev/null ] && echo empty || echo inherited; read answer; "
+                                + "echo \"got [$answer]\""]
+        let inherited = Pipe()
+        process.standardInput = inherited
+        #expect(DependencyCommand.stream(process, timeout: 5, line: lines.add) == 0)
+        #expect(lines.all == ["empty", "got []"])
+        withExtendedLifetime(inherited) {}
+    }
+
+    /// The check is in `stream` itself, so a process made some other way is refused there too.
+    @Test func streamRefusesAPrivilegedProcess() {
+        let lines = Lines()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/echo")
+        process.arguments = ["sudo", "installer"]
+        #expect(DependencyCommand.stream(process, timeout: 5, line: lines.add) == nil)
+        #expect(lines.all.isEmpty)
+    }
+
+    @Test func aCommandThatRunsPastItsTimeoutIsStopped() {
+        let started = Date()
+        #expect(DependencyCommand.runStreaming("/bin/sleep", ["30"], timeout: 0.5, line: { _ in }) == nil)
+        #expect(Date().timeIntervalSince(started) < 10)
+    }
+
+    private final class Lines {
+        private let lock = NSLock()
+        private var lines: [String] = []
+        func add(_ line: String) {
+            lock.lock()
+            lines.append(line)
+            lock.unlock()
+        }
+        var all: [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return lines
+        }
+    }
+}
+
+/// The splitting behind `runStreaming`, with no process at all.
+@Suite struct SplittingLines {
+    private func split(_ chunks: [String]) -> [String] {
+        var splitter = LineSplitter()
+        return chunks.flatMap { splitter.feed(Data($0.utf8)) } + splitter.finish()
+    }
+
+    @Test func aLineCutBetweenTwoReadsIsJoined() {
+        #expect(split(["==> Down", "loading UTM.dmg\n==> Pour", "ing\n"]) == ["==> Downloading UTM.dmg", "==> Pouring"])
+    }
+
+    /// Homebrew redraws its progress with `\r`: each redraw is the latest word, not held back until
+    /// 100%. `\r\n` is one ending even when a read falls between the two.
+    @Test func carriageReturnsEndLinesAndCRLFIsOne() {
+        #expect(split(["#### 25.0%\r###### 50.0%\r", "######## 100.0%\r\n", "==> Installing\r", "\nok\n"])
+                    == ["#### 25.0%", "###### 50.0%", "######## 100.0%", "==> Installing", "ok"])
+    }
+
+    @Test func theLastLineWithoutAnEndingIsKeptAndBlankLinesAreNot() {
+        #expect(split(["\n\n==> Caveats\n\n", "UTM was installed"]) == ["==> Caveats", "UTM was installed"])
+        #expect(split([]) == [])
+    }
+
+    /// Split as bytes, decoded as lines: a character cut in half by a read comes back whole.
+    @Test func aCharacterCutInHalfIsJoinedBeforeItIsDecoded() {
+        let bytes = Array("🍺  utm was installed\n".utf8)
+        var splitter = LineSplitter()
+        let first = splitter.feed(Data(bytes[0..<2]))
+        let rest = splitter.feed(Data(bytes[2...]))
+        #expect(first.isEmpty)
+        #expect(rest == ["🍺  utm was installed"])
+    }
+}
+
+/// `install` runs Homebrew through the runner it is given: `runAttached` for `winbar setup`,
+/// `runStreaming` for the window. The fake runner never runs anything; the brew path doesn't exist,
+/// so even an install that ignored it would fail to start rather than install.
+@Suite struct InstallingThroughARunner {
+    let brew = "/nonexistent/winbar-tests/brew"
+
+    @Test func homebrewsCommandGoesToTheRunnerItIsGiven() {
+        var asked: [(String, [String], TimeInterval)] = []
+        let result = DependencyInstaller.install(.utm, plan: .brew(brew: brew, cask: "utm"), agreed: true,
+                                                 runner: { tool, arguments, timeout in
+                                                     asked.append((tool, arguments, timeout))
+                                                     return 1
+                                                 })
+        #expect(asked.count == 1)
+        #expect(asked.first?.0 == brew)
+        #expect(asked.first?.1 == ["install", "--cask", "utm"])
+        #expect(asked.first?.2 == 3600)
+        guard case .failure(let error) = result else {
+            Issue.record("exit status 1 should fail the install")
+            return
+        }
+        #expect(error.title == "Homebrew couldn't install UTM")
+    }
+
+    /// An update that fails says it was an update, not "couldn't install".
+    @Test func aFailedUpdateSaysUpdate() {
+        let result = DependencyInstaller.install(.utm, plan: .brewUpgrade(brew: brew, cask: "utm"), agreed: true,
+                                                 runner: { _, _, _ in 1 })
+        guard case .failure(let error) = result else {
+            Issue.record("exit status 1 should fail the update")
+            return
+        }
+        #expect(error.title == "Homebrew couldn't update UTM")
+        #expect(error.detail.hasSuffix("brew upgrade --cask utm"))
+    }
+
+    @Test func aRunnerThatRefusesOrTimesOutIsAnInstallThatDidntFinish() {
+        let result = DependencyInstaller.install(.utm, plan: .brew(brew: brew, cask: "utm"), agreed: true,
+                                                 runner: { _, _, _ in nil })
+        guard case .failure(let error) = result else {
+            Issue.record("a refused command should fail the install")
+            return
+        }
+        #expect(error.title == "Homebrew didn't finish")
+    }
+
+    /// Without a yes nothing reaches any runner.
+    @Test func noYesNoRunner() {
+        var ran = false
+        _ = DependencyInstaller.install(.utm, plan: .brew(brew: brew, cask: "utm"), agreed: false,
+                                        runner: { _, _, _ in
+                                            ran = true
+                                            return 0
+                                        })
+        #expect(!ran)
     }
 }

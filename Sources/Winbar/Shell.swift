@@ -31,6 +31,14 @@ enum Automation {
     /// errAEEventNotPermitted, as osascript and utmctl both print it.
     static func isDenied(_ text: String) -> Bool { text.contains("-1743") }
 
+    /// The first line of macOS's Automation prompt, exactly as it reads, for the sentences that tell
+    /// someone what to look for. TCC's own string (REQUEST_ACCESS_SERVICE_kTCCServiceAppleEvents in
+    /// TCC.framework's Localizable.loctable) is `“%@” wants access to control “%@”.`; a paraphrase in
+    /// quotation marks sends a person looking for words that aren't on the screen.
+    static func promptWords(host: String, app: String = "UTM") -> String {
+        "“\(host)” wants access to control “\(app)”"
+    }
+
     /// Who macOS asked: Winbar when LaunchServices started it, otherwise the terminal the CLI runs in.
     static var host: (name: String, bundleID: String?) {
         if AppBundle.launchedByLaunchServices { return ("Winbar", Config.appBundleID) }
@@ -92,7 +100,10 @@ enum Automation {
             == OSStatus(errAEEventWouldRequireUserConsent)
     }
 
-    static func deniedError() -> WinbarError {
+    /// `for` is who was refused: this process's host by default. The set-up window names Winbar
+    /// itself, because it only ever runs as the app, and so its words don't depend on how the test
+    /// that draws it was started.
+    static func deniedError(for host: (name: String, bundleID: String?) = host) -> WinbarError {
         let (name, bundleID) = host
         let reset = bundleID.map { " To get the macOS prompt back instead: tccutil reset AppleEvents \($0)" } ?? ""
         return WinbarError("\(name.prefix(1).uppercased() + name.dropFirst()) isn't allowed to control UTM",
@@ -126,8 +137,12 @@ enum Shell {
     /// Both pipes are drained concurrently, because a child that fills one pipe while we sit reading
     /// the other would deadlock. A timeout matters because utmctl can wait indefinitely on UTM (for
     /// example behind an Automation prompt nobody has answered).
+    ///
+    /// `abort`, when given, is asked four times a second while the tool runs, and a yes ends it the
+    /// way the timeout does. For a tool that waits on a person in someone else's dialog: the setup
+    /// window's **Stop Waiting** (`RDP.trustCertificate`). Without it the wait is exactly as it was.
     static func run(_ path: String, _ arguments: [String], input: Data? = nil,
-                    timeout: TimeInterval = 60) -> CommandResult {
+                    timeout: TimeInterval = 60, abort: (() -> Bool)? = nil) -> CommandResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
@@ -155,8 +170,17 @@ enum Shell {
         }
 
         var timedOut = false
-        if exited.wait(timeout: .now() + timeout) == .timedOut {
+        var stopped = false
+        if let abort {
+            let deadline = Date().addingTimeInterval(timeout)
+            while exited.wait(timeout: .now() + 0.25) == .timedOut {
+                if abort() { stopped = true; break }
+                if Date() >= deadline { timedOut = true; break }
+            }
+        } else if exited.wait(timeout: .now() + timeout) == .timedOut {
             timedOut = true
+        }
+        if timedOut || stopped {
             process.terminate()
             if exited.wait(timeout: .now() + 3) == .timedOut {
                 kill(process.processIdentifier, SIGKILL)

@@ -114,3 +114,36 @@ enum AppBundle {
         kill(pid, 0) != 0 && errno == ESRCH
     }
 }
+
+/// Handing one of the app's windows over from the CLI (`winbar create --window`, `winbar setup
+/// --window`). The window has to belong to Winbar.app, not to the terminal: macOS grants Automation
+/// and Accessibility to whoever is responsible for a process, so a window opened by the app asks about
+/// Winbar once rather than about the terminal. LaunchServices hands `--args` only to a process it
+/// starts, and a second Winbar would put a second icon in the menu bar, so a Winbar that is already
+/// running is asked by a distributed notification instead.
+enum WindowHandOff {
+    enum Route: Equatable {
+        /// Winbar is running: post this, and it opens the window itself.
+        case notify(Notification.Name)
+        /// It isn't: launch it with the argument that opens the window.
+        case launch(tool: String, arguments: [String])
+    }
+
+    /// Which way to ask. Pure.
+    static func route(app: URL, appRunning: Bool, argument: String, notification: Notification.Name) -> Route {
+        appRunning ? .notify(notification) : .launch(tool: "/usr/bin/open", arguments: ["-a", app.path, "--args", argument])
+    }
+
+    /// Carries the route out. nil when it went; otherwise what `open` said about why it didn't.
+    static func perform(_ route: Route) -> String? {
+        switch route {
+        case .notify(let name):
+            DistributedNotificationCenter.default().postNotificationName(name, object: nil, userInfo: nil,
+                                                                         deliverImmediately: true)
+            return nil
+        case .launch(let tool, let arguments):
+            let launch = Shell.run(tool, arguments, timeout: 30)
+            return launch.status == 0 ? nil : launch.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+}

@@ -380,14 +380,16 @@ struct CreateResumeTests {
     func stageStartedAtRoundTrip() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        var state = testState(stage: .copy, updatedAt: testMoment())
-        state.stageStartedAt = testMoment(-588)
+        let now = testMoment()
+        let stageStartedAt = now.addingTimeInterval(-588)
+        var state = testState(stage: .copy, updatedAt: now)
+        state.stageStartedAt = stageStartedAt
         state.watchedSeconds = 1234
         state.status = testStatus()
         try CreateJob.writeState(state, in: directory)
         let read = try #require(CreateJob.state(in: directory))
         #expect(read == state)
-        #expect(read.stageStartedAt == testMoment(-588))
+        #expect(read.stageStartedAt == stageStartedAt)
         #expect(read.updatedAt != read.stageStartedAt)
         #expect(read.watchedSeconds == 1234)
         #expect(read.status == testStatus())
@@ -482,8 +484,8 @@ struct CreateBlastRadiusTests {
         #expect(CreateRun.selection(plan: plan, created: created, bitLockerOn: true, headless: true) == nil)
 
         plan.select = true
-        let selection = try? #require(CreateRun.selection(plan: plan, created: created, bitLockerOn: true,
-                                                          headless: true))
+        let selection = CreateRun.selection(plan: plan, created: created, bitLockerOn: true,
+                                            headless: true)
         #expect(selection?.vmName == plan.vmName)
         #expect(selection?.mac == created.mac)
         #expect(selection?.rdpUser == plan.userName)

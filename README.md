@@ -9,13 +9,15 @@ password prompt, no certificate warning, no chooser window. When you're done, **
 actually shuts Windows down.
 
 [**Download the disk image**](https://github.com/taggie313/winbar/releases/latest) and drag
-Winbar to Applications — or `brew install --cask taggie313/tap/winbar`. Then:
+Winbar to Applications — or `brew install --cask taggie313/tap/winbar`. Then open Winbar, and the
+**Set Up Winbar** window walks you through the rest ([no Terminal needed](#no-terminal-needed)).
+Or, in Terminal:
 
 ```sh
 winbar setup
 ```
 
-- **Headless.** The VM runs with no virtual screen at all, which cut idle host CPU by about 90%.
+- **Headless.** The VM runs with no virtual screen at all, which cuts idle host CPU by roughly two thirds (measured below — the saving is real but small in absolute terms).
 - **One click.** Connect opens your saved PC in Windows App, reusing its stored password.
 - **A recipe, not magic.** `winbar setup` checks every setting, changes only what's wrong (asking
   first), and walks you through the few steps only a person can do. Re-running it is safe.
@@ -23,10 +25,32 @@ winbar setup
   they paid for themselves; the rest are there for a reason that's written down. The hand-done
   version, with both, is in [docs/RECIPE.md](docs/RECIPE.md).
 
+## No Terminal needed
+
+1. [Download the disk image](https://github.com/taggie313/winbar/releases/latest), open it, and drag
+   Winbar to Applications.
+2. Open **Winbar**. The first time, on a Mac where it hasn't been set up, the **Set Up Winbar**
+   window opens by itself; after that it's **Set Up Winbar…** in Winbar's menu, whenever you like.
+3. The window takes it one step at a time, and says before each macOS permission prompt what it's for:
+   - **UTM** — checks for it, and installs it if it's missing.
+   - **Windows** — uses a Windows VM you already have, or makes one and installs Windows 11 in it
+     (you'll need a Windows 11 ARM64 ISO from Microsoft).
+   - **Tuning** — checks Windows' settings, fixes what it can, and shows the result of each.
+   - **The certificate** — trusts the VM's Remote Desktop certificate, so there's no warning.
+   - **The saved PC** — helps you get Windows App from the Mac App Store if you need it, and saves
+     the VM in it.
+   - **A first connection** — opens the Windows desktop, and asks you whether it appeared.
+   - **Headless, if you want it** — only once the desktop has worked: takes the VM's screen away,
+     with one restart, then asks you to connect once more.
+
+Everything the window does is on the command line too — `winbar create` makes a VM and `winbar setup`
+does the rest — and the rest of this README describes that route.
+
 ---
 
 ## Contents
 
+- [No Terminal needed](#no-terminal-needed)
 - [Why: what was measured](#why-what-was-measured)
 - [Requirements](#requirements)
 - [Install](#install)
@@ -49,12 +73,20 @@ differ, but every comparison was made like-for-like.
 
 | Finding | Measurement |
 |---|---|
-| **Headless is the big win.** UTM's virtual GPU is display-only, so every frame Windows draws is copied by the Mac's CPU. With no display device at all, that work disappears. | Guest idle, QEMU host CPU per minute: **59.8 s** with the VM window open (about one whole core) vs **6.3 s** headless, **~90% less**. UTM itself went from 2.8 s to 0. |
+| **Headless costs less — but far less than this table used to claim.** UTM's virtual GPU is display-only, so frames Windows draws are copied by the Mac's CPU, and with no display device that work isn't done. | Guest idle, host CPU per minute, **median of 30 one-minute samples**: **0.5 s** headless (QEMU 0.53, UTM 0.00) against **1.7 s** with the window open (QEMU 0.66, UTM 1.01) — about two thirds less, and both a small fraction of one core. Idle cost is **bursty**: three quarters of minutes sit near 0.5 s and the rest jump to several seconds, so the median is quoted; the mean swung between 0.8 and 2.7 across two runs and is not a number to rely on. The **59.8 s** published here before could not be reproduced at idle — see below. |
 | **More vCPUs isn't better.** On an M5 Max (6 "Super" cores plus 12 "Performance" cores), a fixed workload was run at 4, 6 and 8 vCPUs. | **6 was cheapest** in host CPU and fastest. **8 cost 28% more** host CPU (37.8 vs 29.6 CPU-s) for no speed gain; 4 was slower and no cheaper. Winbar sets vCPUs to your Mac's top-tier core count, kept between 4 and 8. |
 | **Converting the disk image (qcow2 to raw) isn't worth it.** | The Mac writes 2 GiB to the image file in 0.17 s; Windows takes 2.2 s for the same write. **~93% of the cost is the virtual disk device path**, not the image format. |
 | **"Stop" has to go through Windows.** UTM's stop button presses a virtual ACPI power button. Once Windows has blanked its display, it treats that press as *wake* (event log: Kernel-Power 566) and never shuts down. | Winbar asks Windows itself to shut down, through UTM's guest agent, and only falls back to the power button. |
 | **Balanced beats Ultimate Performance.** Ultimate Performance disables core parking, and parked vCPUs are what let the Mac's cores sleep. | Balanced with a fast ramp-up kept both speed and idle efficiency. |
 | **The menu bar app itself is cheap.** | The prototype measured 0.05 CPU-seconds per minute idle. |
+
+**On that correction.** The first version of this table said 59.8 CPU-seconds per minute with the
+window open against 6.3 headless. Re-measured on 2026-09-21 — both sides the same way, each from a
+fresh boot with an identical settle, 30 one-minute samples each — neither number reproduced: idle
+comes out near 0.5 s headless and 1.7 s windowed. The probe that appeared to confirm 59.8 turned out
+to have been taken 40 seconds after Windows finished booting, which is not idle. The likeliest
+explanation for the original pair is the same mistake. The claim that headless is cheaper survives;
+the size of it did not.
 
 ## Requirements
 
@@ -94,8 +126,8 @@ Then open **Winbar** from Applications once, to start it and put its icon in the
 asks whether to open an app downloaded from the internet — Winbar is signed and notarized by
 Apple, so choose **Open**. Later, the first time you use it, macOS asks whether Winbar may control
 UTM and (for Connect) whether it may use Accessibility. Both are how Winbar does its job: starting
-and reconfiguring the VM, and clicking your saved PC in Windows App. `winbar setup` explains each
-one when it gets there.
+and reconfiguring the VM, and clicking your saved PC in Windows App. The **Set Up Winbar** window,
+which opens the first time, and `winbar setup` both explain each one when they get there.
 
 Prefer Homebrew? The same disk image, installed for you, and `brew upgrade` keeps it current:
 
@@ -375,12 +407,14 @@ something is happening. The top of the menu shows the VM's name and status.
 | **Restart** | Clean shutdown, then start again |
 | **Show Console Window…** / **Go Headless…** | Switch between UTM's window and headless (restarts the VM; asks first) |
 | **Open Shared Folder** / **Share a Folder…** | Opens the folder this VM shares with Windows, or picks one (restarts the VM; asks first) |
+| **Set Up Winbar…** | Opens the Set Up Winbar window, which walks through the whole setup and changes nothing that's already right — the same as `winbar setup --window` |
 | **Open UTM** | Brings up UTM |
 | **New Windows VM…** | Opens the create window, the same as `winbar create --window` (off while an install is running) |
+| **Report a Problem…** | Writes the `winbar diagnose` report, shows it in the Finder and opens the issues page, so you can drag it straight in. Asks first, with a box for the anonymised version |
 | **Launch at Login** | Start Winbar when you log in |
 | **Quit Winbar** | Quits Winbar. The VM keeps running. While Winbar is in the middle of something, it asks first |
 
-If no VM is chosen yet, the menu offers **Choose VM** and suggests running `winbar setup`.
+If no VM is chosen yet, the menu offers **Choose VM** and points to **Set Up Winbar…** to tune it.
 
 Everything is also on the command line:
 
@@ -524,9 +558,16 @@ It works when things are broken, which is the point: with no VM, no UTM, UTM not
 logs and no settings, every section says so and the file is still written. It never contains your
 Windows password, and it's swept for anything shaped like a password, a key or a token.
 
+**Never opened Terminal?** The menu has **Report a Problem…**, which does the same thing: it says
+what it's about to gather, offers the anonymised version as a checkbox, takes a minute or two with
+the icon blinking, then shows you the file in the Finder and opens the issues page so you can drag
+it in. Winbar gathers it itself, so the `winbar doctor` table in it is the app's own view of your
+Mac — its Automation and Local Network permissions, not your terminal's, which is the same reason
+`--self-test` has to run as the app (below).
+
 | | |
 |---|---|
-| `--anonymise` | replace this Mac's name, your Mac and Windows user names and your VM names with placeholders. The file says at the top which mode made it |
+| `--anonymise` | replace this Mac's name, your Mac and Windows user names, the Windows PC name and your VM names with placeholders, and with them every string shaped like an id (8-4-4-4-12 hex, or those same 32 characters unbroken) or a MAC address (`xx:xx:xx:xx:xx:xx`, `xx-xx-xx-xx-xx-xx`, `xxxx.xxxx.xxxx` or twelve unbroken hex characters, and a longer run of pairs replaced whole). A VM's UTM id is written as `<vm-1-id>` and its MAC as `<vm-1-mac>`, matching the `<vm-1>` they belong to; an id or a MAC that nothing in the file can tie to a VM is `<id-1>` or `<mac-address-1>`. It is scoped to those two shapes: an identifier of any other shape is left as it is. The file says at the top which mode made it |
 | `--no-logs` | leave the `winbar create` logs out |
 | `--out PATH` | write it somewhere else (a folder gets today's file; a file name is taken at its word) |
 
@@ -629,14 +670,18 @@ Something wrong, or missing? Open an issue at
 [github.com/taggie313/winbar/issues](https://github.com/taggie313/winbar/issues). What makes a
 report answerable:
 
-- the file `winbar diagnose` writes (see [Troubleshooting](#troubleshooting)) — it has the doctor
-  table, the versions, the settings, the last create log and UTM's crash reports in it
+- the file `winbar diagnose` writes, or **Report a Problem…** in the menu (see
+  [Troubleshooting](#troubleshooting)) — it has the doctor table, the versions, the settings, the
+  last create log and UTM's crash reports in it
 - the command that went wrong, run as `WINBAR_DEBUG=1 winbar …`
 - what you expected, and what happened instead
 
-Leave out anything you'd rather not publish: the report prints your VM's name, host name and
-Windows user name, and a debug run can too. `winbar diagnose --anonymise` replaces those with
-placeholders. Nothing prints a password.
+Leave out anything you'd rather not publish: the report prints this Mac's name, your Mac and
+Windows user names, the Windows PC name, your VM's name and host name, and the id and MAC address
+UTM gave it. `winbar diagnose --anonymise` replaces all of those with placeholders, and so does the
+checkbox in **Report a Problem…**. A `WINBAR_DEBUG=1` run has no such flag and prints the VM names
+and the id UTM gave each of them — it logs what `utmctl list` answered — so that one you read
+through yourself. Nothing prints a password.
 
 Pull requests are welcome. For anything larger than a fix, open an issue first: Winbar's defaults
 are argued for in [docs/RECIPE.md](docs/RECIPE.md), and changing one is easier to agree on before

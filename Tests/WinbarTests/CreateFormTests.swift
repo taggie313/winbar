@@ -256,12 +256,25 @@ private func readyModel(_ given: CreateFormFacts = facts(), build: Int = 26200,
     @Test func anUntestedBuildAndAnUntestedUTMAreSaidOnce() {
         let model = readyModel(facts(utmVersion: "4.8.0"), build: 27000)
         #expect(model.isoWarnings.contains { $0.hasPrefix("This is Windows 11 build 27000") })
-        #expect(model.generalWarnings == [CreateCopy.wUTMUntested(version: "4.8.0")])
+        #expect(model.generalWarnings
+                == [CreateCopy.wUTMUntested(version: "4.8.0", tested: CreatePreflight.testedList())])
         let verified = readyModel(facts(), build: 26100)
         #expect(!verified.isoWarnings.contains { $0.hasPrefix("This is Windows 11 build") })
         let tested = readyModel()
         #expect(!tested.isoWarnings.contains { $0.hasPrefix("This is Windows 11 build") })
         #expect(tested.generalWarnings.isEmpty)
+    }
+
+    /// A UTM 5 pre-release is a different sentence from a 4.x nobody has run, and the form shows
+    /// whichever one the preflight rule picked — the job's message and the form's caption are one
+    /// text, so this is the only place the form has to be right about it.
+    @Test func aPreReleaseUTMGetsTheLongerSentence() {
+        let model = readyModel(facts(utmVersion: "5.0.5"))
+        #expect(model.generalWarnings
+                == [CreateCopy.wUTMPrerelease(version: "5.0.5", tested: CreatePreflight.testedList())])
+        #expect(model.generalWarnings.first?.contains("pre-release") == true)
+        // It is a warning, never a block: create still goes ahead on an untested UTM.
+        #expect(model.canCreate)
     }
 
     /// Enough to install, not enough to fill the disk: a warning, not a block.
@@ -485,7 +498,8 @@ private func message(_ code: String, _ text: String, at: Date = Date()) -> Creat
     @Test func theStallNoteShowsOnlyWhileTheJobSaysTheVMIsQuiet() {
         let started = Date(timeIntervalSince1970: 1_000_000)
         let stalled = state(stage: .devices, started: started, updated: started, shown: ["W_STALL"], stalled: .quiet)
-        #expect(CreateProgress(state: stalled, now: started).stall == CreateCopy.wStall(vmName: "Windows 11"))
+        #expect(CreateProgress(state: stalled, now: started).stall
+            == CreateCopy.forWindow(CreateCopy.wStall(vmName: "Windows 11"), vmName: "Windows 11"))
         let writingAgain = state(stage: .devices, started: started, updated: started, shown: ["W_STALL"],
                                  stalled: .writing)
         #expect(CreateProgress(state: writingAgain, now: started).stall == nil)
@@ -504,7 +518,10 @@ private func message(_ code: String, _ text: String, at: Date = Date()) -> Creat
         let busy = state(stage: .copy, started: started, updated: started, shown: ["W_STALL_BUSY"], stalled: .busy)
         let box = try! #require(CreateProgress(state: busy, now: started).stall)
         #expect(box.hasPrefix("Windows hasn't written anything to the VM's disk for 12 minutes, though the VM is busy"))
-        #expect(box.contains("winbar create --resume “Windows 11”"))
+        // The window's box names its own button for the recovery; the job's sentence, which the
+        // terminal prints, keeps the command.
+        #expect(box.contains(CreateCopy.wStallRecoveryWindow) && !box.contains("--resume"))
+        #expect(CreateCopy.wStallBusy(vmName: "Windows 11", restarted: false).contains("winbar create --resume “Windows 11”"))
         let quiet = state(stage: .copy, started: started, updated: started, shown: ["W_STALL"], stalled: .quiet)
         #expect(try! #require(CreateProgress(state: quiet, now: started).stall).contains("almost no CPU"))
 
@@ -524,7 +541,7 @@ private func message(_ code: String, _ text: String, at: Date = Date()) -> Creat
         let stalled = state(stage: .copy, started: started, updated: started, shown: ["W_STALL_BUSY"],
                             stalled: .busy, messages: said)
         // While it is true, the box carries the job's own words and the list leaves it out.
-        #expect(CreateProgress(state: stalled, now: started).stall == said[0].text)
+        #expect(CreateProgress(state: stalled, now: started).stall == CreateCopy.forWindow(said[0].text, vmName: "Windows 11"))
         #expect(CreateProgress(state: stalled, now: started).notes.isEmpty)
         // Once the VM writes again the box goes, and the warning stays in the record.
         var writing = stalled
@@ -666,6 +683,30 @@ private func message(_ code: String, _ text: String, at: Date = Date()) -> Creat
         let kept = state(stage: .finish, outcome: .done, started: started, updated: started, select: false)
         #expect(CreateCopy.setupCommand(plan: kept.plan) == "winbar setup --vm \"Windows 11\"")
     }
+
+    /// New Windows VM… is in every menu, so its window's hand-offs are read by people who may never
+    /// have opened Terminal. While the menu offers Set Up Winbar… they name it first, and keep the
+    /// Terminal route; the control is the switch turned off, which gives the Terminal-only sentences.
+    @Test func theHandOffsNameSetUpWinbarFirstWhileTheMenuOffersIt() {
+        #expect(SetupWindow.availableToEveryone)
+        var selected = state(stage: .finish, outcome: .done, started: started, updated: started).plan
+        selected.vmName = "winlab04"
+        var kept = selected
+        kept.select = false
+        #expect(CreateCopy.nNextCommand(plan: selected)
+                == "One more step, about 5 minutes: choose Set Up Winbar… in Winbar's menu, or run this in Terminal:")
+        // Left unselected, the menu still looks after the old VM, so the window has to be told which.
+        #expect(CreateCopy.nNextCommand(plan: kept) == "One more step, about 5 minutes: choose Set Up Winbar… in "
+                + "Winbar's menu and pick “winlab04” as its VM, or run this in Terminal:")
+        #expect(CreateCopy.nNextCommand(plan: kept, setUpInMenu: false) == "One more step, about 5 minutes, in Terminal:")
+
+        let utm = "UTM isn't installed. Set Up Winbar… in Winbar's menu offers to install UTM for you, and so does "
+            + "winbar create in Terminal. Or install it yourself (brew install --cask utm, or getutm.app), then run this again."
+        #expect(readyModel(facts(utmInstalled: false, utmVersion: nil)).status == .blocked(utm))
+        #expect(CreateCopy.eUTMMissingTitle + " " + CreateCopy.eUTMMissingNext(setUpInMenu: false)
+                == "UTM isn't installed. winbar create in Terminal offers to install UTM for you. Or install it "
+                    + "yourself (brew install --cask utm, or getutm.app), then run this again.")
+    }
 }
 
 @Suite struct CreateFailureCopy {
@@ -685,5 +726,18 @@ private func message(_ code: String, _ text: String, at: Date = Date()) -> Creat
 
         let onlyTheTitle = CreateFailure(code: "E_X", title: "It stopped", detail: "It stopped.", nextStep: nil)
         #expect(CreateJobView.failureDetail(onlyTheTitle) == "It stopped.")
+    }
+}
+
+/// A form that has just opened is missing its ISO and its password: said in the muted colour, since
+/// nothing is wrong yet. A real problem is still red.
+@Suite("The form's status is red only for a problem")
+struct CreateFormStatusColourTests {
+    @Test func hintsAreNotProblems() {
+        let model = CreateFormModel(facts: facts())
+        #expect(model.status == .blocked(CreateCopy.fNeedISO))
+        #expect(!model.statusIsProblem)
+        model.iso = .failed(file: "not-windows.iso", message: "That isn't a Windows ISO.")
+        #expect(model.statusIsProblem)
     }
 }

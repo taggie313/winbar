@@ -95,7 +95,7 @@ enum Recipe {
               }),
 
         Check(id: "H5", section: .host, title: "Display",
-              why: "With no display device QEMU stops copying every frame on the CPU: idle host CPU fell about 90% in testing. "
+              why: "With no display device the Mac stops drawing a screen for the VM: at idle that cuts the host CPU it costs by about two thirds (measured). "
                   + "Remote Desktop then becomes the only way in, so headless is only offered once the account has a password (G5), "
                   + "Remote Desktop is on (G6), its certificate is trusted (H7) and you've confirmed a connection worked. "
                   + "`winbar display on` brings the console back.",
@@ -111,7 +111,7 @@ enum Recipe {
                   let ready = ctx.status(of: "G5")?.isManual != true
                       && ctx.status(of: "G6")?.isOK == true && ctx.status(of: "H7")?.isOK == true
                   return ready
-                      ? .fixable("console window on; headless cuts idle host CPU by about 90%")
+                      ? .fixable("console window on; headless cuts idle host CPU by about two thirds")
                       : .info("console window on; headless is offered once Remote Desktop works (G5, G6, H7)")
               },
               apply: { ctx in
@@ -160,13 +160,9 @@ enum Recipe {
                   let (trusted, reason) = RDP.certificateTrusted(der: der, host: host)
                   return trusted ? .ok("trusted for \(host)") : .fixable("not trusted for \(host) (\(reason))")
               },
-              apply: { ctx in
-                  guard let host = ctx.rdpHost, let encoded = ctx.guestOutput?["G7_CERT"], let der = Data(base64Encoded: encoded) else {
-                      return .failure(WinbarError("No certificate to trust yet"))
-                  }
-                  print("macOS will ask you to approve trusting it.")
-                  return RDP.trustCertificate(der: der, host: host)
-              }),
+              // No word of its own before macOS's prompt: whoever asked says it (SetupCopy.beforeFix), because
+              // a print from in here reaches a terminal and never a window.
+              apply: { ctx in Recipe.trustCertificate(ctx) }),
 
         Check(id: "H8", section: .host, title: "Network mode",
               why: "Winbar expects UTM's Shared network: the VM is reachable only from this Mac, and its address lease is where "
@@ -567,7 +563,7 @@ enum Recipe {
               },
               guide: { _ in
                   // Asking from the app itself adds Winbar to the list and shows the system prompt.
-                  _ = SelfTest.launchAsApp(extraArguments: ["--request-accessibility"])
+                  _ = SelfTest.launchAsApp(extraArguments: ["--request-accessibility", SelfTest.noPortProbe])
                   WindowsApp.openAccessibilitySettings()
               }),
 
@@ -588,9 +584,25 @@ enum Recipe {
     /// `winbar setup` would do about it. Fixable means setup takes it on (asks Homebrew, fetches the
     /// signed download, or opens the App Store and waits); manual means only the person can.
     static func dependencyStatus(_ dependency: Dependency) -> Status {
-        let state = Dependencies.state(of: dependency)
+        dependencyStatus(dependency, state: Dependencies.state(of: dependency), brew: Homebrew.path,
+                         brewHasCask: Homebrew.hasCask(dependency.cask, brew: Homebrew.path))
+    }
+
+    /// The same row from a state already read. `Dependencies.state` runs `codesign` twice, a second
+    /// or so on UTM's bundle, so the setup window, which reads the state for its snapshot anyway,
+    /// builds H1 and C1 from that rather than asking again.
+    static func dependencyStatus(_ dependency: Dependency, state: DependencyState, brew: String?,
+                                 brewHasCask: Bool = false) -> Status {
+        dependencyStatus(dependency, state: state,
+                         plan: Dependencies.plan(for: dependency, state: state, brew: brew, brewHasCask: brewHasCask))
+    }
+
+    /// The same row, saying what `plan` would do. The terminal passes its own plan; the setup window
+    /// passes `Dependencies.windowPlan`, which differs for Windows App, so its row says what its
+    /// button does (`SetupRunner.dependencyRow`).
+    static func dependencyStatus(_ dependency: Dependency, state: DependencyState, plan: InstallPlan?) -> Status {
         let where_ = dependencyDetail(dependency, state: state)
-        switch Dependencies.plan(for: dependency, state: state, brew: Homebrew.path) {
+        switch plan {
         case nil:
             return .ok(where_)
         case .brew:
@@ -626,13 +638,29 @@ enum Recipe {
     static func dependencyDetail(_ dependency: Dependency, state: DependencyState) -> String {
         switch state {
         case .installed(let version):
-            return "\(dependency.name) \(version ?? "(unknown version)")"
+            let row = "\(dependency.name) \(version ?? "(unknown version)")"
+            guard dependency == .utm, let version, let note = utmVersionNote(version) else { return row }
+            return "\(row) (\(note))"
         case .missing:
             return "not installed"
         case .tooOld(let version, let minimum):
             return "\(version); Winbar needs \(minimum) or later"
         case .wrongSignature(let detail):
             return detail
+        }
+    }
+
+    /// H1's clause for a UTM that create has never been run against, and nothing for one it has —
+    /// or for a version string that doesn't parse. The row stays `.ok` either way, so `winbar
+    /// doctor` still exits 0: which UTM this Mac has is a fact, not a fault. The point is that a
+    /// bug report says which UTM it came from without anyone having to ask
+    /// (docs/internal/specs/utm5-support.md §3.2). Windows App's C1 row never gets this.
+    private static func utmVersionNote(_ version: String) -> String? {
+        let tested = "Winbar is tested against \(CreatePreflight.testedList())"
+        switch CreatePreflight.standing(version) {
+        case .tested, nil: return nil
+        case .untested: return tested
+        case .prerelease: return "a pre-release; \(tested)"
         }
     }
 
@@ -760,6 +788,15 @@ enum Recipe {
                                 host: String) -> (host: String?, name: String?) {
         guard let bookmark else { return (nil, nil) }
         return (host, bookmark.name.caseInsensitiveCompare(host) == .orderedSame ? nil : bookmark.name)
+    }
+
+    /// H7's fix: trusts the certificate Windows reported (G7) for the RDP host. `winbar setup` runs it
+    /// through H7's `apply`; the setup window calls it directly, with its **Stop Waiting** as `abort`.
+    static func trustCertificate(_ ctx: Context, abort: (() -> Bool)? = nil) -> Result<Void, WinbarError> {
+        guard let host = ctx.rdpHost, let encoded = ctx.guestOutput?["G7_CERT"], let der = Data(base64Encoded: encoded) else {
+            return .failure(WinbarError("No certificate to trust yet"))
+        }
+        return RDP.trustCertificate(der: der, host: host, abort: abort)
     }
 
     /// Nothing is written for a VM these settings don't describe: `doctor --vm` can be pointed at

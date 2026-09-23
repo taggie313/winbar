@@ -235,7 +235,7 @@ import Testing
         #expect(GuestScripts.userDriveChild.contains("net.exe use $letter /delete /y"))
         #expect(GuestScripts.userDriveChild.contains("net.exe use $letter $unc /persistent:yes"))
         // It runs in their session, through the task, with what it needs on its own command line.
-        let body = GuestScripts.sharedFolder(user: "Joshua", marker: ".winbar-share-check", userDrive: true, remap: true).body
+        let body = GuestScripts.sharedFolder(user: "Bruno", marker: ".winbar-share-check", userDrive: true, remap: true).body
         #expect(body.contains("New-ScheduledTaskPrincipal") && body.contains("LogonType Interactive"))
         #expect(body.contains("$wbUserDrivePath") && body.contains("$wbUserDriveAnswer"))
         #expect(GuestScripts.userDriveChild.hasPrefix("param("))
@@ -633,7 +633,7 @@ import Testing
     }
 
     @Test func theGuestCountsItsOwnFileWithoutNamingAnyone() {
-        let body = GuestScripts.sharedFolder(user: "Joshua").body
+        let body = GuestScripts.sharedFolder(user: "Bruno").body
         #expect(body.contains("SF_ONLY_SPICE") && body.contains(".spice-clipboard"))
         // A count, never the names in the person's own folder.
         #expect(body.contains("-eq 0)"))

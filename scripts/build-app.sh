@@ -33,6 +33,15 @@ plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Inf
 plutil -replace CFBundleVersion -string "$VERSION" "$APP/Contents/Info.plist"
 printf 'APPL????' >"$APP/Contents/PkgInfo"
 
+# Armie, the set-up window's guide. Before codesign, because signing seals Contents/Resources: a
+# file added afterwards fails `codesign --verify --strict`, and Gatekeeper with it. The app finds them
+# with Bundle.main (Sources/Winbar/Armie.swift), never SwiftPM's Bundle.module, whose accessor aborts
+# when its resource bundle isn't beside the binary — which in this hand-built app it never is. Named
+# one by one, so a missing file stops the build here rather than shipping an app without him.
+mkdir -p "$APP/Contents/Resources"
+cp Resources/Armie/armie-working.mov Resources/Armie/armie-done.mov Resources/Armie/armie-rest.png \
+  "$APP/Contents/Resources/"
+
 # A real identity matters for more than distribution: macOS keys privacy grants (Accessibility,
 # Automation, Local Network) to the signature's designated requirement. Ad-hoc signatures change on
 # every build and silently invalidate those grants; a Developer ID requirement is bundle id + team,

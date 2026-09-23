@@ -254,12 +254,20 @@ enum Config {
         /// Set once the one global set of settings 0.1.0 kept has been moved into the selected VM's
         /// namespace. See `VMSettings.migrate`.
         static let settingsMigrated = "settingsMigrated"
+        /// The Set Up Winbar window was put away without being needed again: **Not Now**, or closed
+        /// before **Start**. It decides one thing, whether the window opens by itself at launch, so it
+        /// is a yes or nothing. The spec had it hold the version that last finished the wizard, and its
+        /// critique (§4) pointed out that nothing ever asks which version: only whether it is set.
+        static let setupWizardShown = "setupWizardShown"
+        /// Armie's **Hide Armie** was pressed (gui-wizard.md §2b: one click, remembered, and he goes
+        /// quietly). Global: he is this copy of Winbar's, not a VM's.
+        static let armieHidden = "armieHidden"
 
         static let all = [vmName, vmID, rdpHost, rdpUser, savedPCName, vmMAC, consoleEnabled, offeredAccessibility,
                           bitLockerOn, bitLockerCheckedAt, savedPCHost, passwordCheckedFor, keepBitLocker, noVisualTweaks,
                           declinedAutologon, declinedRemoteDesktop, declinedTuning,
                           sharedFolder, sharedFolderUTM, sharedFolderByWinbar, declinedSharedFolder, backupExclusionConfirmed, pendingUTMRestart,
-                          lastUpdateCheck, lastSeenVersion, recordedName, settingsMigrated]
+                          lastUpdateCheck, lastSeenVersion, recordedName, settingsMigrated, setupWizardShown, armieHidden]
 
         /// Everything that describes one VM. Each VM has its own set, under `vm.<id>.<setting>`, so
         /// switching VMs changes which set is current and destroys none of them.
@@ -351,15 +359,26 @@ enum Config {
         return Key.perVM.filter { forgotten.contains($0) }
     }
 
+    /// Every VM Winbar remembers something about: the namespace its settings live in, and the name
+    /// it was last seen under when it has one.
+    ///
+    /// The pair rather than the collapsed answer, because `--anonymise` has to know that this id and
+    /// that name are one VM. `<vm-1-id>` beside `<vm-1>` is the whole point of masking an id at all;
+    /// numbered apart they would be two VMs as far as any reader could tell. A record with no name
+    /// is one Winbar has never seen by name, and then the token is all there is to call it.
+    static func rememberedVMRecords() -> [(token: String, name: String?)] {
+        _ = migration
+        return VMSettings.tokens(in: defaults)
+            .filter { VMSettings.hasRecord($0, in: defaults) }
+            .map { (token: $0, name: VMSettings.recordedName(of: $0, in: defaults)) }
+            .sorted { ($0.name ?? $0.token) < ($1.name ?? $1.token) }
+    }
+
     /// Every VM Winbar remembers something about, by the name each was last seen under (its id when
     /// it has never been seen by name). For `winbar config --forget`, which has to say what it can
     /// forget when the name it was given isn't one of them.
     static func rememberedVMs() -> [String] {
-        _ = migration
-        return VMSettings.tokens(in: defaults)
-            .filter { VMSettings.hasRecord($0, in: defaults) }
-            .map { VMSettings.recordedName(of: $0, in: defaults) ?? $0 }
-            .sorted()
+        rememberedVMRecords().map { $0.name ?? $0.token }
     }
 
     // MARK: One VM's settings
@@ -533,6 +552,18 @@ enum Config {
     static var offeredAccessibility: Bool {
         get { defaults.bool(forKey: Key.offeredAccessibility) }
         set { defaults.set(newValue, forKey: Key.offeredAccessibility) }
+    }
+
+    /// See `Key.setupWizardShown`. Written as true or removed, never false, like the other yes-only
+    /// settings, so `defaults read` shows it only when it says something.
+    static var setupWizardShown: Bool {
+        get { defaults.bool(forKey: Key.setupWizardShown) }
+        set { if newValue { defaults.set(true, forKey: Key.setupWizardShown) } else { defaults.removeObject(forKey: Key.setupWizardShown) } }
+    }
+
+    static var armieHidden: Bool {
+        get { defaults.bool(forKey: Key.armieHidden) }
+        set { if newValue { defaults.set(true, forKey: Key.armieHidden) } else { defaults.removeObject(forKey: Key.armieHidden) } }
     }
 
     static var backupExclusionConfirmed: Bool {

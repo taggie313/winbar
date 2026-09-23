@@ -276,6 +276,67 @@ struct CreateRunLogicTests {
         #expect(!decide(plan: noRDP).go)
     }
 
+    /// The Set Up Winbar window predicts macOS's Local Network prompt at its Connect step (spec §2.2),
+    /// and the end-of-install probe is what raises it. An install the window started mustn't make it.
+    @Test("An install the setup window started never probes the Remote Desktop port")
+    func setupWindowSkipsTheProbe() {
+        let rdpOn = InstallStatus(ok: true, guestTools: .installed, remoteDesktopOn: true, values: [:])
+        var fromWindow = testPlan()
+        fromWindow.inSetupWindow = true
+        #expect(!CreateRun.probesRemoteDesktop(plan: fromWindow, status: rdpOn))
+        // The control: the same plan from `winbar create` or the New Windows VM window probes, as it
+        // always has — and only when there is something to ask.
+        #expect(CreateRun.probesRemoteDesktop(plan: testPlan(), status: rdpOn))
+        fromWindow.inSetupWindow = false
+        #expect(CreateRun.probesRemoteDesktop(plan: fromWindow, status: rdpOn))
+        #expect(!CreateRun.probesRemoteDesktop(plan: testPlan(), status: nil))
+        #expect(!CreateRun.probesRemoteDesktop(plan: testPlan(), status: InstallStatus(ok: true, guestTools: .installed,
+                                                                                         remoteDesktopOn: false, values: [:])))
+        var noRDP = testPlan()
+        noRDP.options.remove(.remoteDesktop)
+        #expect(!CreateRun.probesRemoteDesktop(plan: noRDP, status: rdpOn))
+    }
+
+    /// With no probe, readiness is `.notReady`, and the only reason the decision had for it was "didn't
+    /// answer on this Mac yet" — untrue of a question nobody asked. The window's install keeps its
+    /// console with set-up's reason instead, and every reason before that one is still said as it is.
+    @Test("An install the setup window started keeps its console with set-up's reason, never the probe's")
+    func setupWindowKeepsTheConsole() {
+        let ok = InstallStatus(ok: true, guestTools: .installed, remoteDesktopOn: true, values: [:])
+        var fromWindow = testPlan()
+        fromWindow.inSetupWindow = true
+        let kept = CreateRun.headlessDecision(plan: fromWindow, status: ok, readiness: .notReady, otherVMsRunning: [])
+        #expect(!kept.go)
+        #expect(kept.why == CreateRun.keptForSetUp)
+        #expect(!kept.why.contains("didn't answer"))
+        // Not even a port that answered: the window decides headless itself, after Connect has worked.
+        #expect(!CreateRun.headlessDecision(plan: fromWindow, status: ok, readiness: .ready, otherVMsRunning: []).go)
+        // Reasons that come first still come first.
+        #expect(CreateRun.headlessDecision(plan: fromWindow, status: ok, readiness: .notReady,
+                                           otherVMsRunning: ["Ubuntu"]).why.contains("Ubuntu"))
+        #expect(CreateRun.headlessDecision(plan: fromWindow, status: InstallStatus(ok: false, guestTools: .installed,
+                                                                                   remoteDesktopOn: true, values: [:]),
+                                           readiness: .notReady, otherVMsRunning: []).why.contains("first sign-in"))
+        // The control: without the plan's word, the skipped probe's `.notReady` reads as a Remote
+        // Desktop that didn't answer.
+        let unmarked = CreateRun.headlessDecision(plan: testPlan(), status: ok, readiness: .notReady, otherVMsRunning: [])
+        #expect(unmarked.why == "Remote Desktop didn't answer on this Mac yet.")
+    }
+
+    /// A state file from before the field existed still decodes, as an ordinary create; and the field
+    /// survives the round trip, so a resume or a relaunch still skips the probe.
+    @Test("The setup window's mark survives state.json, and an old state file reads as an ordinary create")
+    func setupWindowMarkIsKept() throws {
+        var plan = testPlan()
+        plan.inSetupWindow = true
+        let written = try JSONEncoder().encode(plan)
+        #expect(try JSONDecoder().decode(CreatePlan.self, from: written).inSetupWindow == true)
+        var object = try #require(try JSONSerialization.jsonObject(with: written) as? [String: Any])
+        object["inSetupWindow"] = nil
+        let old = try JSONSerialization.data(withJSONObject: object)
+        #expect(try JSONDecoder().decode(CreatePlan.self, from: old).inSetupWindow == nil)
+    }
+
     @Test("Without a status file there is nothing to go headless on")
     func headlessWithoutStatus() {
         let decision = CreateRun.headlessDecision(plan: testPlan(), status: nil, readiness: .ready, otherVMsRunning: [])
@@ -294,8 +355,94 @@ struct CreatePreflightTests {
         #expect(CreatePreflight.utmVersionProblem("5.0.5") == nil)
         #expect(CreatePreflight.utmVersionProblem(nil) == nil)
         #expect(CreatePreflight.utmVersionProblem("4.6.9")?.exitCode == 69)
+        // The floor is the floor: three answers about how tested a version is changed nothing about
+        // which versions create refuses. 4.6.4 is doctor's fourth row, and it is still E_UTM_OLD.
+        #expect(CreatePreflight.utmVersionProblem("4.6.4")?.failure.code == "E_UTM_OLD")
+        #expect(CreatePreflight.utmVersionProblem("4.6.4")?.exitCode == 69)
         #expect(CreatePreflight.utmVersionWarning("4.7.5") == nil)
-        #expect(CreatePreflight.utmVersionWarning("5.0.5")?.contains("5.0.5") == true)
+        #expect(CreatePreflight.utmVersionWarning("5.0.5")?.message.contains("5.0.5") == true)
+    }
+
+    /// Three answers instead of two. A 4.x patch release and a pre-release of the next major
+    /// version are not the same risk, and the old rule — anything that isn't the string "4.7.5" —
+    /// said the same vague sentence about both.
+    @Test("Tested, a major ahead, or merely untested")
+    func utmStanding() {
+        #expect(CreatePreflight.standing("4.7.5") == .tested)
+        #expect(CreatePreflight.standing("4.7.6") == .untested)
+        #expect(CreatePreflight.standing("5.0.5") == .prerelease)
+        // Nothing in the rule is about the number 5 in particular: no tested version shares the
+        // major, so a UTM 6 lands in the same place.
+        #expect(CreatePreflight.standing("6.0.0") == .prerelease)
+        // Below the floor is still a standing — utmVersionProblem has already refused it by then,
+        // and doctor's row for it comes from .tooOld, not from here.
+        #expect(CreatePreflight.standing("4.6.4") == .untested)
+    }
+
+    /// §3.3 of the UTM 5 spec is meant to be a one-constant change: add the exact version that was
+    /// run to `testedVersions` and every sentence follows. This is that change, rehearsed against an
+    /// injected list, so the rule is known to flip before anyone edits the constant.
+    @Test("Once a 5.x has actually been run, 5.0.6 is untested rather than a pre-release")
+    func utmStandingAfterAFiveIsTested() {
+        let after = ["4.7.5", "5.0.5"]
+        #expect(CreatePreflight.standing("5.0.5", tested: after) == .tested)
+        #expect(CreatePreflight.standing("5.0.6", tested: after) == .untested)
+        #expect(CreatePreflight.standing("4.7.5", tested: after) == .tested)
+        // A major nobody has run is still a major ahead.
+        #expect(CreatePreflight.standing("6.0.0", tested: after) == .prerelease)
+        #expect(CreatePreflight.utmVersionWarning("5.0.6", tested: after)?.message
+                    .contains("(tested: 4.7.5 and 5.0.5)") == true)
+    }
+
+    /// A version UTM never reports, and the case where it reports nothing at all: neither is
+    /// something to warn about. `parseVersion` returns nil, and nothing crashes on the way past.
+    @Test("An unreadable version and a missing one both say nothing")
+    func utmVersionThatWontParse() {
+        #expect(CreatePreflight.standing("banana") == nil)
+        #expect(CreatePreflight.utmVersionWarning("banana") == nil)
+        #expect(CreatePreflight.utmVersionWarning(nil) == nil)
+        #expect(CreatePreflight.utmVersionProblem("banana") == nil)
+    }
+
+    /// The warning carries its own key, because which of the two it is *is* the finding: the job
+    /// files it under W_UTM_PRERELEASE or W_UTM_UNTESTED, and the words are the copy deck's.
+    @Test("Each standing's key and sentence")
+    func utmVersionWarnings() {
+        let list = CreatePreflight.testedList()
+        let untested = CreatePreflight.utmVersionWarning("4.7.6")
+        #expect(untested?.code == "W_UTM_UNTESTED")
+        #expect(untested?.message == CreateCopy.wUTMUntested(version: "4.7.6", tested: list))
+        #expect(untested?.message.contains("4.7.6") == true)
+
+        let prerelease = CreatePreflight.utmVersionWarning("5.0.5")
+        #expect(prerelease?.code == "W_UTM_PRERELEASE")
+        #expect(prerelease?.message == CreateCopy.wUTMPrerelease(version: "5.0.5", tested: list))
+        #expect(prerelease?.message.contains("5.0.5") == true)
+
+        // Both sentences in full, because the copy deck (UX.md §5.5) is the contract and a word
+        // that drifts here drifts in the menu bar app's caption and the CLI's message together.
+        #expect(untested?.message
+                == "UTM 4.7.6 hasn't been tested with winbar create (tested: 4.7.5). Carrying on.")
+        #expect(prerelease?.message
+                == "UTM 5.0.5 is a pre-release, and winbar create has only been run against 4.7.5. "
+                + "The parts Winbar uses are the same in UTM 5.0.5's source, but nothing has been run "
+                + "on a UTM 5. Carrying on.")
+    }
+
+    /// `{tested}` is prose, not an array literal, and it has to stay prose as the list grows: one
+    /// version today, two after the live run in §5, three the next time.
+    @Test("The tested versions in plain English, at one, two and three")
+    func theTestedList() {
+        #expect(CreatePreflight.testedList(["4.7.5"]) == "4.7.5")
+        #expect(CreatePreflight.testedList(["4.7.5", "5.0.5"]) == "4.7.5 and 5.0.5")
+        #expect(CreatePreflight.testedList(["4.7.5", "5.0.5", "5.1.0"]) == "4.7.5, 5.0.5 and 5.1.0")
+        #expect(CreatePreflight.testedList(["4.7.5", "5.0.5", "5.1.0", "6.0.0"])
+                == "4.7.5, 5.0.5, 5.1.0 and 6.0.0")
+        // Nothing tested at all is not a sentence anyone should ever see, but it must not crash.
+        #expect(CreatePreflight.testedList([]).isEmpty)
+        // Today's list, which is what every sentence above renders with.
+        #expect(CreatePreflight.testedList() == "4.7.5")
+        #expect(CreatePreflight.testedVersions == ["4.7.5"])
     }
 
     @Test("Free space: under 40 GB refuses, under the disk size warns")

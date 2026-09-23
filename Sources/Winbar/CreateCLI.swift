@@ -77,7 +77,7 @@ enum CreateCopy {
     /// things without this line's opening, and without what headless measured.
     static func nextSetup(savedPC: Bool) -> String {
         "Next: winbar setup, about 5 minutes. " + nNextSetupSteps(savedPC: savedPC)
-            + " Then it offers to go headless, which cut idle CPU by about 90% in testing."
+            + " Then it offers to go headless, which cuts idle host CPU by about two thirds."
     }
 
     /// Refused locked flags: the flag each locked row would turn off, and ChoiceProblem's
@@ -527,17 +527,11 @@ enum CreateCLI {
                                              "Install the app (brew install --cask taggie313/tap/winbar), or make the "
                                                  + "VM here in Terminal: winbar create.")
         }
-        if AppBundle.isAppRunning {
-            DistributedNotificationCenter.default().postNotificationName(AppDelegate.createWindowNotification,
-                                                                         object: nil, userInfo: nil,
-                                                                         deliverImmediately: true)
-        } else {
-            let launch = Shell.run("/usr/bin/open", ["-a", app.path, "--args", AppDelegate.createWindowArgument],
-                                   timeout: 30)
-            guard launch.status == 0 else {
-                throw CreateJobError.unavailable("E_NO_APP", "Couldn't open \(app.lastPathComponent)",
-                                                 launch.output.trimmingCharacters(in: .whitespacesAndNewlines))
-            }
+        let route = WindowHandOff.route(app: app, appRunning: AppBundle.isAppRunning,
+                                        argument: AppDelegate.createWindowArgument,
+                                        notification: AppDelegate.createWindowNotification)
+        if let failure = WindowHandOff.perform(route) {
+            throw CreateJobError.unavailable("E_NO_APP", "Couldn't open \(app.lastPathComponent)", failure)
         }
         print("Winbar's New Windows VM window is open. It asks for the ISO and the password itself, and the install "
               + "carries on there; this terminal is free.")

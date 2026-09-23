@@ -25,11 +25,21 @@ enum DependencyInstaller {
         }
     }
 
+    /// How a Homebrew command is run: the tool, its arguments and a timeout in; the exit status out,
+    /// or nil when it was refused, couldn't start or ran out of time.
+    typealias CommandRunner = (_ tool: String, _ arguments: [String], _ timeout: TimeInterval) -> Int32?
+
     /// Carries out `plan`. `agreed` is the person's yes to the question that was just asked; without
-    /// it nothing runs. `progress` gets a line at each step (Homebrew's own output goes straight to
-    /// the terminal, which is the point of running it attached).
+    /// it nothing runs. `progress` gets a line at each step.
+    ///
+    /// `runner` is how Homebrew is run. `winbar setup` keeps `runAttached`, the default: Homebrew's
+    /// output goes straight to the terminal, which is the point of running it attached. The setup
+    /// window has no terminal to give it, so it passes `DependencyCommand.runStreaming` with its own
+    /// line handler, and Homebrew's words arrive a line at a time instead. Either way the command is
+    /// the plan's own, and either runner refuses anything privileged before it starts.
     static func install(_ dependency: Dependency, plan: InstallPlan, agreed: Bool,
-                        progress: @escaping (String) -> Void = { _ in }) -> Result<Outcome, WinbarError> {
+                        progress: @escaping (String) -> Void = { _ in },
+                        runner: CommandRunner = DependencyCommand.runAttached) -> Result<Outcome, WinbarError> {
         guard agreed else { return .success(.refused(DependencyCopy.nothingWithoutYes(dependency))) }
         switch plan {
         case .manual(let advice):
@@ -48,13 +58,14 @@ enum DependencyInstaller {
         case .brew(let brew, let cask), .brewUpgrade(let brew, let cask):
             let command = plan.command ?? Homebrew.installCommand(brew: brew, cask: cask)
             progress(DependencyCopy.askingHomebrew(dependency, command: command))
-            guard let status = DependencyCommand.runAttached(command.tool, command.arguments, timeout: 3600) else {
+            guard let status = runner(command.tool, command.arguments, 3600) else {
                 return .failure(WinbarError("Homebrew didn't finish",
                                             "Run it yourself and watch what it says: "
                                                 + DependencyCopy.shell(command)))
             }
             guard status == 0 else {
-                return .failure(WinbarError("Homebrew couldn't install \(dependency.name)",
+                let verb = plan.isUpdate ? "update" : "install"
+                return .failure(WinbarError("Homebrew couldn't \(verb) \(dependency.name)",
                                             "It stopped with exit status \(status); its own output is above. "
                                                 + "Try it again yourself: " + DependencyCopy.shell(command)))
             }
@@ -317,9 +328,17 @@ enum DependencyCopy {
             }
             return lines
         case .brewUpgrade(let brew, let cask):
-            return ["Homebrew is on this Mac (\(brew)), so Winbar can ask it to update \(dependency.name): "
+            // Offered only for a copy Homebrew installed (`Dependencies.plan`'s `brewHasCask`). The
+            // cask's `uninstall quit:` makes Homebrew quit a running app before replacing it and open it
+            // again after (cask/artifact/abstract_uninstall.rb); for UTM that stops its VMs.
+            let quits = dependency == .utm
+                ? " If UTM is open, Homebrew quits it first — any VM running in it stops — and opens it again afterwards."
+                : " If \(dependency.name) is open, Homebrew quits it first and opens it again afterwards."
+            // Homebrew's path beside Homebrew, where the install's plan puts it: after "this UTM" it
+            // read as where UTM is.
+            return ["Homebrew (\(brew)) installed this \(dependency.name), so Winbar can ask it to update it: "
                         + "\(shell(Homebrew.upgradeCommand(brew: brew, cask: cask))). Homebrew downloads the new version "
-                        + "from \(dependency.vendor) and replaces the copy it installed. Winbar never uses sudo."]
+                        + "from \(dependency.vendor) and replaces the copy it installed." + quits + " Winbar never uses sudo."]
         case .download:
             return ["Homebrew isn't on this Mac, and Winbar won't install a package manager for you.",
                     "Winbar can fetch \(dependency.name) itself instead: UTM.dmg, about \(Dependency.utmDownloadMB) MB, "
@@ -436,7 +455,8 @@ enum DependencyCopy {
 }
 
 /// macOS's "downloaded from the internet" mark, read and never written: changing another app's
-/// bundle needs App Management permission, which Winbar doesn't ask for and doesn't need. Homebrew
+/// bundle needs App Management permission, which Winbar doesn't ask for and doesn't need. (Homebrew,
+/// run by Winbar to update UTM, can ask for it in Winbar's name: `SetupCopy.LookAround.updateMayAsk`.) Homebrew
 /// leaves the mark on a cask it installs, and someone who goes looking will find it, so Winbar can
 /// at least say what it is.
 enum Quarantine {
@@ -452,7 +472,7 @@ enum Quarantine {
 ///
 /// Installing UTM is not the end of it. Everything Winbar asks of UTM — utmctl and AppleScript
 /// alike — is an Apple Event, and macOS holds the first one to a freshly installed app until
-/// somebody answers "… wants to control UTM". Until then utmctl sits there at no CPU and says
+/// somebody answers "“…” wants access to control “UTM”". Until then utmctl sits there at no CPU and says
 /// nothing at all, which looks exactly like a hung Winbar. Seen live: right after a Homebrew
 /// install, utmctl slept while a direct Apple Event from an already-approved terminal answered at
 /// once.
@@ -460,8 +480,8 @@ enum UTMFirstUse {
     /// Said the moment UTM is installed, before anything asks it anything.
     static var expectAPrompt: String {
         "Two things still have to happen once, and only you can do them: open UTM from your "
-            + "Applications folder, and answer macOS's “\(Automation.host.name) wants to control UTM” with Allow "
-            + "— that's how Winbar starts, stops and reconfigures the VM. The prompt can open behind other "
+            + "Applications folder, and answer macOS's prompt, \(Automation.promptWords(host: Automation.host.name)), "
+            + "with Allow — that's how Winbar starts, stops and reconfigures the VM. The prompt can open behind other "
             + "windows, and it waits for as long as it takes, so a Mac left locked or unattended never gets "
             + "past it. If Winbar seems to stop right here, that's what to look for."
     }
@@ -487,13 +507,21 @@ enum UTMFirstUse {
         return .silent(seconds: Int(each) * rounds)
     }
 
-    /// What to do about a utmctl that says nothing. Pure, and it says which of the two states this
-    /// is: macOS has never been asked about this pair (so a prompt is outstanding), or it has an
-    /// answer already (so the switch in System Settings is the place to look).
-    static func how(consent: Automation.Consent, quarantined: Bool, host: String = Automation.host.name,
-                    bundleID: String? = Automation.host.bundleID) -> String {
-        var text = "Open UTM from your Applications folder, and look for “\(host) wants to control UTM” — it can be "
-            + "behind another window. Choose Allow, then run winbar doctor again."
+    /// How the advice ends at a terminal: there is nothing to press, so the next step is a command.
+    static let terminalRetry = "run winbar doctor again"
+
+    /// What to do about a utmctl that says nothing, at a terminal. Pure, and it says which of the two
+    /// states this is: macOS has never been asked about this pair (so a prompt is outstanding), or it
+    /// has an answer already (so the switch in System Settings is the place to look).
+    ///
+    /// The setup window says it its own way (`SetupCopy.LookAround.silent`): it has opened UTM itself,
+    /// so "open UTM from your Applications folder" would ask for what's done, and it has a button
+    /// where this has a command.
+    static func how(consent: Automation.Consent, quarantined: Bool,
+                    host: String = Automation.host.name, bundleID: String? = Automation.host.bundleID) -> String {
+        var text = "Open UTM from your Applications folder, and look for macOS's prompt, "
+            + "\(Automation.promptWords(host: host)) — it can be behind another window. Choose Allow, then "
+            + "\(terminalRetry)."
         switch consent {
         case .wouldPrompt:
             text += " macOS has never been asked whether \(host) may control UTM, so that prompt is still outstanding: "
@@ -532,7 +560,10 @@ enum DependencySetup {
     static func offer(_ dependency: Dependency, assumeYes: Bool, indent: String = "   ") -> Bool {
         let state = Dependencies.state(of: dependency)
         if case .installed = state { return true }
-        guard let plan = Dependencies.plan(for: dependency, state: state, brew: Homebrew.path) else { return true }
+        guard let plan = Dependencies.plan(for: dependency, state: state, brew: Homebrew.path,
+                                           brewHasCask: Homebrew.hasCask(dependency.cask, brew: Homebrew.path)) else {
+            return true
+        }
 
         func say(_ text: String) {
             print(indent + CreateCopy.wrap(text, width: CreateCopy.width - indent.count, indent: indent))

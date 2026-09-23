@@ -8,6 +8,10 @@ import ServiceManagement
 /// battery. Nothing that talks to UTM runs on a timer: any utmctl or AppleScript call launches UTM if
 /// it isn't running.
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    var deferNetworkProbe: () -> Bool = { SetupWindowController.defersNetworkProbe }
+    var probeReadiness: (String, @escaping (RDP.Readiness) -> Void) -> Void = { vm, done in
+        RDP.probe(mac: Connection.mac(vm: vm), completion: done)
+    }
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let menu = NSMenu()
     private var statusLine: NSMenuItem?
@@ -47,6 +51,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// `--args` only to a process it starts, and a second instance would mean a second menu bar icon.
     static let createWindowNotification = Notification.Name("net.elusive.winbar.create-window")
 
+    /// `winbar setup --window`'s two, for the Set Up Winbar window, for the same reasons.
+    static let setupWindowArgument = "--setup-window"
+    static let setupWindowNotification = Notification.Name("net.elusive.winbar.setup-window")
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem.autosaveName = "winbar"
         menu.autoenablesItems = false
@@ -59,12 +67,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // `winbar create --window`: the CLI relaunches this bundle through LaunchServices with this
         // argument, so the window opens with the app's own privacy grants instead of the terminal's.
         // CLI.mode already leaves an option-like argument from LaunchServices to the app.
-        if CommandLine.arguments.dropFirst().contains(AppDelegate.createWindowArgument) {
+        let launchArguments = CommandLine.arguments.dropFirst()
+        if launchArguments.contains(AppDelegate.createWindowArgument) {
             CreateWindowController.present()
         }
         DistributedNotificationCenter.default().addObserver(forName: AppDelegate.createWindowNotification,
                                                             object: nil, queue: .main) { _ in
             CreateWindowController.present()
+        }
+        // `winbar setup --window`, the same way.
+        if launchArguments.contains(AppDelegate.setupWindowArgument) {
+            SetupWindowController.present()
+        }
+        DistributedNotificationCenter.default().addObserver(forName: AppDelegate.setupWindowNotification,
+                                                            object: nil, queue: .main) { _ in
+            SetupWindowController.present()
+        }
+        // The first run (spec §2.1): the window opens by itself on a Mac that has never put it away and
+        // has nothing chosen or installing — the first thing a new user sees after the menu bar icon.
+        // `SetupWindow.availableToEveryone` gates it; a Mac it doesn't open on still has Set Up Winbar….
+        let asked = launchArguments.contains(AppDelegate.createWindowArgument)
+            || launchArguments.contains(AppDelegate.setupWindowArgument)
+        if SetupWindowController.opensByItself(available: SetupWindow.availableToEveryone,
+                                               shown: Config.setupWizardShown, vmChosen: Config.vmName != nil,
+                                               installRunning: CreateJob.current().map { !$0.isFinished } ?? false,
+                                               askedForWindow: asked) {
+            SetupWindowController.present()
         }
         pollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refresh() }
         pollTimer?.tolerance = 2
@@ -131,29 +159,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// The install this menu speaks for: the one whose VM the menu already looks after, or any
-    /// install when no VM has been chosen yet.
-    private var primaryInstall: CreateJobState? {
+    /// The job as the menu describes it. The clock is read here, so that `MenuShape` never has to.
+    private var menuInstall: MenuInstall? {
         guard let install else { return nil }
-        return install.plan.vmName == vmName || vmName == nil ? install : nil
-    }
-
-    /// An install of a different VM: the menu keeps its own items and gains one line.
-    private var otherInstall: CreateJobState? {
-        guard let install, primaryInstall == nil else { return nil }
-        return install
-    }
-
-    /// "copying files (14 min)", with "(in Terminal)" when the CLI is the one watching.
-    private func installSummary(_ state: CreateJobState) -> String {
-        let elapsed = CreateElapsed.minutes(Date().timeIntervalSince(state.startedAt))
-        let terminal = CreateWindowController.ownsJob ? "" : " (in Terminal)"
-        return "\(state.stage.shortTitle) (\(elapsed))\(terminal)"
+        let now = Date()
+        return MenuInstall(vmName: install.plan.vmName, stage: install.stage,
+                           elapsed: now.timeIntervalSince(install.startedAt),
+                           inTerminal: !CreateWindowController.ownsJob,
+                           resumed: resumedUntil.map { now < $0 } ?? false)
     }
 
     @objc private func newWindowsVM() { CreateWindowController.present() }
 
     @objc private func showInstallProgress() { CreateWindowController.presentProgress() }
+
+    @objc private func setUpWinbar() { SetupWindowController.present() }
 
     // MARK: State + icon
 
@@ -171,23 +191,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if let name, let process { VMProcesses.cache(process, for: name) }
         consoleEnabled = process.map { !$0.headless } ?? Config.consoleEnabled ?? true
+        // The set-up window's snapshot goes stale when UTM or the VM comes or goes, and this timer is
+        // the one that already watches for that. Nothing at all until the window has been opened.
+        SetupRunner.started?.processTableTick()
         render()
     }
 
-    private var statusText: String {
-        if let activity { return activity }
-        if let install = primaryInstall {
-            if let resumedUntil, Date() < resumedUntil { return CreateCopy.nResumed(name: install.plan.vmName) }
-            return "Installing Windows: " + installSummary(install)
-        }
-        guard vmName != nil else { return "No VM chosen" }
-        guard running else { return "Stopped" }
-        switch rdpReady {
-        case .ready: return "Running · ready for Remote Desktop"
-        case .notReady: return "Running · Windows is still starting"
-        case .blocked: return "Running · allow Local Network for Winbar to see readiness"
-        case .none: return "Running"
-        }
+    /// What the header and status line say, from what this object already holds. Cheap on purpose:
+    /// `render()` asks for it every five seconds.
+    private var status: MenuStatus {
+        MenuStatus(vmName: vmName, running: running, readiness: rdpReady,
+                   activity: activity, install: menuInstall, setupNote: SetupWindowController.menuNote)
     }
 
     private func render() {
@@ -197,11 +211,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         image?.isTemplate = true
         statusItem.button?.image = image
         statusItem.button?.appearsDisabled = !running && activity == nil && install == nil
-        statusItem.button?.toolTip = "\(vmName ?? primaryInstall?.plan.vmName ?? "Winbar") — \(statusText)"
+        let status = self.status
+        let statusText = MenuShape.statusText(status)
+        statusItem.button?.toolTip = "\(MenuShape.title(status)) — \(statusText)"
         statusLine?.title = statusText
     }
 
-    private func begin(_ label: String) {
+    private var workLease: AppWorkGate.Lease?
+    private func begin(_ label: String) -> Bool {
+        switch AppWorkGate.shared.begin(.menu, label: label, vm: vmName) {
+        case .failure(let error): fail(error.title, error.detail); return false
+        case .success(let lease): workLease = lease
+        }
         activity = label
         blinkTimer?.invalidate()
         blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
@@ -209,6 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.render()
         }
         render()
+        return true
     }
 
     /// Updates the working label from a background step.
@@ -221,6 +243,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func end() {
+        workLease?.finish()
+        workLease = nil
         activity = nil
         if !installBlinking {
             blinkTimer?.invalidate()
@@ -245,97 +269,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         refresh()
-        menu.removeAllItems()
-        menu.addItem(NSMenuItem.sectionHeader(title: vmName ?? primaryInstall?.plan.vmName ?? "Winbar"))
-        let line = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
-        line.isEnabled = false
-        menu.addItem(line)
-        statusLine = line
-        // An install of some other VM doesn't change this menu's own items; it adds one line.
-        if let other = otherInstall {
-            let extra = NSMenuItem(title: "Installing Windows in “\(other.plan.vmName)”: " + installSummary(other),
-                                   action: nil, keyEquivalent: "")
-            extra.isEnabled = false
-            menu.addItem(extra)
-        }
-        menu.addItem(.separator())
-        if install != nil {
-            addItem(CreateCopy.menuProgress, #selector(showInstallProgress))
-            menu.addItem(.separator())
-        }
+        // What the menu is, decided by MenuShape; this only gathers what it needs and builds the
+        // answer. Gathered now, not on the five-second timer: the shared folder is a look at the disk,
+        // and Launch at Login is a question to the login-items service.
+        let state = MenuState(status: status,
+                              consoleEnabled: consoleEnabled,
+                              hasSharedFolder: sharedFolderOnDisk != nil,
+                              update: newerVersion.map { MenuUpdate(version: $0, homebrew: UpdateCheck.isHomebrewInstall) },
+                              launchAtLogin: SMAppService.mainApp.status == .enabled,
+                              offersSetUp: MenuState.offersSetUp(available: SetupWindow.availableToEveryone,
+                                                                 coordinating: SetupWindowController.coordinatesVM,
+                                                                 wizardShown: Config.setupWizardShown),
+                              setupBusy: SetupWindowController.coordinatesVM)
+        updateMenu(menu, state: state)
+    }
 
-        let idle = activity == nil
-        if primaryInstall != nil {
-            // Connect, Start, Shut Down, Restart and the display item would all fight the install.
-        } else if vmName == nil {
-            // Listing VMs means asking UTM, which launches it, so that only happens once this submenu
-            // is actually opened.
-            let choose = NSMenuItem(title: "Choose VM", action: nil, keyEquivalent: "")
-            choose.submenu = chooseMenu
-            menu.addItem(choose)
-            let hint = NSMenuItem(title: "Then run “winbar setup” in Terminal to tune it", action: nil, keyEquivalent: "")
-            hint.isEnabled = false
-            menu.addItem(hint)
-            addItem(CreateCopy.menuNew, #selector(newWindowsVM), enabled: install == nil)
-        } else {
-            addItem(running ? "Connect" : "Start and Connect", #selector(connect), enabled: idle)
-            menu.addItem(.separator())
-            if running {
-                let shutDown = addItem("Shut Down", #selector(shutDown), enabled: idle)
-                shutDown.keyEquivalentModifierMask = []
-                let force = addItem("Force Stop", #selector(forceStop), enabled: idle)
-                force.keyEquivalentModifierMask = .option
-                force.isAlternate = true
-                addItem("Restart", #selector(restart), enabled: idle)
-            } else {
-                addItem("Start", #selector(start), enabled: idle)
-            }
-            menu.addItem(.separator())
-            addItem(consoleEnabled ? "Go Headless…" : "Show Console Window…", #selector(toggleConsole), enabled: idle)
-            // From the remembered folder, not from UTM: opening the menu must not send an Apple Event
-            // (and so launch UTM). The action checks with UTM before it changes anything.
-            addItem(sharedFolderOnDisk == nil ? "Share a Folder…" : "Open Shared Folder",
-                    #selector(openOrChooseSharedFolder), enabled: idle)
-        }
-        addItem("Open UTM", #selector(openUTM))
-        // One install at a time, so this is off while one runs.
-        addItem(CreateCopy.menuNew, #selector(newWindowsVM), enabled: install == nil)
-        // The only thing an update check is allowed to change about this menu, and only when there
-        // is genuinely a newer release.
-        if let newerVersion {
-            menu.addItem(.separator())
-            addItem(UpdateCheck.menuTitle(version: newerVersion, homebrew: UpdateCheck.isHomebrewInstall),
-                    #selector(showUpdate))
-        }
-        menu.addItem(.separator())
-        let login = addItem("Launch at Login", #selector(toggleLaunchAtLogin))
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        addItem("Quit Winbar", #selector(quit), key: "q")
+    /// The actual menu/probe boundary, injectable without asking this Mac for any facts.
+    func updateMenu(_ menu: NSMenu, state: MenuState) {
+        // Kept, so render() can change the words while the menu is open.
+        statusLine = fill(menu, with: MenuShape.items(state))
 
-        if running && idle && primaryInstall == nil {
-            RDP.probe(mac: Connection.mac(vm: vmName ?? "")) { [weak self] readiness in
+        if MenuShape.probesReadiness(state.status), !deferNetworkProbe() {
+            probeReadiness(state.status.vmName ?? "") { [weak self] readiness in
                 self?.rdpReady = readiness
                 self?.render()
             }
         }
     }
 
+    /// Replaces `target`'s items with the ones `specs` describes, and hands back the status line if
+    /// there is one. Building the items is `NSMenuItem.make`'s job, out where a test can reach it.
     @discardableResult
-    private func addItem(_ title: String, _ action: Selector, enabled: Bool = true, key: String = "", to target: NSMenu? = nil) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
-        item.target = self
-        item.isEnabled = enabled
-        (target ?? menu).addItem(item)
-        return item
+    private func fill(_ target: NSMenu, with specs: [MenuItemSpec]) -> NSMenuItem? {
+        target.fill(with: specs, target: self, selector: selector, chooseMenu: chooseMenu)
+    }
+
+    private func selector(_ action: MenuAction) -> Selector {
+        switch action {
+        case .connect: return #selector(connect)
+        case .start: return #selector(start)
+        case .shutDown: return #selector(shutDown)
+        case .forceStop: return #selector(forceStop)
+        case .restart: return #selector(restart)
+        case .toggleConsole: return #selector(toggleConsole)
+        case .sharedFolder: return #selector(openOrChooseSharedFolder)
+        case .openUTM: return #selector(openUTM)
+        case .newWindowsVM: return #selector(newWindowsVM)
+        case .showInstallProgress: return #selector(showInstallProgress)
+        case .setUpWinbar: return #selector(setUpWinbar)
+        case .reportProblem: return #selector(reportProblem)
+        case .showUpdate: return #selector(showUpdate)
+        case .launchAtLogin: return #selector(toggleLaunchAtLogin)
+        case .quit: return #selector(quit)
+        case .chooseVM: return #selector(chooseVM(_:))
+        case .openAutomationSettings: return #selector(openAutomationSettings)
+        }
     }
 
     private func fillChooseMenu() {
+        guard !SetupWindowController.coordinatesVM else { return }
         guard UTM.isInstalled else {
-            // Nothing to ask, and osascript would only fail.
-            chooseMenu.removeAllItems()
-            let missing = NSMenuItem(title: "UTM isn't installed", action: nil, keyEquivalent: "")
-            missing.isEnabled = false
-            chooseMenu.addItem(missing)
+            fill(chooseMenu, with: MenuShape.chooser(utmInstalled: false, vms: nil, error: nil))
             return
         }
         renderChooseItems()
@@ -359,31 +353,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// QEMU VMs, Windows ones first; the last list seen until a fresh one arrives.
+    /// The last list seen until a fresh one arrives. Only reached once `fillChooseMenu` has found UTM
+    /// installed, so it says so rather than looking again.
     private func renderChooseItems() {
-        chooseMenu.removeAllItems()
-        guard let knownVMs else {
-            let title = vmListError.map { "Couldn't ask UTM: \($0.title)" } ?? "Asking UTM…"
-            let line = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            line.isEnabled = false
-            line.toolTip = vmListError?.detail
-            chooseMenu.addItem(line)
-            if vmListError?.automationDenied == true {
-                addItem("Open Automation Settings…", #selector(openAutomationSettings), to: chooseMenu)
-            }
-            return
-        }
-        let offered = knownVMs.filter { $0.backend == "qemu" }
-            .sorted { ($0.isWindows ? 0 : 1, $0.name) < ($1.isWindows ? 0 : 1, $1.name) }
-        for vm in offered {
-            let item = addItem(vm.name, #selector(chooseVM(_:)), to: chooseMenu)
-            item.representedObject = vm
-        }
-        if offered.isEmpty {
-            let none = NSMenuItem(title: "UTM has no QEMU VMs", action: nil, keyEquivalent: "")
-            none.isEnabled = false
-            chooseMenu.addItem(none)
-        }
+        fill(chooseMenu, with: MenuShape.chooser(utmInstalled: true, vms: knownVMs, error: vmListError))
     }
 
     @objc private func openAutomationSettings() {
@@ -391,6 +364,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func chooseVM(_ sender: NSMenuItem) {
+        guard !SetupWindowController.coordinatesVM else { return }
         // The whole VM as UTM listed it, for its id: settings are filed under that, so a VM renamed
         // in UTM keeps what Winbar knows about it.
         guard let vm = sender.representedObject as? VMInfo else { return }
@@ -401,9 +375,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Actions
 
     @objc private func connect() {
+        SetupWindowController.connectionRequested()
         guard let vm = vmName else { return }
         guard running else { startVM(thenConnect: true); return }
-        begin("Waiting for Windows…")
+        guard begin("Waiting for Windows…") else { return }
         background({ () -> (String?, RDP.Readiness) in
             // The VM may have been started from UTM moments ago, so give its guest agent time to answer.
             let host = Connection.resolveHost(vm: vm, timeout: 120)
@@ -431,7 +406,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func startVM(thenConnect: Bool) {
         guard let vm = vmName else { return }
-        begin("Starting…")
+        guard begin("Starting…") else { return }
         background({ () -> Result<RDP.Readiness, WinbarError> in
             switch UTM.start(vm) {
             case .failure(let error): return .failure(error)
@@ -471,7 +446,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func stopVM(force: Bool, then next: (() -> Void)?) {
         guard let vm = vmName else { return }
-        begin(force ? "Force stopping…" : "Shutting down…")
+        guard begin(force ? "Force stopping…" : "Shutting down…") else { return }
         background({
             force ? UTM.stop(vm, force: true) : UTM.shutDown(vm, offerForce: self.offerForceStop)
         }) { [weak self] result in
@@ -492,7 +467,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         ? "Afterwards it's reachable only over Remote Desktop, and uses far less power."
                         : "Useful for boot menus or when Remote Desktop won't connect. It costs about a CPU core while visible."),
                       button: "Restart") else { return }
-        begin(showing ? "Going headless…" : "Enabling console…")
+        guard begin(showing ? "Going headless…" : "Enabling console…") else { return }
         let interaction = Interaction(
             progress: { [weak self] in self?.step($0) },
             confirmUnverifiedBitLocker: { [weak self] reason in
@@ -569,7 +544,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                       running ? SharedFolder.restartCost + "\n\n" + worth
                               : "\(vm) is off, so nothing restarts now; Windows picks it up over the next start or two. " + worth,
                       button: running ? "Restart" : "Share") else { return }
-        begin("Sharing \(name)…")
+        guard begin("Sharing \(name)…") else { return }
         let interaction = Interaction(
             progress: { [weak self] in self?.step($0) },
             confirmUnverifiedBitLocker: { [weak self] reason in
@@ -631,6 +606,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openUTM() { UTM.open() }
 
+    // MARK: Reporting a problem
+
+    /// `winbar diagnose`, for the part of Winbar's audience that has never opened Terminal.
+    ///
+    /// Gathered in this process on purpose. A privacy grant belongs to whoever is responsible for a
+    /// process (see `AppBundle.runAsApp`, and why `--self-test` has to run as the app), so the
+    /// doctor table in a report written here is the app's own view of the Mac — the one the menu has
+    /// been acting on all along — rather than a terminal's.
+    ///
+    /// It takes up to a couple of minutes, nearly all of it waiting on UTM and Windows, so it runs
+    /// off the main thread with the icon blinking and the status line saying which part it is on.
+    @objc func reportProblem() {
+        guard let anonymise = askAboutReport() else { return }
+        guard begin(Diagnose.Copy.working) else { return }
+        background({ Diagnose.gather(.fromTheMenu(anonymise: anonymise)) { self.step($0.label) } }) { [weak self] result in
+            guard let self else { return }
+            self.end()
+            switch result {
+            case .failure(let error):
+                self.fail(error.title, error.detail)
+            case .success(let written):
+                // The Finder first, the issues page second, so the page ends up in front with the
+                // file's window behind it: that is the way round you can drag one into the other.
+                NSWorkspace.shared.activateFileViewerSelecting([written.url])
+                NSWorkspace.shared.open(UpdateCheck.issuesURL)
+            }
+        }
+    }
+
+    /// What is about to happen, and the one choice worth making before it does. nil if they
+    /// cancelled; true if they asked for the anonymised report.
+    private func askAboutReport() -> Bool? {
+        let alert = NSAlert()
+        alert.messageText = Diagnose.Copy.askTitle
+        alert.informativeText = Diagnose.Copy.askDetail
+        alert.addButton(withTitle: Diagnose.Copy.askButton)
+        alert.addButton(withTitle: "Cancel")
+        let anonymise = NSButton(checkboxWithTitle: Diagnose.Copy.anonymise, target: nil, action: nil)
+        anonymise.toolTip = Diagnose.Copy.anonymiseHelp
+        anonymise.sizeToFit()
+        alert.accessoryView = anonymise
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return anonymise.state == .on
+    }
+
     /// The update item. Homebrew put this copy here, so Homebrew should take it away again: its
     /// owner gets the command on the clipboard rather than a page offering a disk image that would
     /// leave them with two Winbars. Everyone else gets the release page, notes and all.
@@ -669,6 +690,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                button: "Quit Anyway")
             guard quit else { return .terminateCancel }
         }
+        // The set-up window's long work (§2.4): an install of UTM that quitting would leave half done.
+        if let question = SetupWindowController.quitQuestion(SetupRunner.started?.inFlight) {
+            guard confirm(SetupCopy.Quitting.title, String(question.characters), button: SetupCopy.Quitting.bQuitAnyway)
+            else { return .terminateCancel }
+        }
         guard let activity else { return .terminateNow }
         let quit = confirm("Quit while Winbar is busy?",
                            "Winbar is still working (\(activity)). Quitting now leaves that unfinished.", button: "Quit")
@@ -676,25 +702,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func openRemoteDesktop(host: String) {
-        guard WindowsApp.accessibilityTrusted else {
-            if offerAccessibilityOnce(host: host) { return }  // they're off granting it; Connect again afterwards
-            openOneOffConnection(host: host)
-            return
-        }
-        background({ WindowsApp.openSavedPC(host: host) }) { [weak self] opened in
-            if !opened {
-                NSLog("Winbar: falling back to a one-off .rdp connection")
-                self?.openOneOffConnection(host: host)
+        if !WindowsApp.accessibilityTrusted, offerAccessibilityOnce(host: host) { return }
+        let user = Config.rdpUser
+        background({ Result { try Connection.openDesktop(host: host, user: user, failureDetail: Connection.menuFailureDetail,
+                                                          fallback: { NSLog("Winbar: falling back to a one-off .rdp connection") }) } }) { [weak self] result in
+            if case .failure(let error) = result {
+                if let error = error as? WinbarError { self?.fail(error.title, error.detail) }
+                else { self?.fail("Couldn't open Windows App", String(describing: error)) }
             }
-        }
-    }
-
-    /// Fallback: works without Accessibility, but Windows App asks for the password.
-    private func openOneOffConnection(host: String) {
-        if !RDP.openOneOff(host: host, user: Config.rdpUser) {
-            fail("Couldn't open Windows App",
-                 "Run winbar setup in Terminal and it offers to install Windows App for you, or get it from the Mac App "
-                     + "Store. Then try Connect again.")
         }
     }
 

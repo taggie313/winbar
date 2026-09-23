@@ -63,6 +63,15 @@ struct VMInfo: Equatable {
     var isWindows: Bool { icon.lowercased().contains("windows") }
     var isRunning: Bool { !status.isEmpty && status != "stopped" }
     var headless: Bool? { displayCount.map { $0 == 0 } }
+
+    /// The VMs Winbar offers to choose from, in the order it offers them: QEMU VMs only (Winbar
+    /// can't manage Apple Virtualization ones), Windows first, then by name. The menu's **Choose VM**
+    /// submenu and the set-up wizard's picker both read this one function, so a VM is in the same
+    /// place in both by construction, not because two copies of a sort happen to agree.
+    static func choosable(_ list: [VMInfo]) -> [VMInfo] {
+        list.filter { $0.backend == "qemu" }
+            .sorted { ($0.isWindows ? 0 : 1, $0.name) < ($1.isWindows ? 0 : 1, $1.name) }
+    }
 }
 
 /// UTM's AppleScript dictionary, for discovery and configuration changes.

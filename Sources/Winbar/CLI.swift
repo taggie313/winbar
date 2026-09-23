@@ -62,6 +62,11 @@ enum CLI {
                         never decrypts BitLocker unless it sees the VM's disk on an encrypted
                         volume, and never goes headless unasked. --no-visual-tweaks and
                         --keep-bitlocker are remembered for the VM (undo with winbar config)
+          setup --window
+                        open Winbar's Set Up Winbar window (Set Up Winbar… in its menu) and leave
+                        this terminal free. It guides dependency installation, Windows creation or
+                        adoption, tuning, the certificate, the saved connection, a first desktop
+                        test and optional headless mode
           create [NAME] [--iso PATH] [options]
                         make a new UTM VM and install Windows 11 in it, unattended (about 10 minutes).
                         Shows the plan as a checklist you can change, then asks for the Windows
@@ -73,7 +78,8 @@ enum CLI {
                         the doctor table, Winbar's settings, the tail of the last winbar create
                         log and UTM's recent crash reports — to your Desktop, and say where it
                         went. Read it, then attach it. --anonymise replaces this Mac's name,
-                        your user name and the VM names with placeholders
+                        your Mac and Windows user names, the VM names, the Windows PC name and
+                        every id-shaped and MAC-shaped string in the file with placeholders
           start         start the VM and wait for Remote Desktop
           stop [--force]
                         shut Windows down cleanly (--force: pull the plug)
@@ -117,7 +123,8 @@ enum CLI {
             print(usage)
             return 0
         case "--self-test":
-            return SelfTest.run(requestAccessibility: rest.contains("--request-accessibility"))
+            return SelfTest.run(requestAccessibility: rest.contains("--request-accessibility"),
+                                probePort: SelfTest.probesPort(arguments: rest))
         case "doctor":
             return withOptions(rest, values: ["--vm"], switches: []) { parsed in
                 Doctor.run(options: Context.Options(vmOverride: parsed.values["--vm"]))
@@ -133,6 +140,8 @@ enum CLI {
                 return Diagnose.run(options)
             }
         case "setup":
+            // The window asks everything itself; the terminal only hands it over.
+            if rest.contains("--window") { return SetupHandOff.run(rest) }
             return withOptions(rest, values: ["--vm"],
                                switches: ["--yes", "-y", "--no-visual-tweaks", "--keep-bitlocker", "--headless", "--console"]) { parsed in
                 if parsed.has("--headless") && parsed.has("--console") {
@@ -773,6 +782,37 @@ enum CLI {
             ("offeredAccessibility", String(Config.offeredAccessibility)),
         ] + (Config.pendingUTMRestart.map { [("utmRestartPending", "yes, after \($0.vm)'s display change")] } ?? [])
         for (key, value) in rows { print(key.padding(toLength: 22, withPad: " ", startingAt: 0) + value) }
+        return 0
+    }
+}
+
+/// `winbar setup --window`: opens the Set Up Winbar window in Winbar.app, the way `winbar create
+/// --window` opens New Windows VM, and returns straight away (spec §2.1). The window gets the app's
+/// own Automation and Accessibility grants rather than the terminal's.
+enum SetupHandOff {
+    /// Why these arguments can't be handed over, or nil when they can: `--window` alone. The window
+    /// asks for everything itself, so a flag beside it would quietly do nothing. Pure.
+    static func refusal(_ arguments: [String]) -> String? {
+        arguments == ["--window"] ? nil : SetupCopy.HandOff.takesNoOptions
+    }
+
+    static func run(_ arguments: [String]) -> Int32 {
+        if let refusal = refusal(arguments) {
+            Term.error(refusal)
+            return 64
+        }
+        guard let app = AppBundle.url else {
+            Term.error(SetupCopy.HandOff.noApp)
+            return 69
+        }
+        let route = WindowHandOff.route(app: app, appRunning: AppBundle.isAppRunning,
+                                        argument: AppDelegate.setupWindowArgument,
+                                        notification: AppDelegate.setupWindowNotification)
+        if let failure = WindowHandOff.perform(route) {
+            Term.error(SetupCopy.HandOff.couldNotOpen(app.lastPathComponent, failure))
+            return 69
+        }
+        print(SetupCopy.HandOff.opened(lastBuilt: SetupWindowState.lastBuilt))
         return 0
     }
 }

@@ -71,6 +71,10 @@ final class Context {
         var noVisualTweaks = false
         var keepBitLocker = false
         var display: UTMScripting.DisplayMode?
+        /// Whether the self-test behind C3 and C4 probes the Remote Desktop port. doctor and
+        /// diagnose report the answer; the setup window leaves the port alone
+        /// (`SetupRunner.contextOptions`).
+        var selfTestProbesPort = true
     }
 
     enum GuestState {
@@ -83,6 +87,7 @@ final class Context {
 
     let options: Options
     var vmName: String?
+    var vmID: String?
 
     /// This run's flag, or the choice remembered for the configured VM (setup saves them).
     var keepBitLocker: Bool { options.keepBitLocker || (isConfiguredVM && Config.keepBitLocker) }
@@ -95,9 +100,33 @@ final class Context {
     /// Staged configuration changes (vCPUs, RAM, display) awaiting setup's single restart.
     var pending = ConfigChanges()
 
-    init(options: Options) {
+    /// Where a fact that takes a while says so ("Asking Windows…"). A window has no terminal to write
+    /// to, so it passes its own; everything else gets `toTerminal`, which is what this always did.
+    let progress: (String) -> Void
+
+    init(options: Options, progress: @escaping (String) -> Void = Context.toTerminal) {
         self.options = options
+        self.progress = progress
         vmName = options.vmOverride ?? Config.vmName
+        vmID = vmName == Config.vmName ? Config.vmID : nil
+    }
+
+    /// The long-lived window must follow selection changes made by the menu or another process.
+    /// This is local bookkeeping only: it never asks UTM or writes settings.
+    @discardableResult
+    func adoptSelection(name: String?, id: String?) -> Bool {
+        guard vmName != name || vmID != id else { return false }
+        vmName = name
+        vmID = id
+        pending = ConfigChanges()
+        refreshAll()
+        return true
+    }
+
+    /// The terminal's progress: a dim note on stderr, and only while stdout is a terminal, exactly as the
+    /// survey always did it. A doctor run piped into something else doesn't get it.
+    static func toTerminal(_ line: String) {
+        if Term.stdoutIsTTY { Term.note(line) }
     }
 
     // MARK: UTM
@@ -113,11 +142,11 @@ final class Context {
 
     var vm: VMInfo? {
         guard let vmName, case .success(let list) = vms else { return nil }
-        return list.first { $0.name == vmName }
+        return list.first { $0.name == vmName && (vmID == nil || vmID == $0.id) }
     }
 
     /// Live, and cheap: a process-table scan.
-    var process: VMProcess? { VMProcesses.find(vmName) }
+    var process: VMProcess? { VMProcesses.find(vmName, id: vmID) }
 
     private var cachedCtl: UTM.CtlAnswer?
 
@@ -130,9 +159,24 @@ final class Context {
         return answer
     }
 
+    /// Takes utmctl's answer from someone who has just asked (`UTMFirstUse.settle`, the setup
+    /// window's **Open UTM and Ask**), so H9 reads it instead of asking again: a utmctl that said
+    /// nothing for a minute would say nothing for another twenty seconds.
+    func noteUTMCtl(_ answer: UTM.CtlAnswer) {
+        cachedCtl = answer
+        statuses.removeAll()
+    }
+
     /// Windows QEMU VMs to offer when none is configured; any QEMU VM if none says it's Windows.
     var candidates: [VMInfo] {
         guard case .success(let list) = vms else { return [] }
+        return Context.candidates(in: list)
+    }
+
+    /// The rule itself, pure, so the wizard's VM step (`SetupFlow.choice(in:)`) adopts the same VM
+    /// `winbar setup` would. Any QEMU VM when none says it's Windows: a VM made by hand in UTM can
+    /// have its generic icon, and `VMInfo.isWindows` reads nothing else.
+    static func candidates(in list: [VMInfo]) -> [VMInfo] {
         let qemu = list.filter { $0.backend == "qemu" }
         let windows = qemu.filter(\.isWindows)
         return windows.isEmpty ? qemu : windows
@@ -179,7 +223,7 @@ final class Context {
         guard let vmName, vm != nil else { return .notConfigured }
         guard process != nil else { return .stopped }
         guard UTM.guestAgentAnswers(vmName) else { return .noAgent }
-        if Term.stdoutIsTTY { Term.note("Asking Windows (this takes a few seconds)…") }
+        progress(SetupCopy.Tune.askingWindows)
         // A marker in the shared folder, for as long as the survey takes: UTM gives Windows the folder
         // its registry held at the previous start, so without it the survey can't tell "Windows has
         // this folder" from "Windows still has the one before" (see SharedFolder).
@@ -210,7 +254,7 @@ final class Context {
     }
 
     /// Whether the settings in Config describe this run's VM (`doctor --vm` can point elsewhere).
-    var isConfiguredVM: Bool { vmName != nil && vmName == Config.vmName }
+    var isConfiguredVM: Bool { vmName != nil && vmName == Config.vmName && vmID == Config.vmID }
 
     /// This VM's MAC: UTM's answer, else its running process's, else what was remembered — and that
     /// last one only when these settings are this VM's. Another VM's MAC finds another VM's DHCP
@@ -282,7 +326,7 @@ final class Context {
 
     var selfTest: Result<[String: String], WinbarError> {
         if let cachedSelfTest { return cachedSelfTest }
-        let result = SelfTest.launchAsApp()
+        let result = SelfTest.launchAsApp(extraArguments: SelfTest.arguments(probingPort: options.selfTestProbesPort))
         cachedSelfTest = result
         return result
     }

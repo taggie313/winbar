@@ -44,6 +44,7 @@ enum Setup {
         }
 
         Doctor.report(ctx)
+        print("")
         fillDefaults(ctx)
 
         // Windows first has to be reachable at all.
@@ -57,7 +58,7 @@ enum Setup {
         // Changes inside Windows; none needs a restart. G11 is the drive mapping the Guest Tools
         // normally make, and only appears when a folder is shared without one.
         var changedGuest = false
-        for id in ["G1", "G2", "G3", "G4", "G6", "G7", "G8", "G11"] where declined(id, ctx) == nil {
+        for id in fixPass where declined(id, ctx) == nil {
             if offer(id, ctx) { changedGuest = true }
         }
         let decrypting = offerDecryption(ctx)
@@ -68,7 +69,7 @@ enum Setup {
 
         // H9 first: a utmctl that isn't answering is the reason every row below it would fail, and
         // it is the one a person can otherwise only read as "Winbar is broken".
-        for id in ["H9", "G8", "G11", "H6", "H8", "C1", "C2", "C3"] where declined(id, ctx) == nil {
+        for id in manualPass where declined(id, ctx) == nil {
             // C1 is an app Microsoft ships, not a setting: setup offers to install it (with
             // Homebrew, or by opening its App Store page) instead of printing a command. It comes
             // before C2, which has nowhere to save a PC until Windows App is there.
@@ -93,6 +94,27 @@ enum Setup {
         Doctor.printSummary(results)
         return Doctor.exitCode(results)
     }
+
+    // MARK: The passes
+
+    // Named rather than written inline in `run`, so the wizard's step list (`SetupFlow.checks(in:)`)
+    // can be held to them by test: the two front-ends agree by test, not by sharing a loop, because
+    // `run` is two passes with G8 and G11 in both, which one flat list can't say (COHERENCE C3).
+    // Changing either order here changes the terminal conversation, and SetupFlowTests will say
+    // which of the wizard's steps now disagrees.
+
+    /// Changes inside Windows, none of them needing a restart, offered after G0 and G5 have been
+    /// walked. G11 is the drive mapping the Guest Tools normally make, and only appears when a folder
+    /// is shared without one.
+    static let fixPass = ["G1", "G2", "G3", "G4", "G6", "G7", "G8", "G11"]
+
+    /// The manual steps, after BitLocker and H7. H9 first: a utmctl that isn't answering is the
+    /// reason every row below it would fail. G8 and G11 are here as well as in the fix pass: fix it
+    /// if it can be fixed, walk it if it can't.
+    static let manualPass = ["H9", "G8", "G11", "H6", "H8", "C1", "C2", "C3"]
+
+    /// Staged into the single restart at the end, before the shared-folder offer and the display.
+    static let restartPass = ["H3", "H4"]
 
     // MARK: Choosing the VM
 
@@ -120,7 +142,7 @@ enum Setup {
             if let previous = Config.selectVM(vm.name, id: vm.id) {
                 print("Switched to \(vm.name). What Winbar remembers about \(previous) is kept for it.")
             }
-            ctx.vmName = vm.name
+            ctx.adoptSelection(name: vm.name, id: vm.id)
             ctx.refreshAll()
         }
         if let wanted = ctx.options.vmOverride {
@@ -169,30 +191,35 @@ enum Setup {
     }
 
     /// Up to three minutes for the guest agent, then up to 90 s more for autologon's desktop: the agent
-    /// can answer first, and a survey before explorer.exe starts finds nobody signed in.
-    private static func waitForWindows(_ vm: String) {
-        Term.note("Waiting for Windows and its guest agent (up to three minutes)…")
+    /// can answer first, and a survey before explorer.exe starts finds nobody signed in. `note` is
+    /// where the two lines go: the terminal's dim note, or the setup window's step 2.
+    static func waitForWindows(_ vm: String, note: (String) -> Void = { Term.note($0) }) {
+        note(SetupCopy.waitingForWindows)
         guard UTM.waitForGuestAgent(vm, timeout: 180) else {
-            Term.note("The guest agent didn't answer yet.")
+            note(SetupCopy.agentNotYet)
             return
         }
         _ = GuestAgent.run(vm: vm, GuestScripts.waitForAutologon(seconds: 90), timeout: 120)
     }
 
     /// Remembers the host and user found in the guest, so the menu and later runs don't need to ask.
-    private static func fillDefaults(_ ctx: Context) {
-        print("")
+    /// The setup window does the same after its survey, or its Connect and the menu's would have no
+    /// host; `say` is where the terminal's account of it goes, and the window has no use for it.
+    static func fillDefaults(_ ctx: Context, say: (String) -> Void = { print($0) }) {
+        guard ctx.isConfiguredVM else { return }
         if Config.rdpHost == nil, let host = ctx.rdpHost {
+            guard ctx.isConfiguredVM else { return }
             if Config.isValidHostName(host) {
                 Config.rdpHost = host
-                print("Remote Desktop host: \(host) (from the Windows computer name; change it with winbar config --host)")
+                say("Remote Desktop host: \(host) (from the Windows computer name; change it with winbar config --host)")
             } else {
-                print("The Windows computer name doesn't make a usable host name (\(host)); set one with winbar config --host.")
+                say("The Windows computer name doesn't make a usable host name (\(host)); set one with winbar config --host.")
             }
         }
         if Config.rdpUser == nil, let user = ctx.rdpUser {
+            guard ctx.isConfiguredVM else { return }
             Config.rdpUser = user
-            print("Windows user: \(user) (the signed-in user; change it with winbar config --user)")
+            say("Windows user: \(user) (the signed-in user; change it with winbar config --user)")
         }
     }
 
@@ -237,6 +264,8 @@ enum Setup {
         print("\n\(status.symbol) \(check.id) \(check.title): \(status.detail)")
         print(Term.paint("   " + check.why, .dim))
         guard Term.confirm("Fix it?", assumeYes: ctx.options.assumeYes) else { return false }
+        // Said here rather than by the check, so the window can say the same sentence (H7's prompt).
+        if let before = SetupCopy.beforeFix(check.id) { print(before) }
         return report(apply(ctx), check, ctx)
     }
 
@@ -278,7 +307,7 @@ enum Setup {
                 print("   \(status.symbol) \(status.detail)")
                 return
             }
-            print("   still: \(still)")
+            print("   " + SetupCopy.Tune.still(still))
             print("   how: " + how)
         }
     }
@@ -306,7 +335,7 @@ enum Setup {
         guard status.isFixable, let host = ctx.rdpHost, let user = ctx.rdpUser else { return false }
         print("\n\(status.symbol) \(check.id) \(check.title): \(status.detail)")
         print(Term.paint("   " + check.why, .dim))
-        print("   " + CreateCopy.wrap(savedPCWhyPassword(user: user), width: CreateCopy.width, indent: "   "))
+        print("   " + CreateCopy.wrap(SetupCopy.SavedPC.why(user: user), width: CreateCopy.width, indent: "   "))
         guard Term.confirm("Save this PC in Windows App now?", assumeYes: false, defaultYes: true) else {
             print("   Left for you to add in Windows App.")
             return false
@@ -320,17 +349,10 @@ enum Setup {
             return false
         }
         do {
-            // `passwordVerified: false`: Winbar has no way to check this one, and probing would be a
-            // failed logon — Windows locks a local account after ten. So the saved PC doesn't retry
-            // by itself until a connection has actually worked.
-            let saved = try WindowsAppBookmarks.save(host: host, user: user, password: password,
-                                                     friendlyName: ctx.vmName, passwordVerified: false)
-            switch saved {
+            switch try savePC(ctx, host: host, user: user, password: password) {
             case .created(let pc):
-                Recipe.rememberSavedPC(pc, host: host, for: ctx)
                 print("   " + Term.paint("✓", .green) + " saved in Windows App as “\(pc.name)”")
             case .alreadyThere(let pc):
-                Recipe.rememberSavedPC(pc, host: host, for: ctx)
                 print("   " + Term.paint("✓", .green) + " Windows App already had one (“\(pc.name)”); left alone")
             }
             return true
@@ -340,16 +362,31 @@ enum Setup {
         }
     }
 
-    /// Said before the prompt, because this is the moment the person decides. Both halves: where the
-    /// password goes, and what handing it over costs.
-    static func savedPCWhyPassword(user: String) -> String {
-        "Windows App needs the password for \(user) to save this PC, so Connect doesn't ask for it every time. "
-            + WindowsAppBookmarks.Copy.passwordGoesToWindowsApp
-            + " Winbar can't check the password without risking a failed sign-in, so the saved PC won't retry by "
-            + "itself until you've connected once."
+    /// Saves the PC in Windows App and remembers it for the configured VM: the one action behind
+    /// `offerSavedPC`, and behind the setup window's **Save It**, so the two can't save differently.
+    ///
+    /// `passwordVerified: false`: Winbar has no way to check this one, and probing would be a failed
+    /// logon — Windows locks a local account after ten. So the saved PC doesn't retry by itself until
+    /// a connection has actually worked.
+    static func savePC(_ ctx: Context, host: String, user: String, password: String) throws -> WindowsAppBookmarks.Saved {
+        let saved = try WindowsAppBookmarks.save(host: host, user: user, password: password,
+                                                 friendlyName: ctx.vmName, passwordVerified: false)
+        switch saved {
+        case .created(let pc), .alreadyThere(let pc): Recipe.rememberSavedPC(pc, host: host, for: ctx)
+        }
+        return saved
     }
 
     // MARK: BitLocker
+
+    /// Where the VM's disk is kept, from the running QEMU's own arguments, and whether they were seen
+    /// at all; without them, UTM's default folder on the startup disk, which is a guess the question
+    /// then admits. Shared with the setup window, so G9 asks both front-ends about the same places.
+    static func whereTheDiskIs(_ ctx: Context) -> (places: [Host.Storage], seen: Bool) {
+        let images = ctx.process?.diskImages ?? []
+        let places = images.isEmpty ? [Host.Storage.startupDisk] : Array(Set(images.map { Host.storage(of: $0) }))
+        return (places, !images.isEmpty)
+    }
 
     /// BitLocker is off by default: decrypted when the volume holding the VM's disk is encrypted
     /// (FileVault, on the startup disk). Otherwise decrypting would leave the disk unencrypted at rest,
@@ -363,37 +400,27 @@ enum Setup {
         let status = ctx.status(of: check)
         guard status.isFixable else { return false }
         print("\n\(status.symbol) G9 BitLocker: \(status.detail)")
-        let images = ctx.process?.diskImages ?? []
-        let places = images.isEmpty ? [Host.Storage.startupDisk] : Array(Set(images.map { Host.storage(of: $0) }))
+        let (places, seen) = whereTheDiskIs(ctx)
         let unprotected = places.filter { Host.encryptedAtRest($0) != true }
-        let costs = "BitLocker costs I/O and demands its recovery key after any VM hardware change. (--keep-bitlocker keeps it on.)"
+        // The words are the deck's, so the setup window's step 3 says exactly this.
+        let offer = SetupCopy.BitLocker.offer(places: places, unprotected: unprotected, imagesKnown: seen)
+        print("   " + offer.explanation)
         let go: Bool
         if unprotected.isEmpty {
-            let location = images.isEmpty
-                ? "FileVault encrypts this Mac's startup disk, where UTM keeps VMs unless told otherwise. If this VM is "
-                    + "stored somewhere else, such as an external drive, its disk would be unencrypted there: answer n."
-                : "The VM's disk is on \(places.map(\.description).sorted().joined(separator: " and ")), which is encrypted "
-                    + (places == [.startupDisk] ? "by FileVault." : "at rest.")
-            print("   Decrypting it: \(location) " + costs)
-            if images.isEmpty && ctx.options.assumeYes {
+            if !seen && ctx.options.assumeYes {
                 // The startup disk is only a guess here, and the message just offered "answer n" to anyone
                 // whose VM lives elsewhere; --yes mustn't take that answer away from them.
                 print("   Keeping BitLocker on: --yes never weakens encryption at rest, and Winbar can't see where the VM's disk is.")
                 go = false
             } else {
-                go = Term.confirm("Decrypt C:?", assumeYes: ctx.options.assumeYes, defaultYes: true)
+                go = Term.confirm(offer.question, assumeYes: ctx.options.assumeYes, defaultYes: offer.defaultYes)
             }
         } else {
-            let what = unprotected.map { place in
-                place == .startupDisk ? "this Mac's startup disk (FileVault is off)" : "\(place.description), which isn't encrypted"
-            }.sorted().joined(separator: " and ")
-            print("   The VM's disk is on \(what), so decrypting C: would leave it unencrypted at rest. "
-                  + "BitLocker still costs I/O and demands its recovery key after VM hardware changes.")
             if ctx.options.assumeYes {
                 print("   Keeping BitLocker on: --yes never weakens encryption at rest.")
                 go = false
             } else {
-                go = Term.confirm("Decrypt C: anyway?", assumeYes: false)
+                go = Term.confirm(offer.question, assumeYes: false, defaultYes: offer.defaultYes)
             }
         }
         guard go else {
@@ -405,7 +432,7 @@ enum Setup {
             return false
         }
         let started = report(apply(ctx), check, ctx)
-        if started { print("   Windows decrypts in the background and carries on across restarts.") }
+        if started { print("   " + SetupCopy.BitLocker.decryptingInBackground) }
         return started
     }
 
@@ -442,7 +469,7 @@ enum Setup {
     private static func restartBatch(_ ctx: Context) {
         guard let vm = ctx.vmName, ctx.vm != nil else { return }
         ctx.pending = ConfigChanges()
-        for id in ["H3", "H4"] {
+        for id in restartPass {
             guard let check = Recipe.check(id), let apply = check.apply else { continue }
             let status = ctx.status(of: check)
             guard status.isFixable else { continue }
@@ -454,7 +481,7 @@ enum Setup {
         decideDisplay(ctx)
         guard !ctx.pending.isEmpty else { return }
 
-        print("\nOne restart of \(vm) applies: \(ctx.pending.summary).")
+        print("\n" + SetupCopy.Finish.oneRestart(of: vm, applies: ctx.pending.summary))
         let interaction = Interaction(
             progress: { Term.note($0) },
             confirmUnverifiedBitLocker: { reason in

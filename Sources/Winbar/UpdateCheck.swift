@@ -20,6 +20,10 @@ enum UpdateCheck {
     /// the link keeps working without knowing a version.
     static let releasesURL = URL(string: "https://github.com/\(repo)/releases/latest")!
 
+    /// Where a bug report goes. The report's own preamble names it, `winbar diagnose` prints it and
+    /// the menu bar app opens it — one constant, so those three never drift apart.
+    static let issuesURL = URL(string: "https://github.com/\(repo)/issues")!
+
     /// GitHub's public API for the same thing. No token: anonymous requests are limited to 60 an
     /// hour per address, which one a day is comfortably inside even on a shared one.
     static let apiURL = URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!
