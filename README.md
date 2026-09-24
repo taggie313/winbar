@@ -429,6 +429,7 @@ something is happening. The top of the menu shows the VM's name and status.
 | **Open UTM** | Brings up UTM |
 | **New Windows VM…** | Opens the create window, the same as `winbar create --window` (off while an install is running) |
 | **Report a Problem…** | Writes the `winbar diagnose` report, shows it in the Finder and opens a new issue, so you can drag it straight in. Asks first; the names in it are placeholders unless you untick the box. Works during an install or a setup step too |
+| **Send a Problem Report…** | During the beta only: sends that same report, with a note from you and what Winbar's windows show, straight to Winbar's developer. Asks what happened, sends nothing until you press **Send**, and keeps a copy in `~/Library/Logs/Winbar/Reports`. Also **Help!** in the title bar of Set Up Winbar and New Windows VM, and **Send This to the Developer** on anything that failed there |
 | **Launch at Login** | Opens Winbar's icon in the menu bar when you log in; unless **Start Windows with Winbar** is ticked too, Windows stays off until you connect to it or start it. Set Up Winbar's finished screen turns it on (**Open Winbar when I log in**) unless you've already chosen. Not from a copy on the disk image, which would be gone after a restart |
 | **Start Windows with Winbar** | Starts the VM without connecting whenever Winbar opens (at login too, with **Launch at Login** on), unless it's running already or Winbar is busy with an install or a setup step. Windows then holds its share of your Mac's memory until you shut it down. Off until you tick it here or turn on **Also start Windows when Winbar opens** on Set Up Winbar's finished screen |
 | **Quit Winbar** | Quits Winbar. The VM keeps running. While Winbar is in the middle of something, it asks first |
@@ -551,7 +552,8 @@ reason not to, and tells you when it makes a choice.
 - **Privacy permissions** are used for one thing each: Automation (control UTM), Accessibility
   (press your PC's tile in Windows App), Local Network (check the VM's Remote Desktop port).
   Winbar is signed with a Developer ID, so the permissions you grant survive updates.
-- Winbar has no telemetry.
+- Winbar has no telemetry. During the beta, **Send a Problem Report…** sends a report to Winbar's
+  developer, and only when you press **Send** in it.
 
 ## Troubleshooting
 
@@ -583,6 +585,14 @@ or two with the icon blinking, then shows you the file in the Finder and opens a
 can drag it in. It only reads, so it works in the middle of an install or a setup step too. Winbar gathers it itself, so the `winbar doctor` table in it is the app's own view of your
 Mac — its Automation and Local Network permissions, not your terminal's, which is the same reason
 `--self-test` has to run as the app (below).
+
+**During the beta: Send a Problem Report….** No GitHub account? The menu's **Send a Problem
+Report…** (also **Help!** in Set Up Winbar's title bar, and **Send This to the Developer** on
+anything that failed there) sends the same report straight to Winbar's developer, over the internet
+to a server the developer runs (ntfy.elusive.net), with a note from you and what Winbar's windows were showing.
+**Show the Report** lets you read exactly what goes; the names are placeholders unless you untick
+the box, your note included; nothing is sent until you press **Send**, and **Cancel** stops it. If it
+can't be sent, it says why and keeps the file in `~/Library/Logs/Winbar/Reports`.
 
 | | |
 |---|---|
@@ -706,7 +716,8 @@ report answerable:
 
 - the file `winbar diagnose` writes, or **Report a Problem…** in the menu (see
   [Troubleshooting](#troubleshooting)) — it has the doctor table, the versions, the settings, the
-  last create log and UTM's crash reports in it
+  last create log and UTM's crash reports in it. During the beta, **Send a Problem Report…** sends it
+  to the developer directly instead
 - the command that went wrong, run as `WINBAR_DEBUG=1 winbar …`
 - what you expected, and what happened instead
 

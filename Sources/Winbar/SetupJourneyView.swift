@@ -6,7 +6,8 @@ struct SetupJourneyView: View {
     let state: SetupWindowState
     @ObservedObject var credentials: SetupCredentials
     let savePassword: (String) -> Void
-    /// Armie, when `ArmieCue.cue` puts him on this page: only the done screen, of these steps.
+    /// Armie on the finished page, which draws him larger in its arrival (`FinishArrival`); on every
+    /// other page of these steps he is beside the title (`SetupPageHead`).
     var armie: ArmieCue? = nil
     var art: ArmieArt? = nil
     let send: (SetupCommand) -> Void
@@ -31,7 +32,12 @@ struct SetupJourneyView: View {
                 if flight.work.canStopWaiting { StopWaitingRow(work: flight.work) { send(.stopWaiting) } }
             }
             if let problem = Self.problemCard(state) {
-                SetupCard { Text(problem.description).textSelection(.enabled) }
+                SetupCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(problem.description).textSelection(.enabled)
+                        if BetaReport.cards(state).contains(.problem) { SendToDeveloperButton { send(.sendReport) } }
+                    }
+                }
             }
             if state.lastEnding?.outcome == .overtaken {
                 Text("Something changed while this window was open. Check the current result below before trying again.")
@@ -258,6 +264,7 @@ struct SetupJourneyView: View {
                             Button(SetupCopy.Certificate.bCheckAgainInstead) { send(.revisit(.certificate)) }
                         }
                         if page.canSkip { Button(SetupCopy.Certificate.bSkip) { send(.skip("H7")) } }
+                        if BetaReport.cards(state).contains(.certificate) { SendToDeveloperButton { send(.sendReport) } }
                     }
                 }
                 if let host = facts.rdpHost {
@@ -359,6 +366,8 @@ struct SetupJourneyView: View {
                         Button(SetupCopy.bTryAgain) { send(.retrySavedPC) }
                     }
                     .disabled(state.inFlight != nil)
+                    // Its own row, and never greyed out: asking for help reads, and runs beside anything.
+                    if BetaReport.cards(state).contains(.savedPC) { SendToDeveloperButton { send(.sendReport) } }
                     details { Text(row.detail).textSelection(.enabled).setupProse() }
                 case .manual(let row):
                     SetupStatusLine(.attention, SetupCopy.SavedPC.manualTitle)
@@ -366,6 +375,7 @@ struct SetupJourneyView: View {
                     Text(SetupCopy.markdown(SetupCopy.SavedPC.manualNext)).setupProse()
                     HStack(spacing: 8) { Button(SetupCopy.bTryAgain) { send(.retrySavedPC) } }
                         .disabled(state.inFlight != nil)
+                    if BetaReport.cards(state).contains(.savedPC) { SendToDeveloperButton { send(.sendReport) } }
                     DisclosureGroup(SetupCopy.SavedPC.saveItYourself) {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(row.detail).setupProse()
@@ -462,6 +472,7 @@ struct SetupJourneyView: View {
                             Button(recovery.retry.title) { send(recovery.retry.command) }
                         }
                         Button("Report a Problem…") { send(.reportProblem) }
+                        if BetaReport.cards(state).contains(.connectRecovery) { SendToDeveloperButton { send(.sendReport) } }
                         if recovery.offersConsole { Button(SetupCopy.Connecting.bCloseSetup) { send(.closeForNow) } }
                     }
                 case .worked:

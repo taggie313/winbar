@@ -158,6 +158,34 @@ enum Diagnose {
     /// the menu bar app needs the file itself, to show it in the Finder. `progress` is called from
     /// whichever thread this is called on.
     static func gather(_ options: Options, progress: (Step) -> Void = { _ in }) -> Result<Written, WinbarError> {
+        let collected = collect(options, progress: progress)
+        let text = compose(collected, mode: options.mode)
+        let wanted = destination(out: options.out, desktop: desktop, fallback: home, now: collected.madeAt,
+                                 isDirectory: isDirectory, exists: { FileManager.default.fileExists(atPath: $0.path) })
+        return write(text, to: wanted).map {
+            Written(url: $0, wanted: wanted, bytes: text.utf8.count, mode: options.mode)
+        }
+    }
+
+    /// What the slow half of a report found: every section of the file, and the names the redactor
+    /// needs to take out. Nothing in it is redacted yet.
+    ///
+    /// Split from writing the file for the beta's **Send a Problem Report…** (`BetaReport`), which
+    /// gathers once — the minute or two of asking UTM and Windows — and then writes the same facts
+    /// with the note the person is still typing and the placeholders box as it stands when they
+    /// press Send. Asking UTM and Windows again for each of those would be minutes each time; and a
+    /// second copy of this function that only it used would be a second report that could drift.
+    struct Collected: Equatable {
+        var sections: [Section]
+        var identity: Redactor.Identity
+        /// When it was gathered, which the preamble says.
+        var madeAt: Date
+        var includeLogs: Bool
+    }
+
+    /// The slow half: the doctor table (bounded by `doctorTimeout`), the settings, the logs and the
+    /// crash reports. Reads only — its doctor run is read-only (`doctorOptions`).
+    static func collect(_ options: Options, progress: (Step) -> Void = { _ in }) -> Collected {
         let now = Date()
         progress(.doctor)
         let doctor = doctor(timeout: options.doctorTimeout)
@@ -177,18 +205,36 @@ enum Diagnose {
             },
             section(headings.crashes) { try crashLines(directory: crashDirectory, limit: options.crashReports) },
         ]
+        return Collected(sections: sections,
+                         identity: identity(doctor.context, otherSavedPCs: doctor.otherSavedPCs),
+                         madeAt: now, includeLogs: options.includeLogs)
+    }
 
-        let redactor = Redactor(mode: options.mode, identity: identity(doctor.context, otherSavedPCs: doctor.otherSavedPCs))
-        let report = Report(preamble: preamble(version: AppBundle.version, stamp: reportStamp.string(from: now),
-                                               redactor: redactor, includeLogs: options.includeLogs),
-                            sections: sections)
-        let text = report.text(redactor)
+    /// The file's text: the preamble, then `leading` — sections a front-end adds, first — then what
+    /// `collect` found, then `focus`, redacted once as a whole in `mode`. `leading` goes through the
+    /// same redactor as everything else for the reason `Report.text` gives: a section added later can
+    /// then never be the one that forgot. `forDeveloper` is the beta's copy, which says where it is
+    /// going instead of which issues page to attach it to.
+    ///
+    /// `focus` is the app's own record of what came to the front (`FocusLog`), read as the file is
+    /// written rather than gathered with the rest: it is memory, not a question for the Mac, and the
+    /// most recent change is the one worth having. Here, not in `collect`, so Report a Problem… and
+    /// Send a Problem Report… both carry it. Pure, given `focus`.
+    static func compose(_ collected: Collected, mode: Redactor.Mode, leading: [Section] = [],
+                        forDeveloper: Bool = false, version: String = AppBundle.version,
+                        focus: FocusLog.History = FocusLog.shared.history()) -> String {
+        let redactor = Redactor(mode: mode, identity: collected.identity)
+        let report = Report(preamble: preamble(version: version, stamp: reportStamp.string(from: collected.madeAt),
+                                               redactor: redactor, includeLogs: collected.includeLogs,
+                                               forDeveloper: forDeveloper),
+                            sections: leading + collected.sections + [FocusLog.section(focus)])
+        return report.text(redactor)
+    }
 
-        let wanted = destination(out: options.out, desktop: desktop, fallback: home, now: now,
-                                 isDirectory: isDirectory, exists: { FileManager.default.fileExists(atPath: $0.path) })
-        return write(text, to: wanted).map {
-            Written(url: $0, wanted: wanted, bytes: text.utf8.count, mode: redactor.mode)
-        }
+    /// One line redacted as the report made from `collected` in `mode` is: the beta report's title,
+    /// which leaves the Mac beside the file rather than in it. Pure.
+    static func redact(_ line: String, like collected: Collected, mode: Redactor.Mode) -> String {
+        Redactor(mode: mode, identity: collected.identity).apply(line)
     }
 
     static func run(_ options: Options) -> Int32 {

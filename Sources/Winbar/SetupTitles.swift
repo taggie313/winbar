@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // The Set Up Winbar window's headings: one page title per page, status lines where cards had titles,
@@ -21,6 +22,52 @@ struct SetupPageTitle: View {
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: SetupStyle.textWidth, alignment: .leading)
             .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// A page's title with Armie beside it, where `ArmieCue` has him: his figure in the column the title's
+/// measure leaves free at the trailing edge (`SetupStyle.contentWidth` less `textWidth`, 90 pt), centred
+/// on the title's first line, and what he says, if anything, in his bubble under the title, pointing up
+/// at him. The figure is an overlay: the title and everything under it stand where they would without
+/// him, so no content or button moves when he appears, changes pose or is hidden. Only his words take
+/// room, and only while he says something.
+struct SetupPageHead: View {
+    let title: String
+    var armie: ArmieCue? = nil
+    var art: ArmieArt? = nil
+    var send: (SetupCommand) -> Void = { _ in }
+
+    /// Astra's smaller reference size, which fits the free column with room either side.
+    static var figure: CGFloat { ArmieSays.small }
+
+    /// The height of the title's first line, which he stands centred on.
+    static let titleLine: CGFloat = {
+        let font = NSFont.systemFont(ofSize: SetupPageTitle.size, weight: .bold)
+        return (font.ascender - font.descender + font.leading).rounded(.up)
+    }()
+
+    /// How far he stands above and below the title's first line. The page keeps that much above its
+    /// title inside the scroll view (`SetupStyle.titleAbove`), so the scroll view never cuts him off,
+    /// and the gap under a title (16 pt) is more than it, so he never touches what follows.
+    static var overhang: CGFloat { max(0, (figure - titleLine) / 2) }
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 0) {
+            SetupPageTitle(title)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .overlay(alignment: .topTrailing) {
+                    if let armie, let art {
+                        ArmieFigure(art: art, pose: armie.pose, size: Self.figure)
+                            .offset(y: -Self.overhang)
+                    }
+                }
+            if let armie, art != nil, let line = armie.line {
+                // The tail's tip under his feet, its line through his middle.
+                ArmieBubble(line: line, tail: .top(fromTrailing: Self.figure / 2), send: send)
+                    .padding(.top, Self.overhang)
+                    .frame(maxWidth: SetupStyle.textWidth, alignment: .trailing)
+            }
+        }
     }
 }
 

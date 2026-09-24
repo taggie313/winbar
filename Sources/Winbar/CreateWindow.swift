@@ -150,6 +150,10 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
         window.delegate = self
         window.center()
         window.setFrameAutosaveName("winbar-create")
+        // The beta's Help!, as Set Up Winbar has it (`BetaReport.titlebarHelp`).
+        if let help = BetaReport.titlebarHelp(press: { BetaReportWindowController.present(.newWindowsVM) }) {
+            window.addTitlebarAccessoryViewController(help)
+        }
         self.window = window
         return window
     }
@@ -519,6 +523,7 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
         case .close: close()
         case .done: dismissJob()
         case .tryAgain: tryAgain()
+        case .sendReport: BetaReportWindowController.present(.newWindowsVM)
         }
     }
 
@@ -634,8 +639,8 @@ extension CreateFormFacts {
 struct CreateRootView: View {
     @ObservedObject var controller: CreateWindowController
     /// Lent by the Set Up Winbar window while these views are its step 2; nil in this window of its
-    /// own. Only the running install is given it: the form has a password field, and nothing cute
-    /// stands next to one (gui-wizard.md §2b).
+    /// own. He stands silent beside the form's title (its pages are questions, and one has the
+    /// password field) and narrates the install (`ArmieCue.form`, `ArmieCue.installing`).
     var armie: ArmieHost? = nil
 
     var body: some View {
@@ -643,7 +648,7 @@ struct CreateRootView: View {
             if controller.phase == .job, let job = controller.job {
                 CreateJobView(controller: controller, state: job, armie: armie)
             } else {
-                CreateFormView(controller: controller, model: controller.form)
+                CreateFormView(controller: controller, model: controller.form, armie: armie)
             }
         }
         .safeAreaInset(edge: .top) {
@@ -659,6 +664,8 @@ struct CreateRootView: View {
 struct CreateFormView: View {
     @ObservedObject var controller: CreateWindowController
     @ObservedObject var model: CreateFormModel
+    /// The wizard's Armie, while the form is its step 2 (`CreateRootView.armie`).
+    var armie: ArmieHost? = nil
     @State private var dropping = false
     @State private var showingPasswordNote = false
     @State private var showingAlwaysNote = false
@@ -675,7 +682,8 @@ struct CreateFormView: View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    SetupPageTitle(model.page.title)
+                    SetupPageHead(title: model.page.title, armie: armie.map { _ in ArmieCue.form }, art: armie?.art,
+                                  send: armie?.send ?? { _ in })
                     switch model.page {
                     case .windows: windowsPage
                     case .account: accountPage
@@ -684,7 +692,7 @@ struct CreateFormView: View {
                 }
                 .frame(maxWidth: SetupStyle.contentWidth, alignment: .leading)
                 .padding(.horizontal, SetupStyle.pagePadding)
-                .padding(.top, hosted ? 2 : SetupStyle.pagePadding)
+                .padding(.top, hosted ? SetupStyle.titleAbove : SetupStyle.pagePadding)
                 .padding(.bottom, SetupStyle.pagePadding)
                 .frame(maxWidth: .infinity)
             }

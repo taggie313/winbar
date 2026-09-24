@@ -512,8 +512,9 @@ struct ArmieLines {
             #expect(!line.trimmingCharacters(in: .whitespaces).isEmpty, "\(stage) has no line")
             #expect(seen.insert(line).inserted, "\(stage) repeats another stage's line")
         }
-        // One per install stage, plus UTM's install, the empty state, a VM starting and the end.
-        #expect(SetupCopy.Armie.Moment.all.count == CreateStage.allCases.count + 4)
+        // One per install stage, plus the welcome, UTM's install, the empty state, a VM starting,
+        // tuning and the end.
+        #expect(SetupCopy.Armie.Moment.all.count == CreateStage.allCases.count + 6)
         #expect(Set(SetupCopy.Armie.Moment.all).count == SetupCopy.Armie.Moment.all.count)
     }
 

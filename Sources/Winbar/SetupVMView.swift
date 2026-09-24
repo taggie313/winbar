@@ -9,9 +9,6 @@ import SwiftUI
 /// a column of equal buttons.
 struct SetupVMView: View {
     let state: SetupWindowState
-    /// Armie, when `ArmieCue.cue` puts him on this page: under the card and the wait he narrates.
-    var armie: ArmieCue? = nil
-    var art: ArmieArt? = nil
     let send: (SetupCommand) -> Void
     /// The palette's red: the system's measured 3.2:1 on the light backdrop.
     @Environment(\.errorText) private var errorText
@@ -20,7 +17,7 @@ struct SetupVMView: View {
     @Environment(\.quietText) private var quiet
 
     /// The page the card shows: the picker again after **Choose Another VM**, otherwise the step's
-    /// own screen. Shared with `ArmieCue`, so he is placed by the page that is drawn. Pure.
+    /// own screen. Shared with `ArmieCue`, so he stands by the page that is drawn. Pure.
     static func screen(_ state: SetupWindowState, _ facts: SetupFlow.Facts) -> SetupFlow.VMScreen {
         if state.choosingAnotherVM, case .listed(let list) = facts.vms {
             return .choose(SetupFlow.choice(in: list), previous: nil)
@@ -194,14 +191,10 @@ struct SetupVMView: View {
             if let flight = state.inFlight, !(SetupVMView.starting(state) && state.facts != nil) {
                 waiting(flight.line.map(SetupCopy.Working.windowLine) ?? "Asking UTM…")
             }
-            // After what he narrates — the empty card, or the start's own progress line — so he never
-            // stands between the person and the step's button or the line saying what's happening.
-            if let armie, let art {
-                ArmieSays(line: armie.line, art: art, clip: armie.clip, send: send)
-            }
             // While it still stands: a start that failed says nothing once the VM runs.
             if let problem = state.standingFailure {
                 Text(problem.description).foregroundStyle(errorText).textSelection(.enabled)
+                if BetaReport.cards(state).contains(.vmFailure) { SendToDeveloperButton { send(.sendReport) } }
             }
             ForEach(Array(state.installMessages.enumerated()), id: \.offset) { _, message in
                 SetupInstallNote(message: message, setupDisk: state.setupDisk, send: send)

@@ -9,9 +9,8 @@ import SwiftUI
 //
 // - `SetupWindowState` is everything the window draws, as a value, and the runner's events become
 //   new values of it through `applying(_:)`. Pure.
-// - `LookAroundPage` turns a state into step 1's rows, its card and its buttons, and `armieLine`
-//   says whether Armie is there and what he says. `VMPage` does the same for step 2. `ArmieCue`
-//   says where Armie stands on every page, step 1's through `armieLine`. Pure.
+// - `LookAroundPage` turns a state into step 1's rows, its card and its buttons. `VMPage` does the
+//   same for step 2. `ArmieCue` says how Armie stands and what he says on every page. Pure.
 // - Step 2's **Install Windows…** shows the New Windows VM views in the window, as the step's body
 //   (`CreateWindowController.embed(_:)`), until they hand back. There is still one create controller
 //   and one install: the wizard holds no second copy of either.
@@ -77,6 +76,13 @@ struct SetupWindowState: Equatable {
     var answers = SetupFlow.Answers()
     /// **Hide Armie** was pressed, now or on an earlier run.
     var armieHidden = false
+    /// The step Armie hops for (`ArmieCue`): set when a press's work, or Connect's **Yes**, turns the
+    /// step on screen done well where it wasn't (`noteHop`), and cleared by the next work that starts,
+    /// a move to another step, or the window coming back (`attached`). So the hop plays once for each
+    /// time a step is done: never for a read, pressed or not, since a read finds what was already so;
+    /// never for a snapshot's refresh; and never again on reopening, where it would celebrate
+    /// something done minutes ago.
+    var armieHop: WizardStep?
     /// Step 2's body is the New Windows VM views (§2.3 **Install Windows…**): from the press that put them
     /// there until they hand back (`CreateWindowController.EmbeddedEnd`). Set only by a press — **Make
     /// One**, **Install Windows in a New VM…**, **Show Install Progress** — never by a snapshot, so a snapshot read
@@ -136,6 +142,9 @@ struct SetupWindowState: Equatable {
         case .started(let flight), .refreshing(let flight):
             next.inFlight = flight
             next.refreshing = { if case .refreshing = event { return true }; return false }()
+            // New work, or a read somebody pressed or a step arrived at: the page is busy, and a hop
+            // is over. A read nobody pressed leaves him as he was, as it leaves the page's card.
+            if !next.refreshing { next.armieHop = nil }
             if flight.work == .trustCertificate {
                 // Retrying is a new choice, not "still skipped" if this attempt fails. Only an
                 // accepted job clears Skip; a refused button press preserves the user's choice.
@@ -197,9 +206,24 @@ struct SetupWindowState: Equatable {
            began > refusal.inFlight.started {
             next.refusal?.reasonPassed = true
         }
-        // A refusal is about the page it was pressed on.
-        if next.step != step { next.refusal = nil }
+        // A refusal is about the page it was pressed on, and so is a hop.
+        if next.step != step {
+            next.refusal = nil
+            next.armieHop = nil
+        }
+        // The press's own work having done the step on screen, and not a read's finding it done.
+        if case .ended(let ending) = event, ending.work.earnsHop, ending.outcome == .finished, ending.work.step == next.step {
+            next.noteHop(on: next.step, before: facts)
+        }
         return next
+    }
+
+    /// Marks `step` for Armie's hop when it is on screen and is now done well (`ArmieCue.doneWell`)
+    /// where `before` — the facts from before the press — wasn't. Pure.
+    mutating func noteHop(on step: WizardStep, before: SetupFlow.Facts?) {
+        guard step == self.step, let facts, ArmieCue.doneWell(step, facts),
+              !(before.map { ArmieCue.doneWell(step, $0) } ?? false) else { return }
+        armieHop = step
     }
 
     /// When the runner's work or read behind `event` began, having taken the app's gate: nil for an
@@ -314,6 +338,9 @@ struct SetupWindowState: Equatable {
             next = next.landing(latest)
             next.settleAfterInstall(readAt: latest.stamp?.taken)
         }
+        // Whatever was done before the window came back, an ending it only hears of now included, was
+        // done out of sight: Armie doesn't hop for it on reopening.
+        next.armieHop = nil
         return next
     }
 
@@ -426,6 +453,13 @@ extension SetupRunner.Work {
         default: return false
         }
     }
+
+    /// Whether this work, having finished, can earn Armie's hop (`SetupWindowState.noteHop`): not a
+    /// read, and not the survey either. The survey is work to the runner (it runs scripts in Windows
+    /// and holds the Mac awake), but to the person it is Tune's **Check Again**: it only asks Windows
+    /// how it's set up and changes nothing, so a survey that finds every setting right has found what
+    /// was already so, and celebrating it would be the hop for a read.
+    var earnsHop: Bool { !isRead && self != .survey }
 }
 
 // MARK: - When the window opens by itself, and what closing it means
@@ -747,17 +781,11 @@ enum LookAroundPage {
         return Row(mark: .attention, title: title, detail: c1.detail)
     }
 
-    /// What Armie says, or nil when he isn't there. He appears on one thing in steps 0 and 1: UTM's
-    /// install while it runs, which is minutes of nothing to do (§2b). Not on the welcome, which is a
-    /// decision; not on the Automation prompt or anything after it, which is a permission; not on an
-    /// update, where Homebrew quitting UTM can raise that same prompt in the middle; never once the
-    /// install has failed, since his line comes only from work in flight; and never once he's been
-    /// hidden. Pure.
-    static func armieLine(_ state: SetupWindowState) -> String? {
-        guard !state.armieHidden, state.step == .lookAround, state.inFlight?.work == .installUTM,
-              let facts = state.facts, utmPlan(facts)?.isUpdate != true else { return nil }
-        return SetupCopy.Armie.line(.installingUTM)
-    }
+    /// Whether the UTM the window would install is an update of a copy that's too old: Homebrew then
+    /// quits UTM, with an Apple Event that can raise the Automation prompt part way, and may raise App
+    /// Management and Gatekeeper's after it, so Armie stands still and says nothing through it
+    /// (`ArmieCue`). Pure.
+    static func installsUpdate(_ facts: SetupFlow.Facts) -> Bool { utmPlan(facts)?.isUpdate == true }
 
     /// A card's words, in `CardText`'s order, for every card that is only words; nil for no card, and
     /// for the install and its failure, which draw its progress and output too. The heading is the
@@ -802,101 +830,6 @@ enum LookAroundPage {
     }
 }
 
-// MARK: - Where Armie is, and what he says there
-
-/// Armie on one screen: the line he says and the clip he says it with. Every placement is decided
-/// here, from the state the screen is drawn from, through `SetupCopy.Armie`'s helpers, so §2b's
-/// rules are kept in one place rather than once per view. Pure.
-struct ArmieCue: Equatable {
-    var line: String
-    var clip: ArmieArt.Clip
-
-    /// Where he is on the window's own pages, or nil where he isn't:
-    ///
-    /// - Step 1, UTM's install (`LookAroundPage.armieLine`, which says why nowhere else there).
-    /// - Step 2, the empty state before any VM exists, and the wait after **Start It**.
-    /// - The done screen, after Connect was answered **Yes**, with the done clip.
-    ///
-    /// Nowhere else. The welcome is a decision; tune, the certificate, the saved PC and Connect each
-    /// have a permission, a password field or a question on them; and the install's own views are
-    /// `installing(_:)`'s. Hide Armie ends all of them, for good.
-    static func cue(_ state: SetupWindowState) -> ArmieCue? {
-        guard !state.armieHidden else { return nil }
-        switch state.step {
-        case .lookAround: return LookAroundPage.armieLine(state).map { ArmieCue(line: $0, clip: .working) }
-        case .vm: return vm(state)
-        case .finish: return done(state)
-        case .welcome, .tune, .certificate, .savedPC, .connect: return nil
-        }
-    }
-
-    /// Step 2's two moments with nothing to do. Only on the step's own page — not "Looking at the new
-    /// VM…" after an install, not while the install's views are the step — and only while that page
-    /// shows no problem: a failed piece of work's line, or install notes that would have silenced him
-    /// during the install (`SetupCopy.Armie.silences`). Step 2 shows those notes in full, as cards,
-    /// so a note that ended his narration of the install ends it here too.
-    private static func vm(_ state: SetupWindowState) -> ArmieCue? {
-        guard !state.creating, state.afterInstall == nil, let facts = state.facts,
-              !state.installMessages.contains(where: { SetupCopy.Armie.silences($0.code) }) else { return nil }
-        if case .failed? = state.lastEnding?.outcome { return nil }
-        if let flight = state.inFlight, case .startVM = flight.work {
-            // `Setup.waitForWindows` says `agentNotYet` when its three minutes run out, and says nothing
-            // after it; the window keeps the run's lines, so either place can hold it — the flight's
-            // newest line, or the kept lines of a window that was reopened part way.
-            let timedOut = flight.line == SetupCopy.agentNotYet || state.lines.contains(SetupCopy.agentNotYet)
-            return SetupCopy.Armie.startingLine(timedOut: timedOut).map { ArmieCue(line: $0, clip: .working) }
-        }
-        // A read (Check Again) keeps him: it changes nothing, and a figure that blinked out on every
-        // read would be animating for the sake of it. Any other work is not the empty state's.
-        if let flight = state.inFlight, !flight.work.isRead { return nil }
-        // "No Windows here yet" is the empty state before a VM exists. With `previous` set, one did:
-        // UTM no longer has the VM Winbar was looking after, which is news, not dead time.
-        guard case .choose(.none, previous: nil) = SetupVMView.screen(state, facts) else { return nil }
-        return ArmieCue(line: SetupCopy.Armie.line(.noVM), clip: .working)
-    }
-
-    /// The done screen. Only once the window is finished and Connect was answered **Yes**
-    /// (`doneLine(connected:)`), and not beside a failure or an overtaken piece of work still on
-    /// screen above it — Keep the Screen after a failed Run in the Background finishes without new work, so
-    /// that failure's card stays up. Not held to reads in flight: one can start on this screen by
-    /// itself (a wake), and removing him for it would replay the hop when it ended.
-    private static func done(_ state: SetupWindowState) -> ArmieCue? {
-        guard state.finished, let facts = state.facts else { return nil }
-        switch state.lastEnding?.outcome {
-        case .failed?, .overtaken?: return nil
-        case .finished?, .cancelled?, nil: break
-        }
-        return SetupCopy.Armie.doneLine(connected: facts.answers.connected).map { ArmieCue(line: $0, clip: .done) }
-    }
-
-    /// The install's own views while they are step 2 (`ArmieHost`): the stage's line while the install
-    /// is going well (`SetupCopy.Armie.line(for:)`, nil for a failure, a stall or a note that silences
-    /// him). Also nil while macOS asks whether Winbar may control UTM, which the job says in the
-    /// running row: that is a permission, and he isn't beside one (step 1 keeps him off the same
-    /// prompt). Pure.
-    static func installing(_ job: CreateJobState) -> ArmieCue? {
-        guard CreateProgress.detail(job.detail) != CreateCopy.pAutomation else { return nil }
-        return SetupCopy.Armie.line(for: job).map { ArmieCue(line: $0, clip: .working) }
-    }
-}
-
-/// What the wizard lends the New Windows VM views while they are its step 2, so Armie can narrate
-/// the install there: his art, and the window's `send`, so **Hide Armie** is the wizard's own and is
-/// remembered. The views belong to `CreateWindowController`, which knows nothing of the wizard's
-/// settings, so this is the only way he reaches them — and the New Windows VM window of their own is
-/// never lent one.
-struct ArmieHost {
-    let art: ArmieArt
-    let send: (SetupCommand) -> Void
-
-    /// The host for a window drawn from `state`, or nil when he's been hidden or the bundle has no
-    /// art for him. Pure.
-    static func lent(_ state: SetupWindowState, art: ArmieArt?, send: @escaping (SetupCommand) -> Void) -> ArmieHost? {
-        guard !state.armieHidden, let art else { return nil }
-        return ArmieHost(art: art, send: send)
-    }
-}
-
 // MARK: - What a press asks for
 
 /// Everything a view can ask the window to do.
@@ -934,6 +867,9 @@ enum SetupCommand: Equatable {
     /// own screen to sign in on (`SetupPlace`).
     case open(SetupPlace)
     case reportProblem
+    /// The beta's **Help!** in the title bar, and **Send This to the Developer** on a failure card: the
+    /// Send a Problem Report… dialog, with this window's step and last failure in it (`BetaReport`).
+    case sendReport
     case finish
     /// The placeholder's **Close**: this build's window has done what it can.
     case closeForNow
@@ -1050,6 +986,9 @@ final class SetupWindowController: NSObject, ObservableObject, NSWindowDelegate 
     /// Runs a closure after a delay, on the main queue: `DispatchQueue.main.asyncAfter` in the app. A
     /// test hands in its own, which keeps the closure to call when it chooses.
     private let later: (TimeInterval, @escaping () -> Void) -> Void
+    /// Opens the beta's Send a Problem Report… dialog (`BetaReport`), which reads this window's state
+    /// as it opens. A test hands in its own, which opens nothing.
+    private let sendReport: () -> Void
     /// The look on coming back that is waiting for its moment (`windowDidBecomeKey`), by a token of
     /// its own, so a press, a click or a key since can call it off or put it back.
     private var returnLook: UUID?
@@ -1075,7 +1014,8 @@ final class SetupWindowController: NSObject, ObservableObject, NSWindowDelegate 
          retryWindowsAppReads: @escaping () -> Void = WindowsAppBookmarks.retryReadCommands,
          later: @escaping (TimeInterval, @escaping () -> Void) -> Void = { delay, body in
              DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: body)
-         }) {
+         },
+         sendReport: @escaping () -> Void = { BetaReportWindowController.present(.setUpWinbar) }) {
         var state = state
         state.armieHidden = state.armieHidden || settings.armieHidden()
         self.state = state
@@ -1089,6 +1029,7 @@ final class SetupWindowController: NSObject, ObservableObject, NSWindowDelegate 
         self.quitWindowsApp = quitWindowsApp
         self.retryWindowsAppReads = retryWindowsAppReads
         self.later = later
+        self.sendReport = sendReport
         super.init()
     }
 
@@ -1113,12 +1054,10 @@ final class SetupWindowController: NSObject, ObservableObject, NSWindowDelegate 
         if state.step >= .lookAround, state.facts == nil, state.inFlight == nil { readByItself(.checkAgain(.lookAround)) }
     }
 
-    private func existingWindow() -> NSWindow {
-        if let window { return window }
-        let content = NSHostingController(rootView: SetupRootView(controller: self))
-        // The window owns its size, not SwiftUI; the layout is drawn for 600 pt and scrolls below it.
-        content.sizingOptions = []
-        let window = SetupNSWindow(contentViewController: content)
+    /// The window's title, frame and first size. Its own function so the layout check that holds
+    /// Armie clear of **Help!** in the title bar measures the window people get, in one that is
+    /// never put on screen.
+    static func shape(_ window: NSWindow) {
         window.title = SetupCopy.winTitle
         // The backdrop runs under the title bar, as Windows 11's Mica does and as plenty of Mac apps'
         // unified title bars do; the traffic lights and the title stay where they always are, so
@@ -1127,10 +1066,23 @@ final class SetupWindowController: NSObject, ObservableObject, NSWindowDelegate 
         window.titlebarAppearsTransparent = true
         window.setContentSize(NSSize(width: 600, height: 620))
         window.contentMinSize = NSSize(width: 600, height: 420)
+    }
+
+    private func existingWindow() -> NSWindow {
+        if let window { return window }
+        let content = NSHostingController(rootView: SetupRootView(controller: self))
+        // The window owns its size, not SwiftUI; the layout is drawn for 600 pt and scrolls below it.
+        content.sizingOptions = []
+        let window = SetupNSWindow(contentViewController: content)
+        Self.shape(window)
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.center()
         window.setFrameAutosaveName("winbar-setup")
+        // The beta's Help!, on every page: the title bar is the one place every page has.
+        if let help = BetaReport.titlebarHelp(press: { [weak self] in self?.send(.sendReport) }) {
+            window.addTitlebarAccessoryViewController(help)
+        }
         self.window = window
         return window
     }
@@ -1324,11 +1276,14 @@ final class SetupWindowController: NSObject, ObservableObject, NSWindowDelegate 
     func send(_ command: SetupCommand) {
         // Whatever was pressed, it came first: a look still waiting for its moment isn't taken.
         returnLook = nil
+        // A hop is for the page it was earned on: Back, Continue or a revisit leaves it behind.
+        let stepBefore = state.step
+        defer { if state.step != stepBefore { state.armieHop = nil } }
         // And the person has moved on from the press that was refused: a new press says its own, if
-        // it is refused too (`run`). Not for ticking a VM in the list or hiding Armie, which answer
-        // nothing the refusal said.
+        // it is refused too (`run`). Not for ticking a VM in the list, hiding Armie or asking for help,
+        // which answer nothing the refusal said.
         switch command {
-        case .pickVM, .hideArmie: break
+        case .pickVM, .hideArmie, .sendReport: break
         default: state.refusal = nil
         }
         switch command {
@@ -1457,9 +1412,12 @@ final class SetupWindowController: NSObject, ObservableObject, NSWindowDelegate 
             send(.next)
         case .connected(let yes):
             guard state.answers.connectionOpened else { return }
+            let before = state.facts
             state.answers.connected = yes
             if yes { state.reconnectAfterRestart = false }
             syncAnswers()
+            // Yes is what Connect is for, and the one step done by an answer rather than work.
+            if yes { state.noteHop(on: .connect, before: before) }
             // A desktop seen through the saved PC's own tile is evidence it's saved, which Windows
             // App's command line may never give (C2, `Recipe.unansweredSavedPCStatus`).
             if let facts = state.facts { settings.rememberConnect(yes, facts) }
@@ -1482,9 +1440,16 @@ final class SetupWindowController: NSObject, ObservableObject, NSWindowDelegate 
             // (`AppWorkGate.Owner.report`); the menu's own says if it's busy. It did nothing, and said
             // nothing, while anything ran.
             (NSApp.delegate as? AppDelegate)?.reportProblem()
+        case .sendReport:
+            // Allowed whatever runs, as Report a Problem… is: the report only reads, and the dialog
+            // gathers it under the app's report lease, which refuses nothing.
+            sendReport()
         case .finish:
             guard state.inFlight == nil, let facts = state.facts, SetupFlow.isSatisfied(.finish, facts) else { return }
             state.finished = true
+            // The finished page is arrived at by this press, not by work: its hop is earned here, once
+            // (`ArmieCue`), and a reopened window, or a pose that came and went, doesn't earn it again.
+            state.armieHop = .finish
             settings.markShown()
         case .closeForNow:
             settings.markShown()
@@ -1672,7 +1637,7 @@ struct SetupScreen: View {
                         .frame(maxWidth: SetupStyle.contentWidth)
                         .padding(.horizontal, SetupStyle.pagePadding)
                         .padding(.top, 10)
-                        .padding(.bottom, 16)
+                        .padding(.bottom, SetupStyle.headerBelow)
                 }
                 if state.creating, let embedded {
                     embedded(ArmieHost.lent(state, art: art, send: send))
@@ -1680,12 +1645,16 @@ struct SetupScreen: View {
                     GeometryReader { viewport in
                         ScrollView {
                             VStack(alignment: .leading, spacing: 16) {
-                                if let title = SetupScreen.pageTitle(state) { SetupPageTitle(title) }
+                                // Armie beside the title, where `ArmieCue` has him there: every page but
+                                // the two arrivals, which draw him larger themselves.
+                                if let title = SetupScreen.pageTitle(state) {
+                                    SetupPageHead(title: title, armie: SetupScreen.besideTitle(state), art: art, send: send)
+                                }
                                 content
                             }
                             .frame(maxWidth: SetupStyle.contentWidth, alignment: .leading)
                             .padding(.horizontal, SetupStyle.pagePadding)
-                            .padding(.top, 2)
+                            .padding(.top, SetupStyle.titleAbove)
                             .padding(.bottom, SetupStyle.pagePadding)
                             // The welcome and the finished page sit in the middle of the page rather than on
                             // top of an empty half: both are an arrival, not a form.
@@ -1736,18 +1705,27 @@ struct SetupScreen: View {
         }
     }
 
+    /// Armie beside the page's title (`SetupPageHead`): `ArmieCue`'s, on every page with a title of
+    /// its own, which is every page but the welcome and the finished page, whose arrivals draw him
+    /// larger (`WelcomeView`, `FinishArrival`). Pure.
+    static func besideTitle(_ state: SetupWindowState) -> ArmieCue? {
+        guard pageTitle(state) != nil else { return nil }
+        return ArmieCue.cue(state)
+    }
+
     @ViewBuilder private var content: some View {
         switch state.step {
         case .welcome:
-            WelcomeView(paragraphs: SetupCopy.Welcome.body(lastBuilt: SetupWindowState.lastBuilt))
+            WelcomeView(paragraphs: SetupCopy.Welcome.body(lastBuilt: SetupWindowState.lastBuilt),
+                        armie: ArmieCue.cue(state), art: art, send: send)
         case .lookAround:
-            LookAroundView(page: LookAroundPage.page(state), armie: ArmieCue.cue(state)?.line, art: art,
-                           refusal: state.refusal, busy: state.inFlight, send: send)
+            LookAroundView(page: LookAroundPage.page(state), refusal: state.refusal, busy: state.inFlight,
+                           offersReport: BetaReport.cards(state).contains(.lookAround), send: send)
         case .vm:
-            SetupVMView(state: state, armie: ArmieCue.cue(state), art: art, send: send)
+            SetupVMView(state: state, send: send)
         case .tune, .certificate, .savedPC, .connect, .finish:
             SetupJourneyView(state: state, credentials: credentials, savePassword: savePassword,
-                             armie: ArmieCue.cue(state), art: art, send: send)
+                             armie: state.finished ? ArmieCue.cue(state) : nil, art: art, send: send)
         }
     }
 }
@@ -1955,9 +1933,14 @@ struct HoverText: NSViewRepresentable {
 
 /// The welcome, composed as Apple's setup assistants open: Winbar's mark, a title, one sentence of
 /// what Winbar is, then what this window does, how long it takes and what macOS may ask, one line each.
+/// Where Armie is (`ArmieCue`), he is the mark, at his larger size, introducing himself: he is the app's
+/// icon already, and every page after this one has him on it. Hidden, the mark is Winbar's four panes.
 struct WelcomeView: View {
     /// What the welcome promises: `SetupCopy.Welcome.body(lastBuilt:)`.
     let paragraphs: [String]
+    var armie: ArmieCue? = nil
+    var art: ArmieArt? = nil
+    var send: (SetupCommand) -> Void = { _ in }
 
     /// The welcome's title: larger than a page's (`SetupPageTitle.size`), as a cover's is, and about
     /// the 28 pt the review asked for.
@@ -1967,8 +1950,15 @@ struct WelcomeView: View {
         withSetupAppearance { look in
             VStack(spacing: 28) {
                 VStack(spacing: 12) {
-                    WinbarMark(size: 64)
-                        .padding(.bottom, 4)
+                    if let armie, let art {
+                        ArmieSays(cue: armie, art: art, size: ArmieSays.hero, send: send)
+                            // Read after the welcome's own words: they say what this is, and he only
+                            // says who he is.
+                            .accessibilitySortPriority(-1)
+                    } else {
+                        WinbarMark(size: 64)
+                            .padding(.bottom, 4)
+                    }
                     Text(SetupCopy.Welcome.title)
                         .font(.system(size: Self.titleSize, weight: .bold))
                         .multilineTextAlignment(.center)
@@ -1997,6 +1987,7 @@ struct WelcomeView: View {
                     }
                 }
             }
+            .accessibilityElement(children: .contain)
         }
     }
 }
@@ -2005,11 +1996,12 @@ struct WelcomeView: View {
 
 struct LookAroundView: View {
     let page: LookAroundPage.Page
-    let armie: String?
-    let art: ArmieArt?
     let refusal: SetupRunner.Refusal?
     /// What runs now, for the refusal's words: still going, or done (`SetupCopy.Working.refused`).
     var busy: SetupRunner.InFlight? = nil
+    /// The card is a failure's, and the beta is on: **Send This to the Developer** at its foot
+    /// (`BetaReport.cards`). Step 1's own buttons are the footer's, so it has the card to itself.
+    var offersReport = false
     let send: (SetupCommand) -> Void
 
     var body: some View {
@@ -2059,6 +2051,7 @@ struct LookAroundView: View {
                     }
                 }
             }
+            if offersReport { SendToDeveloperButton { send(.sendReport) } }
         }
     }
 
@@ -2066,18 +2059,14 @@ struct LookAroundView: View {
     @ViewBuilder private var drawnCard: some View {
         switch page.card {
         case .installing(let lines, let update, let download):
-            // What is happening — the bar and one line saying it in words — and Armie under it, so he
-            // never pushes the line off the page. Homebrew's own output is folded away: in monospace, on
-            // screen for the whole of a healthy install, it read as something gone wrong.
+            // What is happening — the bar and one line saying it in words; Armie narrates it beside the
+            // page's title. Homebrew's own output is folded away: in monospace, on screen for the whole
+            // of a healthy install, it read as something gone wrong.
             VStack(alignment: .leading, spacing: 12) {
                 InstallProgress(download: download,
                                 status: SetupCopy.LookAround.progress(lines.last, download: download, update: update))
                 if !lines.isEmpty {
                     DetailsDisclosure { OutputBox(lines: lines, rows: OutputBox.liveRows) }
-                }
-                if let armie, let art {
-                    Divider()
-                    ArmieSays(line: armie, art: art, clip: .working, send: send)
                 }
             }
         case .installFailed(let problem, let lines, let slept):
@@ -2223,57 +2212,74 @@ struct InstallProgress: View {
     }
 }
 
-/// Armie and what he says: one component for every placement, so the done screen can't grow a second
-/// Armie that drifts from this one; `clip` is the only thing a placement changes about him. His figure,
-/// and his line in a speech bubble pointing at him, so the words read as his rather than the window's;
-/// his name over it in the muted grey, semibold; and a small ✕ in the bubble's corner that retires
-/// him for good (no "are you sure": he goes quietly). The accent is for what can be pressed, and his
-/// name and "Hide Armie" were both in it, so both read as links.
-///
-/// Placed directly under what he narrates, never between the person and the step's button or the
-/// line saying what's happening (`ArmieCue`).
+/// Armie with what he says beside him: his figure, and his line, if `ArmieCue` gives him one, in his
+/// bubble (`ArmieBubble`) to the right of it — the arrivals' larger Armie, on the welcome and the
+/// finished page (`hero`). Beside a page's title he is `SetupPageHead`'s instead, with the same bubble
+/// under the title; the finished page draws his figure in its mark (`FinishMark`), with its tick or
+/// triangle on his corner.
 struct ArmieSays: View {
-    let line: String
+    let cue: ArmieCue
     let art: ArmieArt
-    /// The working loop beside a wait, or the done hop, which plays once and holds its last pose
-    /// (`ArmieLoop` never restarts the same movie when the view is drawn again).
-    let clip: ArmieArt.Clip
+    var size: CGFloat = ArmieSays.small
     let send: (SetupCommand) -> Void
 
-    /// The figure's frame, and the ✕'s target: 24 pt square, as Apple asks of the smallest control a
-    /// pointer should find, though the ✕ drawn in it is 9 pt. "Hide Armie" was a 10 pt text link about
-    /// 13 pt tall.
-    static let figure: CGFloat = 56
+    /// Astra's two reference sizes: beside a title, and on an arrival.
+    static let small: CGFloat = 56
+    static let hero: CGFloat = 96
+    /// The ✕'s target: 24 pt square, as Apple asks of the smallest control a pointer should find,
+    /// though the ✕ drawn in it is 9 pt. "Hide Armie" was a 10 pt text link about 13 pt tall.
     static let hideTarget: CGFloat = 24
+    /// An arrival's bubble: one or two lines beside him, never a paragraph across the page.
+    static let heroBubble: CGFloat = 300
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 6) {
+            ArmieFigure(art: art, pose: cue.pose, size: size)
+            if let line = cue.line {
+                ArmieBubble(line: line, tail: .leading, send: send)
+                    .frame(maxWidth: Self.heroBubble, alignment: .leading)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// What Armie says, in a speech bubble pointing at him, so the words read as his rather than as the
+/// window's; his name over it in the muted grey, semibold; and a small ✕ in its corner that retires
+/// him for good (no "are you sure": he goes quietly). The accent is for what can be pressed, and his
+/// name and "Hide Armie" were both in it, so both read as links. One bubble for every placement, so
+/// no page grows one that drifts from the others.
+///
+/// VoiceOver reads his name and line once, as one element, where the bubble is in the page; nothing
+/// announces it as it comes or goes, since it is never news (`SetupAnnouncement` says what is).
+struct ArmieBubble: View {
+    let line: String
+    var tail: SpeechBubble.Tail = .leading
+    let send: (SetupCommand) -> Void
 
     var body: some View {
         withSetupAppearance { look in
-            HStack(alignment: .top, spacing: 6) {
-                ArmieFigure(art: art, loop: art.url(clip), size: Self.figure)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(SetupCopy.Armie.name)
-                        .font(.system(size: SetupStyle.smallestText, weight: .semibold))
-                        .foregroundStyle(look.mutedText)
-                    Text(line).fixedSize(horizontal: false, vertical: true)
-                }
-                .accessibilityElement(children: .combine)
-                .padding(.leading, 12 + SpeechBubble.tail)
-                .padding(.trailing, Self.hideTarget + 2)
-                .padding(.vertical, 9)
-                .background {
-                    let bubble = SpeechBubble(tailY: Self.figure / 2)
-                    ZStack {
-                        bubble.fill(look.palette.card.color)
-                        bubble.fill(Color.primary.opacity(look.increasedContrast ? 0 : 0.03))
-                    }
-                    .overlay(bubble.stroke(look.increasedContrast ? Color.primary.opacity(0.6) : look.stroke,
-                                           lineWidth: look.increasedContrast ? 1.5 : 1))
-                }
-                .overlay(alignment: .topTrailing) { ArmieHideButton(send: send).padding(2) }
-                // The bubble fits his line, up to the prose measure, as a speech bubble does.
-                .frame(maxWidth: SetupStyle.textWidth, alignment: .leading)
-                Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(SetupCopy.Armie.name)
+                    .font(.system(size: SetupStyle.smallestText, weight: .semibold))
+                    .foregroundStyle(look.mutedText)
+                Text(line).fixedSize(horizontal: false, vertical: true)
             }
+            .accessibilityElement(children: .combine)
+            .padding(.leading, 12 + (tail == .leading ? SpeechBubble.tail : 0))
+            .padding(.trailing, ArmieSays.hideTarget + 2)
+            .padding(.top, 9 + tail.above)
+            .padding(.bottom, 9)
+            .background {
+                let bubble = SpeechBubble(tail: tail)
+                ZStack {
+                    bubble.fill(look.palette.card.color)
+                    bubble.fill(Color.primary.opacity(look.increasedContrast ? 0 : 0.03))
+                }
+                .overlay(bubble.stroke(look.increasedContrast ? Color.primary.opacity(0.6) : look.stroke,
+                                       lineWidth: look.increasedContrast ? 1.5 : 1))
+            }
+            .overlay(alignment: .topTrailing) { ArmieHideButton(send: send).padding(2).padding(.top, tail.above) }
             .accessibilityElement(children: .contain)
         }
     }
@@ -2300,29 +2306,57 @@ struct ArmieHideButton: View {
     }
 }
 
-/// A speech bubble: the window's card shape with a tail on its leading edge, pointing at whoever
-/// speaks, `tailY` down from its top (clamped clear of the corners on a short bubble).
+/// A speech bubble: the window's card shape with a tail pointing at whoever speaks — from its leading
+/// edge, halfway down, at an Armie beside it; or from its top edge, `fromTrailing` in from its
+/// trailing edge, at an Armie above it (beside a page's title). The tail is kept clear of the corners
+/// on a short or narrow bubble.
 struct SpeechBubble: Shape {
+    enum Tail: Equatable {
+        case leading
+        case top(fromTrailing: CGFloat)
+
+        /// The room the tail takes above the bubble's body.
+        var above: CGFloat { if case .top = self { return SpeechBubble.tail }; return 0 }
+    }
+
     static let tail: CGFloat = 7
-    var tailY: CGFloat
+    var tail: Tail = .leading
     var radius: CGFloat = 10
 
     func path(in rect: CGRect) -> Path {
-        let body = CGRect(x: rect.minX + Self.tail, y: rect.minY, width: max(0, rect.width - Self.tail), height: rect.height)
-        let r = min(radius, body.height / 2, body.width / 2)
         let half: CGFloat = 6
-        let y = min(max(rect.minY + tailY, body.minY + r + half), body.maxY - r - half)
-        var path = Path()
-        path.move(to: CGPoint(x: body.minX + r, y: body.minY))
-        path.addArc(tangent1End: CGPoint(x: body.maxX, y: body.minY), tangent2End: CGPoint(x: body.maxX, y: body.maxY), radius: r)
-        path.addArc(tangent1End: CGPoint(x: body.maxX, y: body.maxY), tangent2End: CGPoint(x: body.minX, y: body.maxY), radius: r)
-        path.addArc(tangent1End: CGPoint(x: body.minX, y: body.maxY), tangent2End: CGPoint(x: body.minX, y: body.minY), radius: r)
-        path.addLine(to: CGPoint(x: body.minX, y: y + half))
-        path.addLine(to: CGPoint(x: rect.minX, y: y))
-        path.addLine(to: CGPoint(x: body.minX, y: y - half))
-        path.addArc(tangent1End: CGPoint(x: body.minX, y: body.minY), tangent2End: CGPoint(x: body.maxX, y: body.minY), radius: r)
-        path.closeSubpath()
-        return path
+        switch tail {
+        case .leading:
+            let body = CGRect(x: rect.minX + Self.tail, y: rect.minY, width: max(0, rect.width - Self.tail), height: rect.height)
+            let r = min(radius, body.height / 2, body.width / 2)
+            let y = min(max(body.midY, body.minY + r + half), body.maxY - r - half)
+            var path = Path()
+            path.move(to: CGPoint(x: body.minX + r, y: body.minY))
+            path.addArc(tangent1End: CGPoint(x: body.maxX, y: body.minY), tangent2End: CGPoint(x: body.maxX, y: body.maxY), radius: r)
+            path.addArc(tangent1End: CGPoint(x: body.maxX, y: body.maxY), tangent2End: CGPoint(x: body.minX, y: body.maxY), radius: r)
+            path.addArc(tangent1End: CGPoint(x: body.minX, y: body.maxY), tangent2End: CGPoint(x: body.minX, y: body.minY), radius: r)
+            path.addLine(to: CGPoint(x: body.minX, y: y + half))
+            path.addLine(to: CGPoint(x: rect.minX, y: y))
+            path.addLine(to: CGPoint(x: body.minX, y: y - half))
+            path.addArc(tangent1End: CGPoint(x: body.minX, y: body.minY), tangent2End: CGPoint(x: body.maxX, y: body.minY), radius: r)
+            path.closeSubpath()
+            return path
+        case .top(let fromTrailing):
+            let body = CGRect(x: rect.minX, y: rect.minY + Self.tail, width: rect.width, height: max(0, rect.height - Self.tail))
+            let r = min(radius, body.height / 2, body.width / 2)
+            let x = min(max(body.maxX - fromTrailing, body.minX + r + half), body.maxX - r - half)
+            var path = Path()
+            path.move(to: CGPoint(x: body.minX + r, y: body.minY))
+            path.addLine(to: CGPoint(x: x - half, y: body.minY))
+            path.addLine(to: CGPoint(x: x, y: rect.minY))
+            path.addLine(to: CGPoint(x: x + half, y: body.minY))
+            path.addArc(tangent1End: CGPoint(x: body.maxX, y: body.minY), tangent2End: CGPoint(x: body.maxX, y: body.maxY), radius: r)
+            path.addArc(tangent1End: CGPoint(x: body.maxX, y: body.maxY), tangent2End: CGPoint(x: body.minX, y: body.maxY), radius: r)
+            path.addArc(tangent1End: CGPoint(x: body.minX, y: body.maxY), tangent2End: CGPoint(x: body.minX, y: body.minY), radius: r)
+            path.addArc(tangent1End: CGPoint(x: body.minX, y: body.minY), tangent2End: CGPoint(x: body.maxX, y: body.minY), radius: r)
+            path.closeSubpath()
+            return path
+        }
     }
 }
 

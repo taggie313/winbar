@@ -67,9 +67,16 @@ enum AppPresence {
         // Only the app itself: under `swift test` the windows are offscreen fixtures, and flipping the
         // test runner into a Dock app would be a side effect of drawing them.
         guard isTheApp else { return }
-        let open = NSApp.windows.contains { $0 !== closing && counts($0) }
-        let wanted = policy(windowsOpen: open, modalUp: modalDepth > 0)
-        guard NSApp.activationPolicy() != wanted else { return }
+        let open = NSApp.windows.filter { $0 !== closing && counts($0) }
+        let wanted = policy(windowsOpen: !open.isEmpty, modalUp: modalDepth > 0)
+        let current = NSApp.activationPolicy()
+        guard current != wanted else { return }
+        // Before the change: going to the menu bar can hand the keyboard to another app at once, and
+        // a report of focus jumping away should read this first (`FocusLog`).
+        FocusLog.shared.note(.policyChanged(from: current, to: wanted,
+                                            why: FocusLog.why(open: open.map(\.title), closing: closing?.title,
+                                                              alertsUp: modalDepth),
+                                            activates: wanted == .regular))
         NSApp.setActivationPolicy(wanted)
         if wanted == .regular { NSApp.activate() }
     }
@@ -96,7 +103,7 @@ enum AppPresence {
     /// nothing in a text field — AppKit routes them through the main menu's items — so a password or
     /// product key couldn't be pasted into the wizard or the New Windows VM form. The menu bar only
     /// shows these while Winbar is a regular app; the key equivalents work whenever it is active.
-    @MainActor static func mainMenu(appName: String = "Winbar") -> NSMenu {
+    @MainActor static func mainMenu(appName: String = "Winbar", betaReport: Bool = BetaReport.enabled) -> NSMenu {
         let main = NSMenu()
 
         let app = NSMenu(title: appName)
@@ -144,6 +151,11 @@ enum AppPresence {
         // Sent up the responder chain to the app's delegate, which is where the status menu's own
         // Report a Problem… goes: one report, one dialog, whichever menu it was chosen from.
         help.addItem(withTitle: Diagnose.Copy.menuItem, action: #selector(AppDelegate.reportProblem), keyEquivalent: "")
+        // The beta's, beside it and the same way: see `BetaReport`.
+        if betaReport {
+            help.addItem(withTitle: BetaReport.Copy.menuItem, action: #selector(AppDelegate.sendProblemReport),
+                         keyEquivalent: "")
+        }
         main.addItem(submenu(help, title: "Help"))
         NSApplication.shared.helpMenu = help
         return main

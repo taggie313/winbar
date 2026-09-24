@@ -66,15 +66,16 @@ struct CreateInstallPageTests {
         #expect(stage.frame.height < 16, "\(stage)")
     }
 
-    /// The page title is a heading (SetupPageTitle's own trait, `SetupHeadingTests`), and the status
-    /// line under it, or the headline in the window of its own, is one too.
+    /// The page title is a heading (SetupPageTitle's own trait, `SetupHeadingTests`, drawn by the
+    /// SetupPageHead that stands Armie beside it), and the status line under it, or the headline in
+    /// the window of its own, is one too.
     @Test("The install's title and its line are headings to VoiceOver")
     func voiceOver() {
         let heading = traitBit(.isHeader)
         for (name, job, title, _) in InstallStates.all {
             let hosted = resolvedDump(JobHeading(heading: CreateJobView.heading(job, hosted: true), hosted: true).body)
             // A dump escapes an apostrophe.
-            #expect(hosted.contains("SetupPageTitle") && hosted.contains(title.replacingOccurrences(of: "'", with: "\\'")),
+            #expect(hosted.contains("SetupPageHead") && hosted.contains(title.replacingOccurrences(of: "'", with: "\\'")),
                     "\(name)")
             let own = resolvedDump(JobHeading(heading: CreateJobView.heading(job, hosted: false), hosted: false).body)
             #expect(traitValues(own).contains { $0 & heading != 0 }, "\(name): \(traitValues(own))")

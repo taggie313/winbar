@@ -33,6 +33,12 @@ enum SetupStyle {
     static let smallestText: CGFloat = 12
     /// A `.large` push button's height on macOS: the footer band keeps it with nothing in it.
     static let largeButtonHeight: CGFloat = 28
+    /// Between the step bar's row and the top of the scrolling page, and from there to the page's
+    /// title: 18 pt in all, as it has always been. Most of it is inside the scroll view, so the Armie
+    /// beside a title (`SetupPageHead`), who stands a little taller than its first line, is never cut
+    /// off at the scroll view's top edge.
+    static let headerBelow: CGFloat = 4
+    static let titleAbove: CGFloat = 14
 
     /// An sRGB colour as numbers, so the palette's contrast can be checked by a test rather than by
     /// eye (`contrast(_:_:)`).

@@ -143,7 +143,8 @@ struct CreateProgress: Equatable {
 struct CreateJobView: View {
     @ObservedObject var controller: CreateWindowController
     let state: CreateJobState
-    /// The wizard's Armie, while these views are its step 2 (`CreateRootView.armie`).
+    /// The wizard's Armie, while these views are its step 2 (`CreateRootView.armie`): beside the
+    /// page's title, as on every page of the wizard (`JobHeading`, `ArmieCue.installing`).
     var armie: ArmieHost? = nil
     /// Quieter words: the system's secondary grey in the window of its own, the wizard's muted grey
     /// inside it (`setupHosted`), where the secondary measured 3.5 to 3.9:1 on the light backdrop.
@@ -167,10 +168,11 @@ struct CreateJobView: View {
                     case nil: runningBody
                     }
                 }
-                // Inside Set Up Winbar the title sits where every other page's does, 2 pt under the
-                // step bar's row, as the form's does; the window of its own keeps its margin.
+                // Inside Set Up Winbar the title sits where every other page's does, under the step
+                // bar's row (`SetupStyle.titleAbove`), as the form's does; the window of its own keeps
+                // its margin.
                 .padding(.horizontal, SetupStyle.pagePadding)
-                .padding(.top, hosted ? 2 : SetupStyle.pagePadding)
+                .padding(.top, hosted ? SetupStyle.titleAbove : SetupStyle.pagePadding)
                 .padding(.bottom, SetupStyle.pagePadding)
                 .frame(maxWidth: hosted ? SetupStyle.contentWidth + 2 * SetupStyle.pagePadding : .infinity, alignment: .leading)
                 .frame(maxWidth: .infinity)
@@ -196,7 +198,7 @@ struct CreateJobView: View {
         return VStack(alignment: .leading, spacing: 14) {
             // The page's title, a heading of its own (`JobHeading`): it sat inside the relabelled
             // element below, whose label dropped it, so VoiceOver never read the header at all.
-            JobHeading(heading: heading, hosted: hosted)
+            JobHeading(heading: heading, hosted: hosted, armie: armie, job: state)
             VStack(alignment: .leading, spacing: 8) {
                 // Under the title, what is installed where; in the window of its own the headline says it.
                 if hosted {
@@ -219,14 +221,6 @@ struct CreateJobView: View {
                 Callout(.attention) { Text(stall) }
             }
             StepList(rows: progress.rows)
-            // Under the stages he narrates and above the notes, which pushed him below the fold. Only
-            // the running body has him; the ending and the failure are drawn without.
-            //
-            // No rule above him, unlike step 1's card: the page's spacing sets him apart, and a rule of
-            // his own at the fold would read as something cut off.
-            if let armie, let cue = ArmieCue.installing(state) {
-                ArmieSays(line: cue.line, art: armie.art, clip: cue.clip, send: armie.send)
-            }
             // The warnings that make something the password copy promised untrue stay in view; the
             // rest (a battery caution, FileVault) are there for whoever wants them.
             ForEach(boxed, id: \.code) { NoteBox($0.text) }
@@ -276,7 +270,7 @@ struct CreateJobView: View {
     private var doneBody: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
-                JobHeading(heading: CreateJobView.heading(state, hosted: hosted), hosted: hosted)
+                JobHeading(heading: CreateJobView.heading(state, hosted: hosted), hosted: hosted, armie: armie, job: state)
                 Spacer()
                 Text(CreateElapsed.minutes((state.finishedAt ?? controller.now).timeIntervalSince(state.startedAt)))
                     .foregroundStyle(quiet)
@@ -330,7 +324,7 @@ struct CreateJobView: View {
     private var failureBody: some View {
         let progress = self.progress
         return VStack(alignment: .leading, spacing: 12) {
-            JobHeading(heading: CreateJobView.heading(state, hosted: hosted), hosted: hosted)
+            JobHeading(heading: CreateJobView.heading(state, hosted: hosted), hosted: hosted, armie: armie, job: state)
             if let failure = state.failure {
                 let detail = CreateJobView.failureDetail(failure)
                 if !detail.isEmpty {
@@ -340,6 +334,7 @@ struct CreateJobView: View {
                     Text(SetupCopy.markdown(next)).foregroundStyle(quiet).fixedSize(horizontal: false, vertical: true)
                 }
             }
+            if CreateJobView.offersReport(state) { SendToDeveloperButton { press(.sendReport) } }
             StepList(rows: progress.rows)
             noteList(progress.notes)
         }
@@ -347,7 +342,7 @@ struct CreateJobView: View {
 
     private var cancelledBody: some View {
         VStack(alignment: .leading, spacing: 12) {
-            JobHeading(heading: CreateJobView.heading(state, hosted: hosted), hosted: hosted)
+            JobHeading(heading: CreateJobView.heading(state, hosted: hosted), hosted: hosted, armie: armie, job: state)
             // What this cancel did, when this window is the one that asked; otherwise what a cancel
             // does (the CLI's, or one this window didn't see).
             Text(controller.cancelNote ?? CreateCopy.cancelledNote)
@@ -445,7 +440,9 @@ struct CreateJobView: View {
     /// One of the buttons under an install, as a value, so the rule for which ones there are, and which
     /// is the default, can be read without drawing.
     struct Action: Equatable {
-        enum Press: Equatable { case showVM, showLog, deleteVM, cancelInstall, close, done, tryAgain }
+        /// `sendReport` is the beta's **Send This to the Developer** (`BetaReport`), drawn with the
+        /// failure rather than in the footer (`offersReport`).
+        enum Press: Equatable { case showVM, showLog, deleteVM, cancelInstall, close, done, tryAgain, sendReport }
         /// `standard` is the window's default button, which Return presses; `cancel` takes Escape.
         enum Kind: Equatable { case plain, destructive, cancel, standard }
 
@@ -453,6 +450,13 @@ struct CreateJobView: View {
         var press: Press
         var kind: Kind = .plain
         var enabled = true
+    }
+
+    /// Whether the failure page has the beta's **Send This to the Developer**: while the beta is on, on
+    /// an install that failed. Under the failure's words rather than in the footer, whose five buttons
+    /// already fill the window's 600 pt, and whose corners are the page's own way on. Pure.
+    static func offersReport(_ state: CreateJobState, enabled: Bool = BetaReport.enabled) -> Bool {
+        enabled && state.outcome == .failed
     }
 
     /// The buttons under `state`: bottom-left what looks at the VM, bottom-right the way on. Pure.
@@ -537,10 +541,16 @@ struct CreateJobView: View {
 struct JobHeading: View {
     let heading: CreateJobView.Heading
     let hosted: Bool
+    /// The wizard's Armie, lent while these views are its step 2, and the job he stands by.
+    var armie: ArmieHost? = nil
+    var job: CreateJobState? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let title = heading.title { SetupPageTitle(title) }
+            if let title = heading.title {
+                SetupPageHead(title: title, armie: armie.flatMap { _ in job.map(ArmieCue.installing) },
+                              art: armie?.art, send: armie?.send ?? { _ in })
+            }
             if let line = heading.line {
                 if hosted {
                     SetupStatusLine(heading.mark, line)

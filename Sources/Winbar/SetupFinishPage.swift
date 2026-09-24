@@ -340,6 +340,8 @@ struct FinishTile: View {
 /// The finished page: the welcome's composition, as its closing bookend. The mark carries how it
 /// went (a green tick, or the attention triangle while Connect is still to prove), the heading says
 /// it in words, and the corner of the footer holds the one next thing (`SetupFinishPage.footer`).
+/// Where Armie is (`ArmieCue`), he is the mark, at the welcome's size, with the tick or the triangle
+/// on his corner: hopping once and signing off after **Yes**, concerned after **No**.
 struct FinishArrival: View {
     let facts: SetupFlow.Facts
     /// The steps passed over, listed under the result (`SetupFinishPage.passedOver`).
@@ -358,7 +360,20 @@ struct FinishArrival: View {
             let lines = SetupCopy.Finish.doneBody(vm: facts.chosenVM ?? "the VM", outcome,
                                                   canReopenFromMenu: SetupWindow.availableToEveryone)
             VStack(spacing: 18) {
-                FinishMark(status: outcome == .connected ? .done : .attention)
+                let status: StatusMark.Status = outcome == .connected ? .done : .attention
+                if let armie, let art {
+                    HStack(alignment: .center, spacing: 6) {
+                        FinishMark(status: status, armie: (art, armie.pose))
+                        if let line = armie.line {
+                            ArmieBubble(line: line, tail: .leading, send: send)
+                                .frame(maxWidth: ArmieSays.heroBubble, alignment: .leading)
+                                // Read after the page's own words: the point is those, and he only agrees.
+                                .accessibilitySortPriority(-1)
+                        }
+                    }
+                } else {
+                    FinishMark(status: status)
+                }
                 VStack(spacing: 10) {
                     Text(SetupCopy.Finish.heading(outcome))
                         .font(.system(size: Self.headingSize, weight: .bold))
@@ -395,13 +410,9 @@ struct FinishArrival: View {
                     LaunchAtLoginToggle()
                     StartWindowsToggle(vm: facts.chosenVM ?? "the VM")
                 }
-                // Last, under the words that say it's done: the page's point is those, and he only agrees.
-                if let armie, let art {
-                    ArmieSays(line: armie.line, art: art, clip: armie.clip, send: send)
-                        .frame(maxWidth: SetupStyle.textWidth)
-                }
             }
             .frame(maxWidth: .infinity)
+            .accessibilityElement(children: .contain)
         }
     }
 }
@@ -444,24 +455,34 @@ struct FinishPassedOver: View {
     }
 }
 
-/// Winbar's mark with how the setup went on its corner, like a badge on an app icon.
+/// Winbar's mark with how the setup went on its corner, like a badge on an app icon — or Armie in its
+/// place, at his larger size, the badge on the corner of his square, clear of him.
 struct FinishMark: View {
     let status: StatusMark.Status
+    /// His art and pose, where he stands in for the mark (`FinishArrival`).
+    var armie: (art: ArmieArt, pose: ArmieArt.Pose)? = nil
     static let size: CGFloat = 72
 
     var body: some View {
         withSetupAppearance { look in
+            let size = armie == nil ? Self.size : ArmieSays.hero
             ZStack(alignment: .bottomTrailing) {
-                WinbarMark(size: Self.size)
+                if let armie {
+                    ArmieFigure(art: armie.art, pose: armie.pose, size: size)
+                } else {
+                    WinbarMark(size: size)
+                }
                 ZStack {
                     Circle().fill(look.palette.backdropBottom.color).frame(width: 30, height: 30)
                     Image(systemName: status.symbol ?? "circle")
                         .font(.system(size: 24, weight: .semibold))
                         .foregroundStyle(status == .done ? look.success : look.attention)
                 }
-                .offset(x: 9, y: 7)
+                // Over the mark's corner; clear of Armie's pins, in the transparent corner of his square,
+                // since nothing may cover or cut any of him.
+                .offset(x: armie == nil ? 9 : 20, y: armie == nil ? 7 : 14)
             }
-            .frame(width: Self.size + 12, height: Self.size + 10)
+            .frame(width: size + (armie == nil ? 12 : 22), height: size + (armie == nil ? 10 : 16))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(status.label(pending: ""))
         }

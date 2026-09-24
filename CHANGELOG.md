@@ -7,6 +7,52 @@ as its GitHub release notes.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-24
+
+### Added
+
+- **Send a Problem Report…**, for the beta: a problem report that goes straight to Winbar's
+  developer, with no GitHub account or email needed. It's in the menu bar menu and the Help menu
+  under **Report a Problem…**, it's **Help!** in the title bar of Set Up Winbar and New Windows VM,
+  and it's **Send This to the Developer** on every card that says something failed. It asks what
+  happened, can show you exactly what it will send (**Show the Report**), and on **Send** puts one
+  file on the developer's own server (ntfy.elusive.net): your note, what Winbar's windows were
+  showing, and the same diagnostic report **Report a Problem…** writes. Names are placeholders
+  unless you untick the box, in your note too, and it never contains your Windows password.
+  Nothing is sent before **Send** or after **Cancel**, and at most one report every 30 seconds. If
+  it can't be sent it says why, keeps the file in `~/Library/Logs/Winbar/Reports` and offers
+  **Try Again**. It works in the middle of an install or a setup step, and goes away when the beta
+  ends; **Report a Problem…** stays. Asked for again while it's still open, say from a card that
+  failed after you opened it from the menu, the same dialog comes forward, keeps your note, and
+  reports on the new press. **Send** straight after **Cancel** stopped a send goes, with the same file.
+- Problem reports (**Report a Problem…** and **Send a Problem Report…**) end with **Focus changes**:
+  the times since Winbar opened that it became or stopped being the active app, another app came to
+  the front, the Space changed, or Winbar moved between the Dock and the menu bar, each with what
+  Set Up Winbar was doing at the time. It keeps the first 100 while Set Up Winbar is open or working
+  and the last 50 of all, so switching apps after the install, however much, can't push out what
+  happened during it, and it says where some weren't kept. It's there to explain the keyboard
+  jumping to another app, on another desktop, while Set Up Winbar installs UTM. Other apps are named
+  by bundle identifier only, never by what they were showing, and it's kept in memory and goes
+  nowhere but a report you ask for.
+- Armie now stands beside the title of every page of Set Up Winbar, and larger on the welcome and
+  the finished page. He speaks only where he has something to add that the page doesn't say, and
+  stands still without a word beside a permission, a password or a question, including while
+  Winbar's work may bring up one of macOS's own (Connect, a UTM update). He works while Winbar is
+  working on the page, hops once when a step is done, and looks concerned, without a word, beside
+  something that went wrong or needs you. **Hide Armie** still hides him everywhere, for good.
+- The bubble that points out Winbar's menu bar icon has Armie in it too, looking toward the icon.
+
+### Changed
+
+- Armie's movies play only while Set Up Winbar's window is on screen, and stop as soon as it's
+  minimised, covered or closed. His hop plays once and then holds its last pose with nothing left
+  playing, so coming back to the window never replays it.
+
+### Fixed
+
+- On the finished screen Armie stands at the top, in place of Winbar's mark, so his hop plays where
+  you can see it at the size the window opens, rather than below the fold behind the footer.
+
 ## [0.3.0] - 2026-09-24
 
 ### Added
@@ -628,6 +674,7 @@ generalised so it works on any Apple silicon Mac and any Windows 11 VM in UTM.
   the pinned UTM Guest Tools installer `create` downloads at run time and never redistributes, and
   the CLDR-derived time zone table.
 
+[0.4.0]: https://github.com/taggie313/winbar/releases/tag/v0.4.0
 [0.3.0]: https://github.com/taggie313/winbar/releases/tag/v0.3.0
 [0.2.0]: https://github.com/taggie313/winbar/releases/tag/v0.2.0
 [0.1.1]: https://github.com/taggie313/winbar/releases/tag/v0.1.1

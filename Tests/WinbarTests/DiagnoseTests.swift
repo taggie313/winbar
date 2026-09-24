@@ -412,6 +412,7 @@ struct DiagnoseRedaction {
               4. Winbar's own settings — the keys under net.elusive.winbar, one set per VM.
               5. The most recent winbar create log, and the serial log beside it — the tail of each.
               6. Recent UTM crash reports — the headline of each, because UTM crashing is often the answer.
+              7. Focus changes — which app came to the front, and when, while the menu bar app was open.
 
             What's never in here: your Windows password, the answer file winbar create writes, or the
             contents of the setup disk. Winbar never writes a password down, and this report is swept for

@@ -77,6 +77,8 @@ enum MenuAction: Equatable {
     case toggleConsole, sharedFolder
     case openUTM, newWindowsVM, showInstallProgress, setUpWinbar
     case reportProblem, showUpdate
+    /// The beta's **Send a Problem Report…** (`BetaReport`).
+    case sendReport
     case launchAtLogin, startWindowsAtLaunch, quit
     /// One VM in the Choose VM submenu. The whole VM as UTM listed it, for its id: settings are filed
     /// under that, so a VM renamed in UTM keeps what Winbar knows about it.
@@ -153,6 +155,9 @@ struct MenuState: Equatable {
     /// The wizard owns VM selection and operations while open or working. The existing install
     /// owner remains separate: Show Install Progress still brings its one controller forward.
     var setupBusy = false
+    /// Whether the menu offers the beta's **Send a Problem Report…**: `BetaReport.enabled`, carried here
+    /// so the tests can draw the menu with the beta over.
+    var betaReport = BetaReport.enabled
     /// The version the menu's last line names. From the bundle by default, so the live menu can't
     /// be built without it; "dev" under `swift test`, which has no bundle.
     var version = AppBundle.version
@@ -280,6 +285,12 @@ enum MenuShape {
         // wanted exactly where the rest of the menu has nothing to offer, and `winbar diagnose`
         // already leaves a running install's logs as it found them.
         items.append(.action(Diagnose.Copy.menuItem, .reportProblem, enabled: idle))
+        // The beta's way to the developer, under the public one. Never greyed out: it has its own
+        // window and its own progress, so it shares nothing with the menu's operation, and a report
+        // is admitted beside any work (`AppWorkGate.Owner.report`).
+        if state.betaReport {
+            items.append(.action(BetaReport.Copy.menuItem, .sendReport))
+        }
         // The only thing an update check is allowed to change about this menu, and only when there is
         // genuinely a newer release.
         if let update = state.update {

@@ -246,15 +246,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: Introducing the icon
 
-    /// The finished page's popover, while it's up (`MenuBarIntro`).
+    /// The finished page's popover, while it's up (`MenuBarIntro`), with the Armie in it.
     private var introduction: NSPopover?
+    private var introductionArmie: MenuBarIntroArmie?
+
+    /// The icon's button on screen, or nil without a window.
+    @MainActor private var iconFrame: CGRect? {
+        guard let button = statusItem.button, let window = button.window else { return nil }
+        return window.convertToScreen(button.convert(button.bounds, to: nil))
+    }
 
     /// Where the icon is, for `MenuBarIntro.icon`: the button's frame on screen, whether macOS is showing
     /// its window, and the screens with their camera housings.
     @MainActor func iconPlace() -> MenuBarIntro.Icon {
-        let button = statusItem.button
-        let window = button?.window
-        let frame = button.flatMap { button in window?.convertToScreen(button.convert(button.bounds, to: nil)) }
+        let window = statusItem.button?.window
+        let frame = iconFrame
         let shown = statusItem.isVisible && window?.isVisible == true && window?.occlusionState.contains(.visible) == true
         let screens = NSScreen.screens.map {
             MenuBarIntro.Screen(frame: $0.frame, topLeft: $0.auxiliaryTopLeftArea ?? .zero,
@@ -271,9 +277,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         introduction?.close()
         let popover = NSPopover()
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: MenuBarIntroBubble())
+        // Armie, unless he's been hidden. Which way he points is known only once macOS has put the
+        // popover where the icon and the screen's edge let it, so it's worked out from there, after
+        // showing it and again whenever it moves (`MenuBarIntroArmie`); never at an icon not shown.
+        let armie = MenuBarIntroArmie(art: ArmieArt.app, hidden: Config.armieHidden)
+        popover.contentViewController = NSHostingController(rootView: MenuBarIntroBubble(armie: armie))
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        let center = NotificationCenter.default
+        stopFollowingIntroduction()
         introduction = popover
+        introductionArmie = armie
+        center.addObserver(self, selector: #selector(introductionMoved), name: NSPopover.didShowNotification,
+                           object: popover)
+        center.addObserver(self, selector: #selector(introductionClosed), name: NSPopover.didCloseNotification,
+                           object: popover)
+        if let window = popover.contentViewController?.view.window {
+            center.addObserver(self, selector: #selector(introductionMoved), name: NSWindow.didMoveNotification,
+                               object: window)
+        }
+        relayoutIntroduction()
+    }
+
+    @objc private func introductionMoved() {
+        MainActor.assumeIsolated { relayoutIntroduction() }
+    }
+
+    /// Only the popover being followed posts this: a replaced one's observers went with it.
+    @objc private func introductionClosed() {
+        stopFollowingIntroduction()
+        introduction = nil
+        introductionArmie = nil
+    }
+
+    private func stopFollowingIntroduction() {
+        let center = NotificationCenter.default
+        for name in [NSPopover.didShowNotification, NSPopover.didCloseNotification, NSWindow.didMoveNotification] {
+            center.removeObserver(self, name: name, object: nil)
+        }
+    }
+
+    /// Tells the popover's Armie where it and the icon are on screen now.
+    @MainActor private func relayoutIntroduction() {
+        guard let view = introduction?.contentViewController?.view, let window = view.window else { return }
+        introductionArmie?.laidOut(content: window.convertToScreen(view.convert(view.bounds, to: nil)),
+                                   icon: iconPlace() == .shown ? iconFrame : nil)
     }
 
     private var workLease: AppWorkGate.Lease?
@@ -378,6 +425,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .showInstallProgress: return #selector(showInstallProgress)
         case .setUpWinbar: return #selector(setUpWinbar)
         case .reportProblem: return #selector(reportProblem)
+        case .sendReport: return #selector(sendProblemReport)
         case .showUpdate: return #selector(showUpdate)
         case .launchAtLogin: return #selector(toggleLaunchAtLogin)
         case .startWindowsAtLaunch: return #selector(toggleStartWindows)
@@ -731,6 +779,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 NSWorkspace.shared.open(UpdateCheck.newIssueFromMenuURL)
             }
         }
+    }
+
+    /// The beta's **Send a Problem Report…**, from this menu or the Help menu: its own window, which
+    /// gathers, asks and sends by itself (`BetaReport`). Unlike Report a Problem… it doesn't wait for
+    /// the menu's own operation, whose status line it doesn't use.
+    @objc func sendProblemReport() {
+        BetaReportWindowController.present(.menu)
     }
 
     /// What is about to happen, and the one choice worth making before it does. nil if they

@@ -62,16 +62,25 @@ struct PackagingTests {
         #expect(armie.contains("ArmieArt(bundle: .main)"))
     }
 
+    /// Every file of his the app loads: the two movies and the four stills.
+    static let shipped = [ArmieArt.workingName + ".mov", ArmieArt.doneName + ".mov", ArmieArt.stillName + ".png",
+                          ArmieArt.concernedName + ".png", ArmieArt.pointingLeftName + ".png",
+                          ArmieArt.pointingRightName + ".png"]
+
     /// Signing seals Contents/Resources. A file copied in after `codesign` breaks
     /// `codesign --verify --strict` — which build-app.sh runs as its last step — and Gatekeeper.
-    @Test("build-app.sh copies the three files into Contents/Resources before it signs")
+    @Test("build-app.sh copies Armie's files into Contents/Resources before it signs")
     func copiedBeforeSigning() throws {
         let lines = text("scripts/build-app.sh").components(separatedBy: "\n")
         let copy = try #require(lines.firstIndex { $0.hasPrefix("cp Resources/Armie/") },
                                 "build-app.sh doesn't copy Resources/Armie")
-        // The copy is one command, continued onto the next line for its destination.
-        let command = lines[copy...].prefix { !$0.isEmpty }.prefix(2).joined(separator: " ")
-        for name in [ArmieArt.workingName + ".mov", ArmieArt.doneName + ".mov", ArmieArt.stillName + ".png"] {
+        // The copy is one command, continued line by line to its destination.
+        var command = ""
+        for line in lines[copy...] {
+            command += line + " "
+            if !line.hasSuffix("\\") { break }
+        }
+        for name in Self.shipped {
             #expect(command.contains("Resources/Armie/" + name), "\(name) isn't copied")
         }
         #expect(command.contains("\"$APP/Contents/Resources/\""))
@@ -95,22 +104,26 @@ struct PackagingTests {
         #expect(size > 100_000 && size < 2_000_000)
     }
 
-    @Test("The three files are in the repository where build-app.sh reads them")
+    /// Astra's poses ship as stills only (368,745 bytes on 1,399,366), which keeps him under the two
+    /// megabytes; her movies of them would take him over it, and nothing plays them.
+    @Test("Armie's files are in the repository where build-app.sh reads them, under two megabytes")
     func filesPresent() throws {
         var total = 0
-        for name in [ArmieArt.workingName + ".mov", ArmieArt.doneName + ".mov", ArmieArt.stillName + ".png"] {
+        for name in Self.shipped {
             let url = root.appendingPathComponent("Resources/Armie/" + name)
             let size = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int ?? 0
             #expect(size > 10_000, "\(name) is missing or empty")
             total += size
         }
-        #expect(total < 2_000_000, "Armie's three assets exceeded the two-megabyte budget")
+        #expect(total < 2_000_000, "Armie's assets exceeded the two-megabyte budget")
     }
 
-    /// The still stands on the window's tinted backdrop, so a flattened PNG would show a white square.
-    @Test("The still has an alpha channel, and its corners are transparent")
-    func stillIsTransparent() throws {
-        let url = root.appendingPathComponent("Resources/Armie/\(ArmieArt.stillName).png")
+    /// Each still stands on the window's tinted backdrop, so a flattened PNG would show a white square.
+    @Test("Every still has an alpha channel, and its corners are transparent", arguments: [
+        ArmieArt.stillName, ArmieArt.concernedName, ArmieArt.pointingLeftName, ArmieArt.pointingRightName,
+    ])
+    func stillIsTransparent(_ name: String) throws {
+        let url = root.appendingPathComponent("Resources/Armie/\(name).png")
         let source = try #require(CGImageSourceCreateWithURL(url as CFURL, nil))
         let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
         #expect(![.none, .noneSkipFirst, .noneSkipLast].contains(image.alphaInfo))
@@ -168,20 +181,12 @@ struct PackagingTests {
 
         let still = try #require(ArmieArt(bundle: try app("StillOnly", with: ["armie-rest.png"])))
         #expect(still.working == nil && still.done == nil)
+        #expect(still.concerned == nil && still.pointingLeft == nil && still.pointingRight == nil)
 
-        let whole = try #require(ArmieArt(bundle: try app("Whole", with: ["armie-working.mov", "armie-done.mov",
-                                                                         "armie-rest.png"])))
+        let whole = try #require(ArmieArt(bundle: try app("Whole", with: Self.shipped)))
         #expect(whole.working?.lastPathComponent == "armie-working.mov")
         #expect(whole.done?.lastPathComponent == "armie-done.mov")
         #expect(whole.still.size.width > 0)
-    }
-
-    @Test("Reduce Motion, or no loop to play, draws the still")
-    func stillUnderReduceMotion() {
-        let loop = URL(fileURLWithPath: "/invalid/armie-working.mov")
-        #expect(ArmieArt.drawing(loop: loop, reduceMotion: false) == .loop(loop))
-        #expect(ArmieArt.drawing(loop: loop, reduceMotion: true) == .still)
-        #expect(ArmieArt.drawing(loop: nil, reduceMotion: false) == .still)
-        #expect(ArmieArt.drawing(loop: nil, reduceMotion: true) == .still)
+        #expect(whole.concerned != nil && whole.pointingLeft != nil && whole.pointingRight != nil)
     }
 }

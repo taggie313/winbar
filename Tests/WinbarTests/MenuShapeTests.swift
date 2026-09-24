@@ -10,7 +10,7 @@ import Testing
 // dropped 0.1.0's second New Windows VM… on purpose (COHERENCE C1).
 //
 // They are expected to change when an item is added, as the wizard's Set Up Winbar… did: it added a line
-// to every one of them. What must not change with it is the order and grouping of what is already here —
+// to every one of them. So did the beta's Send a Problem Report… (`BetaReport`), under Report a Problem…. What must not change with it is the order and grouping of what is already here —
 // the VM's block (Connect; Shut Down, Force Stop, Restart; the display and shared-folder items) above
 // Open UTM, and Launch at Login and Quit Winbar at the foot.
 //
@@ -167,6 +167,7 @@ struct MenuShapeSetUpOfferedTests {
             "Set Up Winbar… | → setUpWinbar",
             "Open UTM | → openUTM",
             "Report a Problem… | → reportProblem",
+            "Send a Problem Report… | → sendReport",
         ] + foot(nil))
     }
 
@@ -183,6 +184,7 @@ struct MenuShapeSetUpOfferedTests {
             "Set Up Winbar… | → setUpWinbar",
             "Open UTM | → openUTM",
             "Report a Problem… | → reportProblem | disabled",
+            "Send a Problem Report… | → sendReport",
         ] + foot(nil))
     }
 
@@ -202,6 +204,7 @@ struct MenuShapeSetUpOfferedTests {
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM",
             "Report a Problem… | → reportProblem",
+            "Send a Problem Report… | → sendReport",
         ] + foot())
     }
 
@@ -221,6 +224,7 @@ struct MenuShapeSetUpOfferedTests {
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM",
             "Report a Problem… | → reportProblem",
+            "Send a Problem Report… | → sendReport",
         ] + foot())
     }
 
@@ -240,6 +244,7 @@ struct MenuShapeSetUpOfferedTests {
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM",
             "Report a Problem… | → reportProblem | disabled",
+            "Send a Problem Report… | → sendReport",
         ] + foot())
     }
 
@@ -261,6 +266,7 @@ struct MenuShapeSetUpOfferedTests {
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM",
             "Report a Problem… | → reportProblem",
+            "Send a Problem Report… | → sendReport",
         ] + foot())
     }
 
@@ -282,6 +288,7 @@ struct MenuShapeSetUpOfferedTests {
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM",
             "Report a Problem… | → reportProblem",
+            "Send a Problem Report… | → sendReport",
         ] + foot())
     }
 
@@ -303,6 +310,7 @@ struct MenuShapeSetUpOfferedTests {
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM",
             "Report a Problem… | → reportProblem | disabled",
+            "Send a Problem Report… | → sendReport",
         ] + foot())
     }
 
@@ -318,6 +326,7 @@ struct MenuShapeSetUpOfferedTests {
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM | disabled",
             "Report a Problem… | → reportProblem",
+            "Send a Problem Report… | → sendReport",
         ] + foot()
         #expect(offered(state(install: installing())) == expected)
         // The VM exists in UTM by now, so it may well be running; the install still owns it.
@@ -336,6 +345,7 @@ struct MenuShapeSetUpOfferedTests {
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM | disabled",
             "Report a Problem… | → reportProblem",
+            "Send a Problem Report… | → sendReport",
         ] + foot(nil))
     }
 
@@ -351,6 +361,7 @@ struct MenuShapeSetUpOfferedTests {
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM | disabled",
             "Report a Problem… | → reportProblem | disabled",
+            "Send a Problem Report… | → sendReport",
         ] + foot())
     }
 
@@ -375,6 +386,7 @@ struct MenuShapeSetUpOfferedTests {
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM | disabled",
             "Report a Problem… | → reportProblem",
+            "Send a Problem Report… | → sendReport",
         ] + foot())
     }
 
@@ -394,6 +406,7 @@ struct MenuShapeSetUpOfferedTests {
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM",
             "Report a Problem… | → reportProblem",
+            "Send a Problem Report… | → sendReport",
         ]
         #expect(offered(state(update: MenuUpdate(version: "0.2.0", homebrew: false))) == top + [
             "---",
@@ -405,8 +418,9 @@ struct MenuShapeSetUpOfferedTests {
         ] + foot())
         // And it is offered whatever else is going on, since reading about a release fights nothing.
         #expect(Array(offered(state(vm: nil, activity: "Writing a diagnostic report…",
-                                 update: MenuUpdate(version: "0.2.0", homebrew: false))).suffix(9)) == [
+                                 update: MenuUpdate(version: "0.2.0", homebrew: false))).suffix(10)) == [
             "Report a Problem… | → reportProblem | disabled",
+            "Send a Problem Report… | → sendReport",
             "---",
             "Winbar 0.2.0 is available… | → showUpdate",
         ] + foot(nil))

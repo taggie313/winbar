@@ -37,9 +37,12 @@ printf 'APPL????' >"$APP/Contents/PkgInfo"
 # file added afterwards fails `codesign --verify --strict`, and Gatekeeper with it. The app finds them
 # with Bundle.main (Sources/Winbar/Armie.swift), never SwiftPM's Bundle.module, whose accessor aborts
 # when its resource bundle isn't beside the binary — which in this hand-built app it never is. Named
-# one by one, so a missing file stops the build here rather than shipping an app without him.
+# one by one, so a missing file stops the build here rather than shipping an app without him. Astra's
+# concerned and pointing poses ship as stills only: her movies of them are for a transition during
+# active work, which no placement is (Sources/Winbar/ArmieCue.swift).
 mkdir -p "$APP/Contents/Resources"
 cp Resources/Armie/armie-working.mov Resources/Armie/armie-done.mov Resources/Armie/armie-rest.png \
+  Resources/Armie/armie-concerned.png Resources/Armie/armie-pointing-left.png Resources/Armie/armie-pointing-right.png \
   "$APP/Contents/Resources/"
 # The app's icon: Armie on the blue plate (sources and the script that composes it are in
 # docs/internal/armie/icon). Info.plist names it (CFBundleIconFile); sealed with the rest.

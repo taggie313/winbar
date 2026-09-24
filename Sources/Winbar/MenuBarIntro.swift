@@ -172,16 +172,74 @@ struct MenuBarIntroRow: View {
     }
 }
 
-/// The popover's words, pointing up at the icon.
-struct MenuBarIntroBubble: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(MenuBarIntro.Copy.bubbleTitle).font(.headline)
-            Text(MenuBarIntro.Copy.bubble)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+/// Armie in the icon's popover, and which way he points there. Which way can only be told once macOS
+/// has put the popover on screen, wherever the icon and the screen's edge let it, so the menu bar app
+/// says where the two ended up (`laidOut`) after showing it and again whenever the popover moves; until
+/// then, and wherever the icon isn't shown, he stands by (`ArmieCue.popover`). Only stills: nothing in
+/// the popover plays.
+@MainActor final class MenuBarIntroArmie: ObservableObject {
+    let art: ArmieArt?
+    /// **Hide Armie**, as it stood when the popover was made: he never comes back once hidden.
+    let hidden: Bool
+    @Published private(set) var cue: ArmieCue?
+
+    init(art: ArmieArt?, hidden: Bool) {
+        self.art = art
+        self.hidden = hidden
+        cue = ArmieCue.popover(hidden: hidden, icon: nil, figure: nil)
+    }
+
+    /// Whether the popover draws him at all: not once hidden, and not without his art.
+    var shown: Bool { !hidden && art != nil }
+
+    /// Where the popover's content and the icon are on screen (y up), once laid out; `icon` nil where
+    /// the icon isn't shown, so he never points at something hidden. His middle is found from the
+    /// content's top-leading corner, where `MenuBarIntroBubble` puts him.
+    func laidOut(content: CGRect?, icon: CGRect?) {
+        let figure = content.map {
+            CGPoint(x: $0.minX + MenuBarIntroBubble.padding + MenuBarIntroBubble.figure / 2,
+                    y: $0.maxY - MenuBarIntroBubble.padding - MenuBarIntroBubble.figure / 2)
         }
-        .padding(14)
-        .frame(width: 270, alignment: .leading)
+        let next = ArmieCue.popover(hidden: hidden, icon: icon.map { CGPoint(x: $0.midX, y: $0.midY) }, figure: figure)
+        if next != cue { cue = next }
+    }
+}
+
+/// The popover's words, pointing up at the icon, with Armie at their leading edge where he's shown:
+/// silent, since the words are the popover's, and pointing toward the icon where it is beside him
+/// (`MenuBarIntroArmie`). The words keep their width either way; he only adds his column.
+struct MenuBarIntroBubble: View {
+    var armie: MenuBarIntroArmie? = nil
+
+    static let padding: CGFloat = 14
+    /// Astra's smaller reference size, as beside a page's title in the window.
+    static var figure: CGFloat { ArmieSays.small }
+    static let textWidth: CGFloat = 242
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            if let armie, armie.shown {
+                MenuBarIntroFigure(armie: armie)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text(MenuBarIntro.Copy.bubbleTitle).font(.headline)
+                Text(MenuBarIntro.Copy.bubble)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(width: Self.textWidth, alignment: .leading)
+        }
+        .padding(Self.padding)
+    }
+}
+
+/// His figure in the popover, redrawn when `laidOut` turns him toward the icon.
+private struct MenuBarIntroFigure: View {
+    @ObservedObject var armie: MenuBarIntroArmie
+
+    var body: some View {
+        if let art = armie.art, let cue = armie.cue {
+            ArmieFigure(art: art, pose: cue.pose, size: MenuBarIntroBubble.figure)
+        }
     }
 }

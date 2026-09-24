@@ -24,7 +24,7 @@ private func selector(_ action: MenuAction) -> Selector {
 private let plainActions: [MenuAction] = [
     .connect, .start, .shutDown, .forceStop, .restart, .toggleConsole, .sharedFolder, .openUTM, .newWindowsVM,
     .showInstallProgress, .reportProblem, .showUpdate, .launchAtLogin, .startWindowsAtLaunch, .quit,
-    .openAutomationSettings, .setUpWinbar,
+    .openAutomationSettings, .setUpWinbar, .sendReport,
 ]
 
 private func state(vm: String? = "winlab01", running: Bool = false, launchAtLogin: Bool = false) -> MenuState {

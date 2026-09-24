@@ -2099,17 +2099,20 @@ enum SetupCopy {
 
     // MARK: - Armie
 
-    /// The wizard's guide: a CPU with a face (spec §2b). He is the progress narration with a
-    /// character attached, and the rules for him are the inverse of everything Clippy got wrong:
+    /// The wizard's guide: a CPU with a face (spec §2b). He stands on every page (`ArmieCue` decides
+    /// how), but he speaks only where he has one dry fact the page doesn't, and the rules for what he
+    /// says are the inverse of everything Clippy got wrong:
     ///
-    /// - He speaks only where there is nothing to do: UTM being installed, the install, a VM
-    ///   starting, the empty state before any VM exists, and the moment it's all done. `Moment` has no other cases, and none of
-    ///   them is a step with a password field — the New Windows VM form has one, so he stays off it.
-    /// - Never on an error. The view asks for each line through a helper that knows how the moment
-    ///   is going and returns nil when it isn't going well: `line(for:)` for the install,
-    ///   `startingLine(timedOut:)` for a VM starting, `doneLine(connected:)` for the end. The empty
-    ///   state is the one moment shown through `line(_:)` directly: it has nothing to go wrong in
-    ///   (a UTM that couldn't be asked is step 1's error, not an empty list).
+    /// - He speaks only where there is nothing to do but wait or read: his introduction on the
+    ///   welcome, UTM being installed, the install, a VM starting, the empty state before any VM
+    ///   exists, the settings that need tuning, and the moment it's all done. `Moment` has no other
+    ///   cases, and none of them is beside a permission, a password field or a question: there he
+    ///   stands silent (`ArmieCue`).
+    /// - Never on an error, where he is silent and concerned. The view asks for each line through a
+    ///   helper that knows how the moment is going and returns nil when it isn't going well:
+    ///   `line(for:)` for the install, `startingLine(timedOut:)` for a VM starting,
+    ///   `doneLine(connected:)` for the end. The other moments are shown through `line(_:)` directly,
+    ///   and `ArmieCue` asks for them only on a page with nothing wrong on it.
     /// - Every line is a true statement about that moment, deadpan, with no exclamation mark, no
     ///   question, no offer of help and no guess at what the person wants. He reports his own
     ///   situation, which happens to be tedious; that is the whole joke.
@@ -2123,6 +2126,8 @@ enum SetupCopy {
     /// "Waiting for Windows to start", and on Finish repeated the sentence above him.
     enum Armie {
         enum Moment: Hashable, Sendable {
+            /// The welcome, where he is first seen.
+            case welcome
             /// Step 2, UTM has no Windows VM yet.
             case noVM
             /// Step 2, a job from `winbar create` in one of its ten stages.
@@ -2134,9 +2139,12 @@ enum SetupCopy {
             case done
             /// Step 1, while UTM is being installed: Homebrew's install or Winbar's own download.
             case installingUTM
+            /// Step 3, with settings that need Ben and nothing gone wrong among them.
+            case tuning
 
             static var all: [Moment] {
-                [.installingUTM, .noVM] + CreateStage.allCases.map(Moment.installing) + [.startingWindows, .done]
+                [.welcome, .installingUTM, .noVM] + CreateStage.allCases.map(Moment.installing)
+                    + [.startingWindows, .tuning, .done]
             }
         }
 
@@ -2147,6 +2155,16 @@ enum SetupCopy {
 
         static func line(_ moment: Moment) -> String {
             switch moment {
+            case .welcome:
+                // Who the figure on every page is, since the pages after this one never say (his name
+                // is over the bubble already). True of the character, a chip, and the reason he turns up
+                // where he does: the waits.
+                return "I'm a chip, so waiting is most of what I do."
+            case .tuning:
+                // Most of the rows (the power plan, sleep, background services, visual effects, Remote
+                // Desktop) are Windows' defaults for a PC of its own; the page says what each one does,
+                // never what the step is for as a whole.
+                return "Windows assumes it has a PC to itself. Most of this is telling it otherwise."
             case .noVM:
                 // `winbar create` refuses anything but an Arm64 ISO (WindowsISO.evaluate), and an
                 // aarch64 guest runs on Apple silicon without emulation (H2 calls anything else slow).
@@ -2168,7 +2186,7 @@ enum SetupCopy {
                 // of both routes the window takes (`Dependencies.windowPlan`): each ends in
                 // `DependencyInstaller.verify`, which checks the bundle, its signature, the team and
                 // the version before the install counts as done. Not said during an update, where he
-                // doesn't appear (`LookAroundPage.armieLine`). "Installing UTM" is the line above him.
+                // is silent (`ArmieCue`). "Installing UTM" is the page's title beside him.
                 return "Winbar checks this is the real UTM before it calls it installed. I'll watch."
             }
         }

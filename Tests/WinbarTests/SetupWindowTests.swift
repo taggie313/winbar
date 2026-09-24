@@ -30,7 +30,7 @@ private func said(_ state: SetupWindowState) -> String {
     case .installFailed(let problem, let lines, _): words += [problem.detail] + lines
     default: break
     }
-    words += [page.primary?.title, page.secondary?.title, LookAroundPage.armieLine(state)].compactMap { $0 }
+    words += [page.primary?.title, page.secondary?.title, ArmieCue.cue(state)?.line].compactMap { $0 }
     return words.filter { !$0.isEmpty }.joined(separator: " ")
 }
 
@@ -880,50 +880,15 @@ struct LookAroundPageTests {
 
 // MARK: - Armie
 
-@Suite("On step 1 Armie appears only while UTM installs, and says only his line for it")
+@Suite("Armie's line for UTM's install")
 struct SetupArmieTests {
-    @Test("He is there for the install in flight on step 1, and nowhere else in steps 0 and 1")
-    func onlyTheInstall() {
-        // "refused" is the install too, with a press turned down beside it: the install is still
-        // nothing to do but wait, and the refusal is about the press, not about the install.
-        for (name, state) in F.screens {
-            let expected = ["installing", "installing-download", "refused"].contains(name)
-                ? SetupCopy.Armie.line(.installingUTM) : nil
-            #expect(LookAroundPage.armieLine(state) == expected, "\(name)")
-        }
-    }
-
-    /// §2b: never on an error, never on a permission, never on the welcome. Held against every card
-    /// that is any of those, rather than against the fixtures' names.
-    @Test("Never beside a failure, a permission prompt or a decision")
-    func neverBesideTrouble() {
-        for (name, state) in F.screens where LookAroundPage.armieLine(state) != nil {
-            let card = LookAroundPage.page(state).card
-            switch card {
-            case .installing: break
-            default: Issue.record("Armie beside \(card) in \(name)")
-            }
-        }
-        // Even with an install running, not on the welcome (a person who went Back to read it).
-        var welcome = F.installing
-        welcome.step = .welcome
-        #expect(LookAroundPage.armieLine(welcome) == nil)
-    }
-
-    @Test("Hide Armie takes him away for good")
-    func hidden() {
-        var state = F.installing
-        state.armieHidden = true
-        #expect(LookAroundPage.armieLine(state) == nil)
-    }
-
     /// His line stays up for the whole install, so it may name no stage of it: the review saw
     /// "Fetching UTM…" beside Homebrew's "Moving App" and "Linking Binary" and the signature check.
     @Test("His UTM line is deadpan, and true of every stage of both ways UTM is installed")
     func line() {
         let line = SetupCopy.Armie.line(.installingUTM)
         #expect(!line.contains("!") && !line.contains("?"))
-        // "Installing UTM" is the progress line above him; he says the one thing it doesn't.
+        // "Installing UTM" is the page's title beside him; he says the one thing it doesn't.
         #expect(!line.hasPrefix("Installing UTM") && line.contains("checks this is the real UTM"))
         #expect(SetupCopy.Armie.Moment.all.contains(.installingUTM))
         // No stage's verb, and neither route's name: Homebrew's install and Winbar's download both end in
@@ -933,36 +898,10 @@ struct SetupArmieTests {
         }
     }
 
-    @Test("The working clip repeats; completion is a one-shot")
-    func playbackMatchesTheMoment() {
-        let working = URL(fileURLWithPath: "/invalid/armie-working.mov")
-        let done = URL(fileURLWithPath: "/invalid/armie-done.mov")
-        let art = ArmieArt(still: NSImage(size: NSSize(width: 2, height: 2)), working: working, done: done)
-        #expect(art.playback(for: working) == .repeating)
-        #expect(art.playback(for: done) == .once)
-    }
-
-    @Test("Reduce Motion suppresses both clips, including the celebration")
-    func bothClipsRespectReduceMotion() {
-        for name in ["armie-working", "armie-done"] {
-            let url = URL(fileURLWithPath: "/invalid/\(name).mov")
-            #expect(ArmieArt.drawing(loop: url, reduceMotion: true) == .still)
-        }
-        #expect(ArmieArt.drawing(loop: nil, reduceMotion: false) == .still)
-    }
-
     /// The control: the line he had fails on its first word.
     @Test("His old line names a stage, and fails that")
     func lineControl() {
         #expect("Fetching UTM, the app Windows is going to live in.".lowercased().contains("fetch"))
-    }
-
-    /// Homebrew quits a running UTM to update it, with an Apple Event that can raise the Automation
-    /// prompt right then: a possible permission, where he doesn't stand.
-    @Test("He isn't there while Homebrew updates UTM")
-    func notDuringAnUpdate() {
-        #expect(LookAroundPage.armieLine(F.updating) == nil)
-        #expect(LookAroundPage.armieLine(F.installing) != nil)
     }
 }
 

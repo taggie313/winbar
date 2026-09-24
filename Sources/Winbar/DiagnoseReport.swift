@@ -61,12 +61,15 @@ extension Diagnose {
                            selfTest: "3. What the menu bar app itself sees",
                            settings: "4. Winbar's own settings",
                            logs: "5. The most recent winbar create log",
-                           crashes: "6. Recent UTM crash reports")
+                           crashes: "6. Recent UTM crash reports",
+                           focus: "7. Focus changes (most recent last)")
 
     /// The top of the file: what it is, what is in it, what is not, and which mode made it. Written
     /// for someone who is about to attach it to a public issue and would like to know what they are
-    /// handing over.
-    static func preamble(version: String, stamp: String, redactor: Redactor, includeLogs: Bool) -> [String] {
+    /// handing over — or, `forDeveloper`, who is about to send it to Winbar's developer with the
+    /// beta's **Send a Problem Report…** (`BetaReport`), which puts its own sections above section 1.
+    static func preamble(version: String, stamp: String, redactor: Redactor, includeLogs: Bool,
+                         forDeveloper: Bool = false) -> [String] {
         var lines = [
             "Winbar diagnostic report — everything an answerable bug report about Winbar needs, in one file.",
             "Made by winbar diagnose (Winbar \(version)) on \(stamp).",
@@ -83,6 +86,7 @@ extension Diagnose {
             : "  5. The create logs — left out, because this was run with --no-logs.")
         lines += [
             "  6. Recent UTM crash reports — the headline of each, because UTM crashing is often the answer.",
+            "  7. Focus changes — which app came to the front, and when, while the menu bar app was open.",
             "",
             "What's never in here: your Windows password, the answer file winbar create writes, or the",
             "contents of the setup disk. Winbar never writes a password down, and this report is swept for",
@@ -90,8 +94,14 @@ extension Diagnose {
             "",
         ]
         lines += wrap(redactor.explanation, at: 100)
+        lines.append("")
+        if forDeveloper {
+            lines += wrap("Written for Send a Problem Report…, which sends this file to Winbar's developer, and no one "
+                              + "else, when Send is pressed. Above section 1: the note written with it, and what "
+                              + "Winbar's windows were showing when it was asked for.", at: 100)
+            return lines
+        }
         lines += [
-            "",
             "Nothing here has left your Mac. Read it, take out anything you'd rather not publish, and attach",
             "it to your issue at \(UpdateCheck.issuesURL.absoluteString).",
         ]

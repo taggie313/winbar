@@ -173,7 +173,7 @@ struct SetupWindowSnapshots {
             ("aside", AnyView(SetupCard { CardText(heading: "", aside: AttributedString("Quieter, for some people.")) }), 6),
             ("output", AnyView(SetupCard { OutputBox(lines: ["==> Installing Cask utm", "==> Moving App 'UTM.app'"]) }), 20),
             ("count", AnyView(SetupCard { InstallProgress(download: .init(done: 112, total: 250)) }), 6),
-            ("rows", AnyView(LookAroundView(page: rows, armie: nil, art: nil, refusal: nil, send: { _ in })), 6),
+            ("rows", AnyView(LookAroundView(page: rows, refusal: nil, send: { _ in })), 6),
         ]
         for appearance in [Snapshot.Appearance.light, .dark, .lightIncreaseContrast, .darkIncreaseContrast] {
             let floor = appearance.increaseContrast ? 7.0 : 4.5
@@ -198,7 +198,7 @@ struct SetupWindowSnapshots {
         let art = try #require(Drawn.art)
         for appearance in Snapshot.Appearance.allCases {
             for size in [CGFloat(56), 96, 224] {
-                let figure = ArmieFigure(art: art, loop: nil, size: size)
+                let figure = ArmieFigure(art: art, pose: .rest, size: size)
                 let reference = Image(nsImage: art.still).resizable().interpolation(.high)
                     .aspectRatio(contentMode: .fit).frame(width: size, height: size)
                 let dimensions = CGSize(width: size, height: size)
@@ -229,7 +229,7 @@ struct SetupWindowSnapshots {
         let reference = Image(nsImage: image).resizable().interpolation(.high)
             .aspectRatio(contentMode: .fit).frame(width: 64, height: 64)
         let expected = try #require(Snapshot.png(reference, size: dimensions, appearance: .dark))
-        let actual = try #require(Snapshot.png(ArmieFigure(art: art, loop: nil, size: 64),
+        let actual = try #require(Snapshot.png(ArmieFigure(art: art, pose: .rest, size: 64),
                                                size: dimensions, appearance: .dark))
         let cropped = try #require(Snapshot.png(reference.clipShape(RoundedRectangle(cornerRadius: 14)),
                                                 size: dimensions, appearance: .dark))

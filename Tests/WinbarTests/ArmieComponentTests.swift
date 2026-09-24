@@ -28,8 +28,8 @@ struct ArmieComponentTests {
     func quietName() throws {
         let accent = SetupStyle.palette(dark: false, increasedContrast: false).accentText
         let size = CGSize(width: 560, height: 100)
-        let armie = ArmieSays(line: "Copying files. There are a lot of them. I'll be here.", art: Self.art, clip: .working,
-                              send: { _ in })
+        let armie = ArmieSays(cue: ArmieCue(pose: .working, line: "Copying files. There are a lot of them. I'll be here."),
+                              art: Self.art, send: { _ in })
         #expect(try count(armie, accent, size: size) == 0)
         let old = Text(SetupCopy.Armie.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(accent.color)
         #expect(try count(old, accent, size: size) > 10)

@@ -24,6 +24,10 @@ case .app:
     let delegate = AppDelegate()
     app.delegate = delegate
     app.setActivationPolicy(.accessory)
-    MainActor.assumeIsolated { app.mainMenu = AppPresence.mainMenu() }
+    MainActor.assumeIsolated {
+        app.mainMenu = AppPresence.mainMenu()
+        // Before any window or alert can move the keyboard: the diagnostic report's record of it.
+        FocusLog.shared.start()
+    }
     app.run()
 }
