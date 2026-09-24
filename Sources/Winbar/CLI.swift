@@ -142,6 +142,8 @@ enum CLI {
         case "setup":
             // The window asks everything itself; the terminal only hands it over.
             if rest.contains("--window") { return SetupHandOff.run(rest) }
+            // The terminal route is complete, but someone typing it may have wanted the window.
+            if Term.stdoutIsTTY { Term.note(SetupCopy.HandOff.windowTip) }
             return withOptions(rest, values: ["--vm"],
                                switches: ["--yes", "-y", "--no-visual-tweaks", "--keep-bitlocker", "--headless", "--console"]) { parsed in
                 if parsed.has("--headless") && parsed.has("--console") {

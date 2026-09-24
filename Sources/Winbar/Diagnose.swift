@@ -38,7 +38,7 @@ enum Diagnose {
         var doctorTimeout: TimeInterval = 180
 
         /// What the menu bar app's Report a Problem… asks for: today's file on the Desktop, logs and
-        /// all, anonymised only if the person ticked the box. The only thing the two front-ends
+        /// all, anonymised unless the person unticked the box (`Copy.anonymiseByDefault`). The only thing the two front-ends
         /// disagree about is that tick, so this is the whole of the difference between them.
         static func fromTheMenu(anonymise: Bool) -> Options {
             var options = Options()
@@ -91,21 +91,29 @@ enum Diagnose {
         /// Written for somebody who has never seen `winbar diagnose`: what is in the file, how long
         /// it takes, and what Winbar does with it afterwards. The Finder and the issues page both
         /// happen without asking again, so they are promised here rather than sprung.
+        ///
+        /// The placeholders are the default, because issues are public and the person reading this is
+        /// usually in the middle of a problem: somebody who clicks straight through should publish
+        /// `<user-full-name>`, not their name. Unticking is the deliberate act.
         static let askDetail = """
             Winbar writes one plain-text file with everything an answerable bug report needs: the versions \
             involved, the whole winbar doctor table, Winbar's own settings, the tail of the last install log, \
             and UTM's recent crash reports. It never contains your Windows password.
 
             It takes a minute or two, because it asks UTM and Windows. Then Winbar shows you the file in the \
-            Finder and opens its issues page, so you can read it — it's plain text, and it's yours — and drag \
-            it straight into your report.
+            Finder and opens a new issue on its issues page, so you can read it — it's plain text, and it's \
+            yours — and drag it straight into your report.
 
-            Issues are public, and the report names this Mac (<mac>), your Mac user name and full name \
-            (<user>, <user-full-name>), your Windows user name (<windows-user-1>), the Windows PC name \
-            (<windows-pc-1>), and each of your VMs by name, by the id UTM gave it and by its MAC address \
-            (<vm-1>, <vm-1-id>, <vm-1-mac>). Winbar can write the placeholders in brackets instead, and \
-            anything else shaped like an id as <id-1> or like a MAC address as <mac-address-1>.
+            Issues are public, so with the box below ticked the report writes placeholders in brackets where \
+            it would name this Mac (<mac>), your Mac user name and full name (<user>, <user-full-name>), your \
+            Windows user name (<windows-user-1>), the Windows PC name (<windows-pc-1>), and each of your VMs \
+            by name, by the id UTM gave it and by its MAC address (<vm-1>, <vm-1-id>, <vm-1-mac>), and \
+            anything else shaped like an id as <id-1> or like a MAC address as <mac-address-1>. Untick it to \
+            keep the real names in.
             """
+
+        /// Ticked when the dialog opens. See `askDetail`.
+        static let anonymiseByDefault = true
 
         /// A checkbox rather than a second item held under ⌥, the way Force Stop is. ⌥ hides a thing
         /// from people who shouldn't press it; this is the opposite — the people most likely to want it
@@ -170,7 +178,7 @@ enum Diagnose {
             section(headings.crashes) { try crashLines(directory: crashDirectory, limit: options.crashReports) },
         ]
 
-        let redactor = Redactor(mode: options.mode, identity: identity(doctor.context))
+        let redactor = Redactor(mode: options.mode, identity: identity(doctor.context, otherSavedPCs: doctor.otherSavedPCs))
         let report = Report(preamble: preamble(version: AppBundle.version, stamp: reportStamp.string(from: now),
                                                redactor: redactor, includeLogs: options.includeLogs),
                             sections: sections)
@@ -212,6 +220,21 @@ enum Diagnose {
         /// The facts the run gathered, for the environment section. nil when it didn't finish: the
         /// thread filling them is still going, and `Context` is nobody's to read from two places.
         var context: Context?
+        /// Other accounts' saved PCs C2 saw, known whether or not the run finished: C2's row names
+        /// each one and its account, so an anonymised report masks both.
+        var otherSavedPCs: [WindowsAppBookmarks.OtherAccount] = []
+    }
+
+    /// Other accounts' saved PCs, noted from the thread running the doctor table and read from the
+    /// one writing the report.
+    final class Sightings {
+        private let lock = NSLock()
+        private var seen: [WindowsAppBookmarks.OtherAccount] = []
+        func note(_ lookup: WindowsAppBookmarks.Lookup) {
+            guard let other = lookup.otherAccount else { return }
+            lock.lock(); seen.append(other); lock.unlock()
+        }
+        var all: [WindowsAppBookmarks.OtherAccount] { lock.lock(); defer { lock.unlock() }; return seen }
     }
 
     /// The doctor table, rendered without colour, bounded as a whole.
@@ -222,7 +245,8 @@ enum Diagnose {
     /// over. That is exactly the Mac this command is for, so the table is collected line by line on
     /// another thread and whatever has arrived by the deadline is what goes in the file.
     static func doctor(timeout: TimeInterval) -> DoctorRun {
-        let ctx = Context(options: Context.Options())
+        let sightings = Sightings()
+        let ctx = Context(options: doctorOptions(sightings: sightings))
         let collected = Lines()
         let done = DispatchSemaphore(value: 0)
         DispatchQueue.global(qos: .userInitiated).async {
@@ -243,7 +267,17 @@ enum Diagnose {
                               + "asking whether Winbar may control it is still waiting, or was answered with Don't "
                               + "Allow (System Settings → Privacy & Security → Automation).", at: 100)
         }
-        return DoctorRun(lines: lines, finished: finished, context: finished ? ctx : nil)
+        return DoctorRun(lines: lines, finished: finished, context: finished ? ctx : nil, otherSavedPCs: sightings.all)
+    }
+
+    /// The report's doctor run writes nothing (`Context.Options.readOnly`): the menu's Report a
+    /// Problem… runs beside set-up steps and installs, and `winbar diagnose` is the same report. What
+    /// its C2 sees goes to `sightings` instead, for the redactor.
+    static func doctorOptions(sightings: Sightings) -> Context.Options {
+        var options = Context.Options()
+        options.readOnly = true
+        options.sawSavedPCs = { sightings.note($0) }
+        return options
     }
 
     /// Lines arriving on one thread and read from another.
@@ -455,7 +489,7 @@ enum Diagnose {
     /// that covers the global `vmID` value, whose namespace may still be the name), and UTM's own
     /// list (the only one that covers a VM Winbar has no record of). An id nothing can name is left
     /// out on purpose: `Redactor` numbers it as an id of its own rather than inventing a VM for it.
-    static func identity(_ ctx: Context?) -> Redactor.Identity {
+    static func identity(_ ctx: Context?, otherSavedPCs: [WindowsAppBookmarks.OtherAccount]) -> Redactor.Identity {
         let settings = Config.defaults.dictionaryRepresentation()
         var vms = Set<String>()
         var vmIDs: [String: String] = [:]
@@ -500,8 +534,9 @@ enum Diagnose {
         // Every VM's Windows account, not just the chosen VM's: the settings section prints all of
         // them, so replacing only one would be a half-kept promise.
         let checked = passwordCheckedNames(settings)
-        var windowsUsers = Set(windowsUserNames(settings)).union(checked.users)
-        if let user = ctx?.guestOutput?["USER"], !user.isEmpty { windowsUsers.insert(user) }
+        let windowsUsers = reportedWindowsUsers(settings: settings, checked: checked.users,
+                                                guestUser: ctx?.guestOutput?["USER"],
+                                                otherSavedPCUsers: otherSavedPCs.map(\.user))
         // The guest's own machine name, which nothing used to gather. It is written into
         // `passwordCheckedFor` as `COMPUTERNAME\user`, and the DNS form of it is what the RDP host
         // is derived from. Both, because Windows cuts COMPUTERNAME to 15 characters and the DNS name
@@ -514,7 +549,8 @@ enum Diagnose {
         // `rdpHost`, in `savedPCHost` and in `savedPCName`, all of which section 4 prints, and
         // `Connection.resolveHost` writes it there the first time Connect works.
         let windowsPCs = windowsPCNames(settings: settings, checked: checked.pcs,
-                                        guestOutput: ctx?.guestOutput)
+                                        guestOutput: ctx?.guestOutput,
+                                        otherSavedPCNames: otherSavedPCs.map(\.bookmark.name))
         // Both of these can consult macOS's configuration store, which on a Mac with a sick network
         // stack is one more thing that can hang. A name we couldn't read is one we say we kept.
         let computer = withDeadline(2) { Foundation.Host.current().localizedName } ?? nil
@@ -530,17 +566,32 @@ enum Diagnose {
                                  windowsPCNames: Array(windowsPCs))
     }
 
-    /// The Windows account each VM's settings name.
+    /// Every Windows account the report can name, from every source, so `--anonymise` masks them all.
+    /// A function rather than lines inside `identity` for the reason `windowsPCNames` is one: `identity`
+    /// reads the real defaults, so no test may call it. `otherSavedPCUsers` are the accounts other
+    /// saved PCs for the VM's host sign in as, which C2's row names: the ones this report's own run
+    /// saw (`DoctorRun.otherSavedPCs`). Those an earlier run saw are in the settings. Pure.
+    static func reportedWindowsUsers(settings: [String: Any], checked: [String], guestUser: String?,
+                                     otherSavedPCUsers: [String]) -> Set<String> {
+        var users = Set(windowsUserNames(settings)).union(checked)
+        for user in [guestUser].compactMap({ $0 }) + otherSavedPCUsers where !user.isEmpty { users.insert(user) }
+        return users
+    }
+
+    /// The Windows account each VM's settings name: its own, and the one another account's saved
+    /// PC for its host signs in as.
     static func windowsUserNames(_ values: [String: Any]) -> [String] {
-        values.compactMap { key, value in
-            VMSettings.split(key)?.setting == Config.Key.rdpUser ? value as? String : nil
+        let userSettings = [Config.Key.rdpUser, Config.Key.savedPCOtherAccountUser]
+        return values.compactMap { key, value in
+            userSettings.contains(VMSettings.split(key)?.setting ?? "") ? value as? String : nil
         }
     }
 
     /// The Windows machine name as Winbar's own settings hold it: every `rdpHost`, `savedPCHost`
-    /// and `savedPCName`, per-VM or left over globally from before the settings were filed per VM.
+    /// and `savedPCName`, per-VM or left over globally from before the settings were filed per VM, and
+    /// the other hosts the saved-PC settings name (another account's, and the one Connect used).
     ///
-    /// These three are the only record of the guest's name once the VM is off, which is the state a
+    /// These are the only record of the guest's name once the VM is off, which is the state a
     /// diagnostic report is usually written in, and section 4 prints all of them.
     ///
     /// **The `.local` is taken off, and only the `.local`.** A host name here is `<pc-name>.local`
@@ -562,9 +613,12 @@ enum Diagnose {
     /// passed. Gathering them here makes the join itself testable, so dropping any one source fails
     /// `everySourceOfTheWindowsPCNameIsUsed`.
     static func windowsPCNames(settings: [String: Any], checked: [String],
-                               guestOutput: GuestOutput?) -> [String] {
+                               guestOutput: GuestOutput?, otherSavedPCNames: [String]) -> [String] {
         var names = Set(checked)
         names.formUnion(windowsPCNamesFromSettings(settings))
+        // Another account's saved PC, by the name C2's row gives it. A name, not a host, so it goes
+        // in as it is.
+        names.formUnion(otherSavedPCNames.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
         for key in ["COMPUTERNAME", "DNSHOST"] {
             if let name = guestOutput?[key], !name.isEmpty { names.insert(name) }
         }
@@ -572,7 +626,9 @@ enum Diagnose {
     }
 
     static func windowsPCNamesFromSettings(_ values: [String: Any]) -> [String] {
-        let hostSettings = [Config.Key.rdpHost, Config.Key.savedPCHost, Config.Key.savedPCName]
+        let hostSettings = [Config.Key.rdpHost, Config.Key.savedPCHost, Config.Key.savedPCName,
+                            Config.Key.savedPCOtherAccountHost, Config.Key.savedPCOtherAccountName,
+                            Config.Key.savedPCConnectedHost]
         var found: [String] = []
         for (key, value) in values {
             guard let text = value as? String,

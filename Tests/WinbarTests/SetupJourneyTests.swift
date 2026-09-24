@@ -17,6 +17,30 @@ enum JourneyFixtures {
         return facts
     }
     static func row(_ id: String, _ status: Status) -> SetupFlow.Row { SetupFlow.Row(Recipe.check(id)!, status) }
+
+    /// Each of steps 3 to 7 as the journey's renders draw it (`journey-<step>`): the certificate not
+    /// yet trusted on its own step, the PC not yet saved on its own, the VM's screen still on, and
+    /// the desktop confirmed by the time of Finish.
+    static func page(_ step: WizardStep) -> SetupWindowState {
+        var facts = facts
+        facts.rows["H7"] = row("H7", step == .certificate ? .fixable("Not trusted") : .ok("Trusted"))
+        facts.rows["C2"] = row("C2", step == .savedPC ? .fixable("Not saved") : .ok("Saved"))
+        facts.rows["H5"] = row("H5", .fixable("Console on"))
+        var state = SetupFixtures.state(step, facts: facts)
+        state.answers.connected = step == .finish ? true : nil
+        state.facts?.answers = state.answers
+        return state
+    }
+
+    static let pages: [WizardStep] = [.tune, .certificate, .savedPC, .connect, .finish]
+
+    /// Connect after Windows App opened, asking whether the desktop appeared.
+    static var didItWork: SetupWindowState {
+        var state = SetupFixtures.state(.connect, facts: facts)
+        state.answers.connectionOpened = true
+        state.facts?.answers = state.answers
+        return state
+    }
 }
 
 private final class JourneyMachine: SetupMachine {
@@ -73,7 +97,7 @@ private final class JourneyMachine: SetupMachine {
         facts.rows["C2"] = JourneyFixtures.row("C2", .manual("Client did not answer", how: "Use Windows App"))
         let runner = SetupRunner(machine: JourneyMachine(trusted: true), environment: .init(
             queue: DispatchQueue(label: "winbar.test.direct-sign-in"), callbacks: .main, clock: Date.init,
-            keepAwake: { _ in {} }, processes: { _ in ([100], 101) }, workspace: NotificationCenter(), app: NotificationCenter()))
+            keepAwake: { _ in {} }, processes: { _ in ([100], 101) }, workspace: NotificationCenter()))
         let controller = SetupWindowController(state: SetupFixtures.state(.savedPC, facts: facts), art: nil,
             settings: .init(wizardShown: { false }, markShown: {}, armieHidden: { true }, hideArmie: {}),
             makeRunner: { runner }, makeCreator: { FakeEmbeddedCreate() })
@@ -101,7 +125,7 @@ private final class JourneyMachine: SetupMachine {
     func endingPointsAtMenu() {
         let shipped = SetupCopy.Finish.doneBody(vm: "winlab02", .connected, canReopenFromMenu: SetupWindow.availableToEveryone)
         #expect(shipped.count == 2)
-        #expect(shipped.last.map { String($0.characters) }?.hasPrefix("Run this window again from Set Up Winbar… in the menu") == true)
+        #expect(shipped.last.map { String($0.characters) }?.hasPrefix("To run this window again, choose Set Up Winbar… in the menu") == true)
         let dark = SetupCopy.Finish.doneBody(vm: "winlab02", .windowsAppSkipped, canReopenFromMenu: false)
         #expect(dark.count == 1)
         #expect(String(dark[0].characters).contains("isn't installed"))
@@ -111,10 +135,12 @@ private final class JourneyMachine: SetupMachine {
     func fullJourney() async {
         let runner = SetupRunner(machine: JourneyMachine(), environment: .init(
             queue: DispatchQueue(label: "winbar.test.journey"), callbacks: .main, clock: Date.init,
-            keepAwake: { _ in {} }, processes: { _ in ([100], 101) }, workspace: NotificationCenter(), app: NotificationCenter()))
+            keepAwake: { _ in {} }, processes: { _ in ([100], 101) }, workspace: NotificationCenter()))
         var marked = false
+        var said: [String] = []
         let controller = SetupWindowController(state: SetupFixtures.state(.vm, facts: SetupVMTests.facts()), art: nil,
             settings: .init(wizardShown: { false }, markShown: { marked = true }, armieHidden: { true }, hideArmie: {}),
+            announcer: SetupAnnouncer { said.append($0) },
             makeRunner: { runner }, makeCreator: { FakeEmbeddedCreate() })
         func wait(_ work: SetupRunner.Work) async {
             for _ in 0..<300 {
@@ -137,10 +163,13 @@ private final class JourneyMachine: SetupMachine {
         await wait(.trustCertificate)
         #expect(!controller.state.answers.leftAlone.contains("H7"))
         #expect(SetupCertificatePage.page(controller.state, facts: controller.state.facts!).phase == .verified)
+        // VoiceOver heard it, as the page changed under the person's focus on the button they pressed.
+        #expect(said == [SetupCopy.Certificate.result(.verified)])
         controller.send(.next)
         await wait(.checkAgain(.savedPC))
         controller.savePC(password: "synthetic-test-secret")
         await wait(.savePC)
+        #expect(said.last == SetupCopy.SavedPC.savedAnnouncement && said.count == 2, "\(said)")
         #expect(!String(describing: controller.state).contains("synthetic-test-secret"))
         controller.send(.next)
         await wait(.checkAgain(.connect))
@@ -177,7 +206,7 @@ private final class JourneyMachine: SetupMachine {
             settings: .init(wizardShown: { false }, markShown: {}, armieHidden: { true }, hideArmie: {}),
             makeRunner: { madeRunner = true; return SetupRunner(machine: JourneyMachine(), environment: .init(
                 queue: DispatchQueue(label: "winbar.test.unused"), callbacks: .main, clock: Date.init,
-                keepAwake: { _ in {} }, processes: { _ in ([], nil) }, workspace: NotificationCenter(), app: NotificationCenter())) },
+                keepAwake: { _ in {} }, processes: { _ in ([], nil) }, workspace: NotificationCenter())) },
             makeCreator: { FakeEmbeddedCreate() })
         controller.credentials.password = "synthetic-test-secret"
         controller.windowWillClose(Notification(name: NSWindow.willCloseNotification))
@@ -242,14 +271,8 @@ private final class JourneyMachine: SetupMachine {
 
     @Test("All remaining screens render in light and dark without a running VM")
     func pages() throws {
-        for step in [WizardStep.tune, .certificate, .savedPC, .connect, .finish] {
-            var facts = JourneyFixtures.facts
-            facts.rows["H7"] = JourneyFixtures.row("H7", step == .certificate ? .fixable("Not trusted") : .ok("Trusted"))
-            facts.rows["C2"] = JourneyFixtures.row("C2", step == .savedPC ? .fixable("Not saved") : .ok("Saved"))
-            facts.rows["H5"] = JourneyFixtures.row("H5", .fixable("Console on"))
-            var state = SetupFixtures.state(step, facts: facts)
-            state.answers.connected = step == .finish ? true : nil
-            state.facts?.answers = state.answers
+        for step in JourneyFixtures.pages {
+            let state = JourneyFixtures.page(step)
             for appearance in [Snapshot.Appearance.light, .dark] {
                 let png = try #require(Snapshot.png(SetupScreen(state: state, art: nil, send: { _ in }),
                                                    size: CGSize(width: 600, height: 620), appearance: appearance))

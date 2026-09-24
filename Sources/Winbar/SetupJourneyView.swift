@@ -10,19 +10,27 @@ struct SetupJourneyView: View {
     var armie: ArmieCue? = nil
     var art: ArmieArt? = nil
     let send: (SetupCommand) -> Void
+    /// The palette's red: the system's measured 3.2:1 on a light card.
+    @Environment(\.errorText) private var errorText
+    /// The palette's quiet grey, for the facts under a card's words.
+    @Environment(\.quietText) private var quietText
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if let flight = state.inFlight, state.step != .certificate || state.facts == nil {
+            // First, where a press that didn't start is explained (`LookAroundView` says why there).
+            if let refusal = state.refusal {
+                RefusalBanner(text: SetupCopy.Working.refused(refusal, busy: state.inFlight, host: "Winbar"))
+            }
+            // A read nobody pressed, over a card the page keeps: one quiet line, not the page's spinner.
+            if Self.showsQuietRead(state) { QuietReadLine() }
+            // Steps 3 to 6 say what's running in their own card (`SetupJourneyActions.cardShowsWork`).
+            if let flight = state.inFlight, !state.refreshing, !SetupJourneyActions.cardShowsWork(state) {
                 ProgressView()
                 Text(SetupCopy.markdown(flight.waitingFor.map { SetupCopy.Working.waiting($0, host: "Winbar") }
                                        ?? flight.line ?? SetupCopy.Working.sentence(SetupCopy.Working.doing(flight))))
-                if flight.work.canStopWaiting { Button(SetupCopy.Working.bStopWaiting) { send(.stopWaiting) } }
+                if flight.work.canStopWaiting { StopWaitingRow(work: flight.work) { send(.stopWaiting) } }
             }
-            if let refusal = state.refusal {
-                Text(refusal.description)
-            }
-            if case .failed(let problem)? = state.lastEnding?.outcome, state.step != .certificate {
+            if let problem = Self.problemCard(state) {
                 SetupCard { Text(problem.description).textSelection(.enabled) }
             }
             if state.lastEnding?.outcome == .overtaken {
@@ -38,10 +46,13 @@ struct SetupJourneyView: View {
                     case .finish: finish(facts)
                     default: EmptyView()
                     }
-                }.disabled(state.inFlight != nil)
+                }.disabled(state.inFlight != nil && !Self.disablesItsOwnButtons(state))
             }
-            if state.step == .certificate, state.inFlight?.work.canStopWaiting == true {
-                Button(SetupCopy.Working.bStopWaiting) { send(.stopWaiting) }
+            // The certificate's card draws its own (`certificate`); a wait any other step's card can't
+            // hold is still said with what stopping does, never as a bare button under the card.
+            if SetupJourneyActions.cardShowsWork(state), state.step != .certificate, let flight = state.inFlight,
+               flight.work.canStopWaiting {
+                StopWaitingRow(work: flight.work) { send(.stopWaiting) }
             }
             if !state.installMessages.isEmpty {
                 DisclosureGroup("Notes from the Windows install") {
@@ -60,81 +71,146 @@ struct SetupJourneyView: View {
         Button(title) { send(.perform(.run(work))) }
     }
 
-    /// Hands the typed password over once and forgets it. Nothing to save with an empty field.
+    /// Hands the typed password over. Nothing to save with an empty field, and nothing while a read
+    /// runs: the field stays up through one (`disablesItsOwnButtons`), but its Save It doesn't. The
+    /// field is forgotten by the controller once the runner takes the press
+    /// (`SetupWindowController.savePC(password:)`), so one it turns down keeps what was typed.
     private func savePC() {
-        guard !credentials.password.isEmpty else { return }
-        let secret = credentials.password
-        credentials.clear()
-        savePassword(secret)
+        guard !credentials.password.isEmpty, state.inFlight == nil else { return }
+        savePassword(credentials.password)
     }
 
-    /// The page's one filled button, which Return presses: the fill blue, as the footer's default takes,
-    /// not the lighter text accent the page's other buttons are tinted with.
-    private func defaultButton(_ title: String, action: @escaping () -> Void) -> some View {
-        withSetupAppearance { look in
-            Button(title, action: action)
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .tint(look.accentFill)
+    /// The last work's failure while it still stands (`SetupWindowState.standingFailure`), in a plain
+    /// card above the step's own — or nil where the step's card already says it. The certificate's
+    /// does; so does a failed Connect's recovery card (the answer is No once it fails), which drew the
+    /// same heading twice, the first telling Ben to choose a Close Setup that wasn't on screen. Pure.
+    static func problemCard(_ state: SetupWindowState) -> SetupRunner.Problem? {
+        guard let problem = state.standingFailure, state.step != .certificate else { return nil }
+        if state.step == .connect, state.facts?.answers.connected == false { return nil }
+        return problem
+    }
+
+    /// Tune and the certificate keep their pages live while work runs: the certificate's **What am I
+    /// approving?** has to open while macOS's dialog asks for the password, and Tune's folded list
+    /// while a check runs. So does the saved PC while a read nobody pressed runs (`refreshing`): its
+    /// password field stays as it was, text and focus, where a disabled field would drop the focus
+    /// mid-word. Their buttons are greyed one by one instead (or aren't drawn while work runs), and
+    /// the footer's are the footer's. Pure.
+    static func disablesItsOwnButtons(_ state: SetupWindowState) -> Bool {
+        switch state.step {
+        case .tune, .certificate: return true
+        case .savedPC: return state.refreshing
+        default: return false
         }
     }
 
+    /// Whether the page draws the one quiet line for a read nobody pressed (`QuietReadLine`): where it
+    /// keeps its card through the read rather than drawing what runs. Tune's headline and the
+    /// certificate's status line say it in their own words already. Pure.
+    static func showsQuietRead(_ state: SetupWindowState) -> Bool {
+        state.refreshing && state.inFlight != nil && [.savedPC, .connect, .finish].contains(state.step)
+    }
+
+    // MARK: Tune
+
+    /// A grouped list in the System Settings style: a headline that says whether anything is Ben's,
+    /// the rows that are first and open, the rows settled some other way, and the rows that passed
+    /// folded into one line. Its main action, **Fix Everything**, is the footer's
+    /// (`SetupJourneyActions.footerAction`).
     @ViewBuilder private func tune(_ facts: SetupFlow.Facts) -> some View {
         let screen = SetupFlow.tune(facts)
-        Text(SetupCopy.Tune.heading).font(.title2.bold())
-        Text(SetupCopy.Tune.body)
-        Text(SetupCopy.Tune.summary(SetupTuneStatus.counts(facts, work: state.inFlight?.work)))
-            .font(.subheadline.weight(.semibold))
-            .fixedSize(horizontal: false, vertical: true)
-        if let pointer = SetupCopy.Tune.attentionPointer(SetupTuneStatus.counts(facts, work: state.inFlight?.work)) {
-            Text(pointer).fixedSize(horizontal: false, vertical: true)
+        let groups = SetupTuneGroups(facts)
+        let work = state.inFlight?.work
+        let headline = SetupTuneHeadline.of(facts, working: state.inFlight.map { flight in
+            flight.waitingFor != nil ? SetupJourneyActions.busyLine(flight) : SetupCopy.Tune.busy(flight)
+        })
+        let words = SetupCopy.Tune.headline(headline)
+        VStack(alignment: .leading, spacing: 6) {
+            SetupStatusLine(Self.mark(headline), words.title)
+            if let detail = words.detail { Text(SetupCopy.markdown(detail)).setupProse() }
         }
-        if !screen.unread.isEmpty { action(SetupCopy.bCheckAgain, .survey) }
-        if !screen.fixEverything.isEmpty { action(SetupCopy.Tune.bFixEverything, .fixEverything).buttonStyle(.borderedProminent) }
-        ForEach(SetupTuneStatus.attentionFirst(screen.rows, facts: facts, work: state.inFlight?.work), id: \.id) { row in
-            let status = SetupTuneStatus.status(for: row, facts: facts, work: state.inFlight?.work)
-            SetupCard {
-                VStack(alignment: .leading, spacing: 8) {
-                    // The title alone: "G7" is the recipe's name for a row, which `winbar doctor` prints
-                    // and the reports carry, but nobody using this window needs it.
-                    Text(row.title).font(.headline)
-                    SetupTuneStatusLabel(status: status)
-                    Text(SetupCopy.Tune.detail(row, keptBitLocker: facts.keepBitLocker)).textSelection(.enabled)
-                    if let reason = screen.declined[row.id], row.kind != .ok {
-                        Text("Off by choice: \(SetupCopy.Tune.choiceLabel(reason))").font(.caption)
-                    } else if facts.answers.leftAlone.contains(row.id), row.kind != .ok {
-                        Text("Left as it is for this setup.").font(.caption)
-                    } else if screen.staged.contains(row.id) {
-                        Text(SetupCopy.Tune.stagedNote(vm: facts.chosenVM ?? "the VM"))
-                        Button("Undo This Change") { send(.discardChanges(row.id)) }
-                    } else if row.kind != .ok && row.kind != .info {
-                        Text(SetupCopy.Tune.plain(row.why)).font(.callout)
-                        if let how = row.how { Text(SetupCopy.Tune.how(row.id, how)).font(.callout).textSelection(.enabled) }
-                        if let failure = row.failure { Text(failure).foregroundStyle(.red) }
-                        if row.id == "G9", let question = screen.bitLocker {
-                            bitLocker(question)
-                        } else {
-                            HStack {
-                                if row.kind == .fixable && row.action == .fix { action(SetupCopy.Tune.bFix, .fix(checkID: row.id)) }
-                                if row.kind == .manual {
-                                    if row.canGuide { action(SetupCopy.Tune.bOpen, .guide(checkID: row.id)) }
-                                    action(SetupCopy.bDone, .recordDone(checkID: row.id))
-                                }
-                                if row.id != "G0", status != .skipped { Button(SetupCopy.bSkip) { send(.skip(row.id)) } }
-                            }
-                        }
-                    }
+        if !groups.needsYou.isEmpty {
+            TuneList(groups.needsYou) { row in
+                TuneRow(header: header(row, facts: facts, work: work, emphasis: true)) {
+                    needsYou(row, screen: screen, facts: facts)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
             }
+        }
+        if !groups.others.isEmpty {
+            TuneList(groups.others) { row in
+                TuneRow(header: header(row, facts: facts, work: work, emphasis: false)) {
+                    settled(row, screen: screen, facts: facts)
+                }
+            }
+        }
+        if !groups.verified.isEmpty {
+            TuneVerifiedGroup(rows: groups.verified.map { header($0, facts: facts, work: work, emphasis: false) })
+        }
+    }
+
+    private static func mark(_ headline: SetupTuneHeadline) -> StatusMark.Status {
+        switch headline {
+        case .working: return .running
+        case .notAsked: return .pending
+        case .needsYou, .unchecked: return .attention
+        case .tuned: return .done
+        }
+    }
+
+    private func header(_ row: SetupFlow.Row, facts: SetupFlow.Facts, work: SetupRunner.Work?, emphasis: Bool) -> TuneRowHeader {
+        let status = SetupTuneStatus.status(for: row, facts: facts, work: work)
+        return TuneRowHeader(mark: TuneRowHeader.mark(status, row), title: SetupCopy.Tune.title(row),
+                             trailing: SetupCopy.Tune.trailing(status, row),
+                             detail: SetupCopy.Tune.plain(SetupCopy.Tune.detail(row, keptBitLocker: facts.keepBitLocker)),
+                             emphasis: emphasis)
+    }
+
+    /// An open row: what Winbar read, why it matters, what to do, and its buttons.
+    @ViewBuilder private func needsYou(_ row: SetupFlow.Row, screen: SetupFlow.TuneScreen, facts: SetupFlow.Facts) -> some View {
+        let busy = state.inFlight != nil
+        let detail = SetupCopy.Tune.plain(SetupCopy.Tune.detail(row, keptBitLocker: facts.keepBitLocker))
+        if !detail.isEmpty, detail != row.title, detail != SetupCopy.Tune.title(row) {
+            Text(detail).font(.system(size: 13, weight: .medium)).textSelection(.enabled).setupProse()
+        }
+        Text(SetupCopy.Tune.why(row)).setupProse()
+        if let how = row.how { Text(SetupCopy.Tune.how(row.id, how)).textSelection(.enabled).setupProse() }
+        if let failure = row.failure { Text(failure).foregroundStyle(errorText).setupProse() }
+        if row.id == "G9", let question = screen.bitLocker {
+            bitLocker(question).disabled(busy)
+        } else {
+            // The row's first button may be the footer's corner (`tuneRowInCorner`): drawn there, once.
+            let corner = SetupJourneyActions.tuneRowInCorner(facts)
+            HStack(spacing: 8) {
+                ForEach(SetupTuneRowActions.of(row, facts: facts).filter { corner?.rowID != row.id || $0 != corner?.action },
+                        id: \.title) { button in
+                    TuneRowButton(action: button) { send(button.command) }
+                }
+            }
+            .disabled(busy)
+        }
+    }
+
+    /// A row settled some other way: said in one quiet line, with Undo for a change waiting for the
+    /// restart.
+    @ViewBuilder private func settled(_ row: SetupFlow.Row, screen: SetupFlow.TuneScreen, facts: SetupFlow.Facts) -> some View {
+        if let flag = screen.declined[row.id], row.kind != .ok {
+            TuneNote(SetupCopy.Tune.leftAlone(declined: flag))
+        } else if facts.answers.leftAlone.contains(row.id), row.kind != .ok {
+            TuneNote(SetupCopy.Tune.leftAloneSkipped)
+        } else if screen.staged.contains(row.id) {
+            TuneNote(String(SetupCopy.Tune.stagedNote(vm: facts.chosenVM ?? "the VM").characters))
+            Button("Undo This Change") { send(.discardChanges(row.id)) }.disabled(state.inFlight != nil)
+        } else if row.id == "G9", facts.keepBitLocker {
+            TuneNote(SetupCopy.Tune.keptBitLocker)
+        } else if row.kind == .info {
+            TuneNote(SetupCopy.Tune.words(row.detail))
         }
     }
 
     @ViewBuilder private func bitLocker(_ question: SetupFlow.BitLockerQuestion) -> some View {
         let offer = bitLockerOffer(question)
-        Text(offer.explanation)
-        Text(offer.question).font(.headline)
+        Text(offer.explanation).setupProse()
+        CardTitle(offer.question)
         HStack {
             action(SetupCopy.BitLocker.bNo, .keepBitLocker)
             action("Decrypt C:", .fix(checkID: "G9"))
@@ -150,259 +226,517 @@ struct SetupJourneyView: View {
         }
     }
 
+    // MARK: The certificate
+
+    /// The result, what happened, the one next action (in the footer's corner), and the
+    /// alternatives in one row. **What am I approving?** stays openable while work runs: it is what
+    /// someone reads while macOS's dialog waits for a password.
     @ViewBuilder private func certificate(_ facts: SetupFlow.Facts) -> some View {
         let page = SetupCertificatePage.page(state, facts: facts)
-        Text(SetupCopy.Certificate.heading).font(.title2.bold())
         SetupCard {
             VStack(alignment: .leading, spacing: 12) {
-                Label(SetupCopy.Certificate.result(page.phase), systemImage: certificateSymbol(page.phase))
-                    .font(.headline)
-                if page.phase == .approving || page.phase == .checking { ProgressView() }
-                if !page.detail.isEmpty { Text(SetupCopy.markdown(page.detail)).textSelection(.enabled) }
-                if page.phase == .needsApproval { Text(SetupCopy.Certificate.instructions) }
-                if page.phase == .approving { Text(SetupCopy.Certificate.waiting) }
-                Text(SetupCopy.Certificate.next(page.phase, canApprove: page.canApprove))
-                if page.canApprove {
-                    let title = page.phase == .skipped ? SetupCopy.Certificate.bApproveInstead
-                        : page.phase == .attention ? SetupCopy.Certificate.bRetry : SetupCopy.Certificate.bApprove
-                    action(title, .trustCertificate).buttonStyle(.borderedProminent)
+                SetupStatusLine(certificateMark(page.phase), SetupCopy.Certificate.result(page.phase))
+                if !page.detail.isEmpty { Text(SetupCopy.markdown(page.detail)).textSelection(.enabled).setupProse() }
+                if page.phase == .needsApproval, page.canApprove {
+                    Text(SetupCopy.markdown(SetupCopy.Certificate.instructions)).setupProse()
                 }
-                if page.canSkip {
-                    Button(SetupCopy.Certificate.bSkip) { send(.skip("H7")) }
+                let next = SetupCopy.Certificate.next(page)
+                if !next.isEmpty { Text(SetupCopy.markdown(next)).setupProse() }
+                // The wait's way out, in the card that says what it waits for, with what stopping does,
+                // as the VM step's start has it. It floated bare under the card.
+                if let flight = state.inFlight, flight.work.canStopWaiting {
+                    StopWaitingRow(work: flight.work) { send(.stopWaiting) }
+                }
+                let approveHere = page.canApprove && (page.phase == .skipped || page.next == .checkAgain)
+                if approveHere || page.canSkip || page.revisits {
+                    HStack(spacing: 8) {
+                        if approveHere {
+                            action(page.phase == .skipped ? SetupCopy.Certificate.bApproveInstead : SetupCopy.Certificate.bRetry,
+                                   .trustCertificate)
+                        }
+                        if page.revisits {
+                            Button(SetupCopy.Certificate.bCheckAgainInstead) { send(.revisit(.certificate)) }
+                        }
+                        if page.canSkip { Button(SetupCopy.Certificate.bSkip) { send(.skip("H7")) } }
+                    }
                 }
                 if let host = facts.rdpHost {
-                    DisclosureGroup("What am I approving?") { Text(SetupCopy.Certificate.body(host: host)) }
+                    DisclosureGroup("What am I approving?") {
+                        Text(SetupCopy.Certificate.body(host: host)).setupProse()
+                    }
+                    .disclosureGroupStyle(JourneyDisclosureStyle())
                 }
             }
         }
     }
 
-    private func certificateSymbol(_ phase: SetupCertificatePage.Phase) -> String {
+    private func certificateMark(_ phase: SetupCertificatePage.Phase) -> StatusMark.Status? {
         switch phase {
-        case .needsApproval: return "hand.point.up.left"
-        case .approving: return "clock"
-        case .checking: return "magnifyingglass"
-        case .verified: return "checkmark.circle.fill"
-        case .skipped: return "minus.circle"
-        case .attention: return "exclamationmark.triangle.fill"
+        case .needsApproval: return nil
+        case .approving, .checking: return .running
+        case .verified: return .done
+        case .skipped: return .pending
+        case .attention: return .attention
         }
     }
 
+    // MARK: The saved PC
+
     /// What the saved-PC card says while work runs, named for that work (`SetupCopy.SavedPC.busy`),
-    /// or nil when nothing runs and the card shows the step itself. Pure.
+    /// or nil when nothing runs and the card shows the step itself — and while a read nobody pressed
+    /// runs, which keeps the card and its password field as they were: the field went, and with it
+    /// what was being typed, each time the window was clicked back into. Pure.
     static func savedPCWaiting(_ state: SetupWindowState) -> String? {
-        state.inFlight.map(SetupCopy.SavedPC.busy)
+        guard !state.refreshing else { return nil }
+        return state.inFlight.map(SetupCopy.SavedPC.busy)
     }
 
+    /// Each state's main action is the footer's corner (`SetupJourneyActions`); the card has what
+    /// to know, and the alternatives in one row at its foot.
     @ViewBuilder private func savedPC(_ facts: SetupFlow.Facts) -> some View {
-        Text(SetupCopy.SavedPC.heading).font(.title2.bold())
         SetupCard {
             VStack(alignment: .leading, spacing: 12) {
                 if let waiting = Self.savedPCWaiting(state) {
-                    Text(waiting)
+                    SetupStatusLine(.running, waiting)
                 } else {
                 switch SetupFlow.savedPC(facts) {
                 case .needsWindowsApp(let dependency):
-                    Text("Your turn: install Windows App").font(.headline)
+                    SetupStatusLine(nil, "Your turn: install Windows App")
                     if case .wrongSignature(let reason) = dependency {
-                        Text(reason)
+                        Text(reason).setupProse()
                     } else {
-                        ForEach(SetupCopy.SavedPC.windowsAppPlan(brewPresent: facts.homebrew != nil), id: \.self) { Text($0) }
-                        action("Open the App Store", .installWindowsApp)
-                        Text("Install Windows App in the App Store. When its button says Open, return here and choose Check Again. Winbar will confirm the app is installed, then ask to save your connection.")
+                        Text(SetupCopy.markdown(SetupCopy.SavedPC.installWindowsApp)).setupProse()
+                        details {
+                            ForEach(SetupCopy.SavedPC.windowsAppPlan(brewPresent: facts.homebrew != nil), id: \.self) {
+                                Text($0).setupProse()
+                            }
+                        }
                     }
-                    Button("Skip Windows App") { send(.skip("C1")) }
+                    HStack(spacing: 8) { Button(SetupCopy.SavedPC.bSkipWindowsApp) { send(.skip("C1")) } }
+                        .disabled(state.inFlight != nil)
                 case .windowsAppOpen:
-                    Text("Your turn: close Windows App before saving").font(.headline)
-                    Text(SetupCopy.markdown(SetupCopy.SavedPC.appOpen))
-                    Button(SetupCopy.SavedPC.bQuitWindowsApp) { send(.quitWindowsApp) }
-                    Text("After Windows App closes, choose Check Again. The password form will appear when Winbar confirms it is ready.")
-                    Button("Continue to Sign-in Instead") { send(.continueWithoutSavedPC) }
+                    SetupStatusLine(nil, "Your turn: quit Windows App first")
+                    Text(SetupCopy.markdown(SetupCopy.SavedPC.appOpen)).setupProse()
+                    details { Text(SetupCopy.SavedPC.appOpenWhy).setupProse() }
+                    HStack(spacing: 8) {
+                        Button(SetupCopy.SavedPC.bContinueToSignInInstead) { send(.continueWithoutSavedPC) }
+                    }
+                    .disabled(state.inFlight != nil)
                 case .save(_, let user):
-                    Text("Your turn: save the connection").font(.headline)
-                    Text(SetupCopy.SavedPC.lead)
-                    // Where the password goes, including the second it spends in Windows App's arguments,
-                    // stays one click away rather than a 125-word wall above the field.
-                    DisclosureGroup(SetupCopy.SavedPC.whereItGoes) { Text(SetupCopy.SavedPC.why(user: user)).padding(.top, 4) }
+                    SetupStatusLine(nil, SetupCopy.SavedPC.yourTurn)
+                    Text(SetupCopy.SavedPC.lead(user: user)).setupProse()
                     SecureField(text: $credentials.password) { Text(SetupCopy.SavedPC.passwordLabel(user: user)) }
                         .textFieldStyle(.roundedBorder)
                         .onSubmit(savePC)
-                    if credentials.password.isEmpty {
-                        Button(SetupCopy.SavedPC.bSaveIt) {}.disabled(true)
-                    } else {
-                        defaultButton(SetupCopy.SavedPC.bSaveIt, action: savePC)
-                    }
-                    Button("Skip saving the PC") { credentials.clear(); send(.skip("C2")) }
-                    Text("After saving, wait for PC saved below. Then continue to the connection test.")
+                    Text(SetupCopy.markdown(SetupCopy.SavedPC.afterSaving)).foregroundStyle(quietText).setupProse()
+                    // Where the password goes, including the second it spends in Windows App's arguments,
+                    // stays one click away rather than a 125-word wall above the field.
+                    DisclosureGroup(SetupCopy.SavedPC.whereItGoes) { Text(SetupCopy.SavedPC.why(user: user)).setupProse() }
+                        .disclosureGroupStyle(JourneyDisclosureStyle())
+                    HStack(spacing: 8) { Button(SetupCopy.SavedPC.bSkipSaving) { credentials.clear(); send(.skip("C2")) } }
+                        .disabled(state.inFlight != nil)
                 case .saved(let row):
-                    Label("PC saved", systemImage: "checkmark.circle.fill").font(.headline)
-                    Text(row.detail)
-                    Text("This step is complete. Choose Continue to Connection Test below.")
-                case .manual(let row):
-                    Text("Automatic saving is unavailable").font(.headline)
-                    Text("You can still connect. Continue to the connection test, then enter your Windows username and password in Windows App when it asks. Your Mac password and Windows PIN won't work there.")
-                    Button("Continue to Sign-in") { send(.continueWithoutSavedPC) }
-                        .buttonStyle(.borderedProminent)
-                    Button("Retry Automatic Setup") { send(.retrySavedPC) }
-                    DisclosureGroup("Save a connection yourself") {
-                        Text(row.detail)
-                        if let how = row.how { Text(how) }
-                        if row.canGuide { action("Open Windows App", .guide(checkID: "C2")) }
-                        action("I've Saved the Connection", .recordDone(checkID: "C2"))
+                    SetupStatusLine(.done, SetupCopy.SavedPC.savedAnnouncement)
+                    Text(row.detail).foregroundStyle(quietText).textSelection(.enabled).setupProse()
+                    Text(SetupCopy.SavedPC.saved).setupProse()
+                case .manual(let row) where SetupFlow.commandLineSilent(facts):
+                    // Windows App's command line isn't answering: said as Windows App's problem, with
+                    // the steps to do it by hand in view (the step is the person's now), the way into
+                    // Windows App, the word that it's done, and one more try. What Windows App said is
+                    // under Details. The corner is Continue to Connect.
+                    SetupStatusLine(.attention, SetupCopy.SavedPC.silentTitle)
+                    Text(SetupCopy.SavedPC.silent).setupProse()
+                    Text(SetupCopy.markdown(SetupCopy.SavedPC.silentNext)).setupProse()
+                    if let how = row.how { Text(how).textSelection(.enabled).setupProse() }
+                    if let host = facts.rdpHost {
+                        Text(SetupCopy.SavedPC.editInstead(host: host, user: facts.rdpUser)).setupProse()
                     }
+                    // Greyed while anything runs, a read nobody pressed included: the card stays up through
+                    // one (`disablesItsOwnButtons`), and these are the runner's work.
+                    HStack(spacing: 8) {
+                        if row.canGuide { action(SetupCopy.SavedPC.bOpenWindowsApp, .guide(checkID: "C2")) }
+                        action(SetupCopy.SavedPC.bSavedItMyself, .recordDone(checkID: "C2"))
+                        Button(SetupCopy.bTryAgain) { send(.retrySavedPC) }
+                    }
+                    .disabled(state.inFlight != nil)
+                    details { Text(row.detail).textSelection(.enabled).setupProse() }
+                case .manual(let row):
+                    SetupStatusLine(.attention, SetupCopy.SavedPC.manualTitle)
+                    Text(SetupCopy.SavedPC.manual).setupProse()
+                    Text(SetupCopy.markdown(SetupCopy.SavedPC.manualNext)).setupProse()
+                    HStack(spacing: 8) { Button(SetupCopy.bTryAgain) { send(.retrySavedPC) } }
+                        .disabled(state.inFlight != nil)
+                    DisclosureGroup(SetupCopy.SavedPC.saveItYourself) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(row.detail).setupProse()
+                            if let how = row.how { Text(how).setupProse() }
+                            HStack(spacing: 8) {
+                                if row.canGuide { action(SetupCopy.SavedPC.bOpenWindowsApp, .guide(checkID: "C2")) }
+                                action(SetupCopy.SavedPC.bSavedItMyself, .recordDone(checkID: "C2"))
+                            }
+                            .disabled(state.inFlight != nil)
+                        }
+                    }
+                    .disclosureGroupStyle(JourneyDisclosureStyle())
                 case .skipped:
-                    Label("Saved connection skipped", systemImage: "minus.circle").font(.headline)
-                    Text("The saved connection was skipped. You can add it later in Windows App. Choose Continue to Connection Test below.")
-                case .notYet(let row):
-                    Text(SetupCopy.SavedPC.missing(host: facts.rdpHost, user: facts.rdpUser))
-                    if let row { Text(row.detail) }
-                    Button("Skip saving the PC") { credentials.clear(); send(.skip("C2")) }
+                    let noApp = SetupFlow.windowsAppSkipped(facts)
+                    SetupStatusLine(.pending, noApp ? SetupCopy.SavedPC.windowsAppSkippedTitle : SetupCopy.SavedPC.skippedTitle)
+                    Text(SetupCopy.markdown(noApp ? SetupCopy.SavedPC.windowsAppSkipped : SetupCopy.SavedPC.skipped))
+                        .setupProse()
+                    // The way back. The footer's corner is still Continue, which Return presses. Greyed while
+                    // anything runs, as the card's Skip is.
+                    HStack(spacing: 8) { Button(SetupCopy.SavedPC.bTrySavingAgain) { send(.revisit(.savedPC)) } }
+                        .disabled(state.inFlight != nil)
+                case .notYet:
+                    let words = SetupCopy.SavedPC.notYet(host: facts.rdpHost, user: facts.rdpUser)
+                    SetupStatusLine(words.showsWindowsScreen ? nil : .pending, words.title)
+                    Text(SetupCopy.markdown(words.body)).setupProse()
+                    HStack(spacing: 8) { Button(SetupCopy.SavedPC.bSkipSaving) { credentials.clear(); send(.skip("C2")) } }
+                        .disabled(state.inFlight != nil)
                 }
                 }
             }
         }
     }
 
+    /// The reasoning behind a card's one sentence, folded.
+    private func details<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        let folded = content()
+        return DisclosureGroup("Details") { VStack(alignment: .leading, spacing: 8) { folded } }
+            .disclosureGroupStyle(JourneyDisclosureStyle())
+    }
+
+    // MARK: Connect
+
     @ViewBuilder private func connect(_ facts: SetupFlow.Facts) -> some View {
-        Text(SetupCopy.Connecting.heading).font(.title2.bold())
-        if state.reconnectAfterRestart { Text(SetupCopy.Connecting.afterRestart) }
+        if state.reconnectAfterRestart { Text(SetupCopy.markdown(SetupCopy.Connecting.afterRestart)).setupProse() }
         SetupCard {
             VStack(alignment: .leading, spacing: 12) {
-                if state.inFlight != nil {
-                    Text("Wait while Winbar checks or opens the connection. Opening Windows App alone does not verify the connection; Winbar will ask whether you see the Windows desktop.")
+                // A read nobody pressed keeps the card: the recovery card's words are what Ben is
+                // reading when he clicks back into the window (`QuietReadLine` says the read).
+                if let flight = state.inFlight, !state.refreshing {
+                    SetupStatusLine(.running, SetupJourneyActions.busyLine(flight))
+                    // Only about Connect itself: a Check Again's read or opening Accessibility settings
+                    // opens nothing, and isn't followed by the desktop question.
+                    if flight.work == .connect {
+                        Text(SetupCopy.Connecting.openingIsNotProof).foregroundStyle(quietText).setupProse()
+                    }
                 } else {
                 switch SetupFlow.connect(facts) {
                 case .allowAccessibility:
-                    Text("Your turn: allow Winbar in System Settings").font(.headline)
-                    Text(SetupCopy.markdown(SetupCopy.Connecting.accessibility))
-                    action(SetupCopy.Connecting.bAllowAccessibility, .guide(checkID: "C3"))
-                    Text("After enabling Winbar, return here and choose Check Again. The Connect button appears when Winbar confirms the permission.")
-                    Button("Use a one-off connection") { send(.skip("C3")) }
+                    SetupStatusLine(nil, "Your turn: allow Winbar in System Settings")
+                    Text(SetupCopy.markdown(SetupCopy.Connecting.accessibilityLead)).setupProse()
+                    details { Text(SetupCopy.markdown(SetupCopy.Connecting.accessibility)).setupProse() }
+                    HStack(spacing: 8) { Button(SetupCopy.Connecting.bUseOneOff) { send(.skip("C3")) } }
                 case .ready:
-                    Text("Ready to test—not connected yet").font(.headline)
-                    Text(SetupCopy.Connecting.localNetwork)
-                    Text("Choose Connect. When Windows App opens, finish signing in there if asked. Return here and tell Winbar whether you see the Windows desktop.")
-                    action(SetupCopy.Connecting.bConnect, .connect).buttonStyle(.borderedProminent)
+                    SetupStatusLine(nil, "Ready to test: not connected yet")
+                    Text(SetupCopy.markdown(SetupCopy.Connecting.readyLead)).setupProse()
+                    Text(SetupCopy.markdown(SetupCopy.Connecting.localNetworkLead)).setupProse()
+                    details { Text(SetupCopy.markdown(SetupCopy.Connecting.localNetwork)).setupProse() }
                 case .didItWork:
-                    Text(SetupCopy.Connecting.didItAppearHeading).font(.headline)
-                    Text(SetupCopy.Connecting.openedConnection)
-                    HStack {
+                    SetupStatusLine(nil, SetupCopy.Connecting.didItAppearHeading)
+                    Text(SetupCopy.Connecting.openedConnection).setupProse()
+                    HStack(spacing: 8) {
                         Button(SetupCopy.Connecting.bNo) { send(.connected(false)) }
-                        Button(SetupCopy.Connecting.bYes) { send(.connected(true)) }.buttonStyle(.borderedProminent)
+                        Button(SetupCopy.Connecting.bYes) { send(.connected(true)) }.stepPrimaryButton()
                     }
                 case .didNotWork(let diagnosis):
                     // The heading and the advice follow Winbar's own check of the port, and what H5 says
                     // (or doesn't) about the VM's screen; the host, the user and the saved PC are the
                     // facts under it. All from the diagnosis, so nothing here can read H5 differently.
                     let recovery = SetupCopy.Connecting.recovery(diagnosis)
-                    Text(recovery.heading).font(.headline)
-                    Text(verbatim: "PC: \(diagnosis.host ?? "not known") · User: \(diagnosis.user ?? "not known")")
-                    Text(diagnosis.savedPC ? "The PC is saved in Windows App." : "No saved PC was confirmed. A one-off connection asks for your Windows password.")
-                    ForEach(recovery.steps, id: \.self) { Text(SetupCopy.markdown($0)) }
-                    if recovery.offersConsole { Button("Close Setup") { send(.closeForNow) } }
-                    HStack {
-                        // The filled default, and the button the steps name in bold. The footer's Continue
-                        // Without Connecting used to hold both, so Return skipped the one step that proves
-                        // the setup works.
-                        defaultButton(recovery.retry.title) {
-                            send(recovery.retry == .tryAgain ? .retryConnection : .perform(.run(.checkAgain(.connect))))
+                    SetupStatusLine(.attention, recovery.heading)
+                    ForEach(recovery.steps, id: \.self) { Text(SetupCopy.markdown($0)).setupProse() }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(verbatim: "PC: \(diagnosis.host ?? "not known") · User: \(diagnosis.user ?? "not known")")
+                        Text(diagnosis.savedPC ? "Windows App has the saved PC."
+                                               : "No saved PC was confirmed. A one-off connection asks for your Windows password.")
+                    }
+                    .foregroundStyle(quietText)
+                    .setupProse()
+                    HStack(spacing: 8) {
+                        // The way forward is the footer's corner (`SetupJourneyActions.footerAction`):
+                        // the setting where macOS refused the check, otherwise the retry. The card keeps
+                        // the alternatives: the retry to press once the setting is on, and the rest.
+                        if recovery.opensLocalNetwork {
+                            Button(recovery.retry.title) { send(recovery.retry.command) }
                         }
                         Button("Report a Problem…") { send(.reportProblem) }
+                        if recovery.offersConsole { Button(SetupCopy.Connecting.bCloseSetup) { send(.closeForNow) } }
                     }
                 case .worked:
-                    Label("Connection confirmed", systemImage: "checkmark.circle.fill").font(.headline)
-                    Text("You confirmed the Windows desktop opened. Choose Continue to Finish below.")
-                case .needsWindowsApp: Text("Windows App is missing. Go back to install it.")
-                case .windowsAppSkipped: Text("Windows App was skipped, so no connection has been tested. The VM will keep its screen.")
-                case .notYet: Text("Check the PC's name and Winbar's permissions before connecting.")
+                    SetupStatusLine(.done, "Connection confirmed")
+                    Text("You confirmed the Windows desktop opened. This step is complete.").setupProse()
+                case .needsWindowsApp:
+                    SetupStatusLine(.attention, "Windows App is missing")
+                    Text(SetupCopy.markdown("Choose **Back** to install it.")).setupProse()
+                case .windowsAppSkipped:
+                    SetupStatusLine(.pending, "No connection to test")
+                    Text("Windows App was skipped, so no connection has been tested. The VM will keep its screen.").setupProse()
+                case .notYet:
+                    SetupStatusLine(.pending, "Not ready to test yet")
+                    Text(SetupCopy.markdown("Winbar is still reading Windows' name and its own permissions. "
+                                            + "Choose **\(SetupCopy.bCheckAgain)**.")).setupProse()
                 }
                 }
             }
         }
     }
 
+    /// The choice and the restart, then the arrival once finished (`SetupFinishPage`).
     @ViewBuilder private func finish(_ facts: SetupFlow.Facts) -> some View {
-        let screen = SetupFlow.finish(facts)
         if state.finished {
-            Text(facts.answers.connected == true ? SetupCopy.Finish.doneHeading : "Setup finished; the connection still needs checking")
-                .font(.title2.bold())
-            ForEach(Array(SetupCopy.Finish.doneBody(vm: screen.vm ?? "the VM",
-                    facts.answers.connected == true ? .connected : (SetupFlow.windowsAppSkipped(facts) ? .windowsAppSkipped : .notConnected),
-                    canReopenFromMenu: SetupWindow.availableToEveryone).enumerated()),
-                    id: \.offset) { _, line in Text(line) }
-            // Last, under the words that say it's done: the page's point is those, and he only agrees.
-            if let armie, let art {
-                ArmieSays(line: armie.line, art: art, clip: armie.clip, send: send)
-            }
+            FinishArrival(facts: facts, passedOver: SetupFinishPage.passedOver(state), armie: armie, art: art, send: send)
         } else {
-            SetupCard {
-                VStack(alignment: .leading, spacing: 12) {
-                    switch screen.headless {
-                    case .offer:
-                        Text(SetupCopy.Finish.headlessHeading).font(.headline)
-                        ForEach(SetupCopy.Finish.headlessBody, id: \.self) { Text(SetupCopy.markdown($0)) }
-                        action(SetupCopy.Finish.bGoHeadless, .fix(checkID: "H5"))
-                        Button(SetupCopy.Finish.bKeepScreen) { send(.skip("H5")) }
-                    case .otherVMsRunning(let names):
-                        if let refusal = Reconfigure.otherVMsRefusal(screen.vm ?? "the VM", changed: false, others: .success(names)) {
-                            Text(refusal.title).font(.headline)
-                            Text(refusal.detail)
-                        }
-                        Text(SetupCopy.markdown(SetupCopy.Finish.afterRefusal))
-                        Button(SetupCopy.Finish.bKeepScreen) { keepScreen(facts) }
-                    case .couldNotConfirm(let reason):
-                        Text(reason)
-                        Text("Winbar couldn't confirm that it is safe to restart UTM.")
-                        Text(SetupCopy.markdown(SetupCopy.Finish.afterRefusal))
-                        Button(SetupCopy.Finish.bKeepScreen) { keepScreen(facts) }
-                    case .staged:
-                        Text("Headless is chosen. Apply the changes below to restart the VM.")
-                        Button(SetupCopy.Finish.bKeepScreen) { send(.discardChanges("H5")) }
-                    case .alreadyHeadless: Text("The VM is already running without its own screen.")
-                    case .kept: Text("The VM will keep its screen.")
-                    case .notOffered, .connectSkipped, .waitingForConnect:
-                        Text(SetupCopy.markdown(SetupCopy.Finish.notOffering))
-                    case .notReady: Text("The VM will keep its screen; Remote Desktop isn't ready for headless mode.")
-                    case .notChecked, .checkOtherVMs: Text("Checking whether it is safe to offer headless mode…")
-                    }
-                    if !screen.restart.isEmpty {
-                        Text(SetupCopy.Finish.oneRestart(of: "“\(screen.vm ?? "the VM")”", applies: screen.restart.summary))
-                        action("Apply Changes and Restart", .applyChanges).buttonStyle(.borderedProminent)
-                        Button("Discard Changes and Finish Without Restarting") { send(.discardChanges(nil)) }
-                        Text("If Winbar can't verify BitLocker or Windows won't shut down, it stops safely. You can discard these unapplied changes and finish with the current settings.").font(.caption)
-                    }
-                }
-            }
+            FinishChoiceView(state: state, facts: facts, send: send)
         }
-    }
-
-    private func keepScreen(_ facts: SetupFlow.Facts) {
-        if facts.pending.display != nil { send(.discardChanges("H5")) }
-        else { send(.skip("H5")) }
     }
 }
 
-/// Keep the result visible after the action button disappears. The word and symbol carry the
-/// meaning together; colour alone cannot distinguish a successful check from a skipped one.
-struct SetupTuneStatusLabel: View {
-    let status: SetupTuneStatus
+// MARK: - A read nobody pressed
+
+/// The one line a page draws while a read nobody pressed runs over a card it keeps
+/// (`SetupJourneyView.showsQuietRead`): a small spinner and "Checking again…", in the quiet grey,
+/// above the card, so the page says something is being read without taking the card away.
+struct QuietReadLine: View {
+    @Environment(\.quietText) private var quiet
 
     var body: some View {
-        withSetupAppearance { look in
-            Label(SetupCopy.Tune.status(status), systemImage: status.symbol)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(color(look))
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(SetupCopy.Tune.status(status))
+        HStack(alignment: .center, spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text(SetupCopy.Working.lookingAgain).foregroundStyle(quiet)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: - Stop Waiting
+
+/// **Stop Waiting**, and beside it what stopping does (`SetupCopy.Working.stopConsequence`): one way on
+/// every step that has a wait to stop, inside the card that says what it waits for.
+struct StopWaitingRow: View {
+    let work: SetupRunner.Work
+    let stop: () -> Void
+    @Environment(\.quietText) private var quiet
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Button(SetupCopy.Working.bStopWaiting, action: stop)
+            if let consequence = SetupCopy.Working.stopConsequence(work) {
+                Text(consequence)
+                    .font(.system(size: SetupStyle.smallestText))
+                    .foregroundStyle(quiet)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.top, 4)
+    }
+}
+
+// MARK: - The tune list
+
+/// A group of rows the way System Settings draws one: one card, rows 36 pt and up, and hairlines
+/// between them inset to where the titles start. Fifteen separate cards, each with a heading, a
+/// status line and a sentence, made the one row that needed Ben look like all the others.
+struct TuneList<Row: View>: View {
+    let rows: [SetupFlow.Row]
+    let row: (SetupFlow.Row) -> Row
+
+    init(_ rows: [SetupFlow.Row], @ViewBuilder row: @escaping (SetupFlow.Row) -> Row) {
+        self.rows = rows
+        self.row = row
+    }
+
+    var body: some View {
+        SetupCard {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.element.id) { index, item in
+                    if index > 0 { TuneDivider() }
+                    row(item)
+                }
+            }
+            // The card's own padding is for prose; a list's rows carry their own, so the first title
+            // sits where a card's first line would.
+            .padding(.vertical, -TuneRowHeader.rowPadding)
+        }
+    }
+}
+
+/// The hairline between two rows, from the titles' edge to the card's.
+struct TuneDivider: View {
+    var body: some View {
+        Divider().padding(.leading, TuneRowHeader.titleInset)
+    }
+}
+
+/// One row: its header, and under it, lined up with the title, whatever the row has to say.
+struct TuneRow<Content: View>: View {
+    let header: TuneRowHeader
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            header
+            VStack(alignment: .leading, spacing: 8) { content }
+                .padding(.leading, TuneRowHeader.titleInset)
+        }
+        .padding(.vertical, TuneRowHeader.rowPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// A row's first line: the mark, the title, and how it stands at the trailing edge, in the quiet
+/// grey the mark's colour and shape don't need to repeat. VoiceOver reads it as one thing: the title,
+/// then the status word (the mark's own name would say the status twice).
+struct TuneRowHeader: View {
+    /// Where titles start: the mark's column and the gap after it.
+    static var titleInset: CGFloat { StatusMark.width + 10 }
+    /// Above and below a row's first line: with its 18 pt minimum, a one-line row is 36 pt tall, the
+    /// low end of System Settings' rows.
+    static var rowPadding: CGFloat { 9 }
+
+    let mark: StatusMark.Status
+    let title: String
+    let trailing: String
+    /// What Winbar read, on hover and to VoiceOver: a folded row that passed has no room for it.
+    var detail: String = ""
+    /// Semibold for a row that needs Ben, regular for the rest, as System Settings sets a row.
+    var emphasis = false
+
+    @Environment(\.quietText) private var quiet
+
+    /// A row's mark: done, needs Ben, failed (a read Windows didn't answer, or a Fix that didn't
+    /// work), running, ⓘ for a note, or the hollow circle for everything settled some other way.
+    static func mark(_ status: SetupTuneStatus, _ row: SetupFlow.Row) -> StatusMark.Status {
+        switch status {
+        case .verified: return .done
+        case .checking, .applying: return .running
+        case .needsAttention: return row.kind == .error || row.failure != nil ? .failed : .attention
+        case .information: return .info
+        case .pendingRestart, .skipped, .notChecked: return .pending
         }
     }
 
-    private func color(_ look: SetupAppearance) -> Color {
-        switch status {
-        case .verified, .checking, .applying: return look.accentText
-        case .needsAttention, .pendingRestart: return look.palette.attention.color
-        case .skipped, .information, .notChecked: return look.mutedText
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            StatusMark(mark, pendingLabel: trailing)
+                .accessibilityHidden(true)
+            Text(title)
+                .font(.system(size: 13, weight: emphasis ? .semibold : .regular))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 12)
+            Text(trailing)
+                .font(.system(size: 13))
+                .foregroundStyle(quiet)
+                .fixedSize()
         }
+        .frame(minHeight: 36 - 2 * Self.rowPadding, alignment: .center)
+        .contentShape(Rectangle())
+        .help(detail)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(detail)
+    }
+}
+
+/// A quiet line under a settled row: why it's settled.
+struct TuneNote: View {
+    let text: String
+    @Environment(\.quietText) private var quiet
+
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text).foregroundStyle(quiet).setupProse()
+    }
+}
+
+/// A row's button, named for VoiceOver with the row it acts on (`SetupCopy.Tune.spoken`): five
+/// rows' "Skip, button" said nothing about which one.
+struct TuneRowButton: View {
+    let action: SetupTuneRowActions.Action
+    let press: () -> Void
+
+    var body: some View {
+        Button(action.title, action: press)
+            .accessibilityLabel(action.spoken)
+    }
+}
+
+/// The rows that passed, folded into "✓ 13 settings already right", as System Settings folds what
+/// needs no attention. Open, they are rows like the others.
+struct TuneVerifiedGroup: View {
+    let rows: [TuneRowHeader]
+    @State private var open = false
+
+    var body: some View {
+        SetupCard {
+            DisclosureGroup(isExpanded: $open) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, header in
+                        TuneDivider()
+                        header.padding(.vertical, TuneRowHeader.rowPadding)
+                    }
+                }
+                .padding(.bottom, -TuneRowHeader.rowPadding)
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    StatusMark(.done).accessibilityHidden(true)
+                    Text(SetupCopy.Tune.alreadyRight(rows.count)).font(.system(size: 13))
+                }
+            }
+            .disclosureGroupStyle(JourneyDisclosureStyle(chevronTrailing: true))
+        }
+    }
+}
+
+// MARK: - Disclosures
+
+/// The journey's folded "Details", "What am I approving?" and "Where this password goes": the label
+/// and an accent-coloured chevron, 11 pt, over a 24 pt hit area. The system's chevron measured 1.78:1
+/// on a light card, which is too faint to be seen as something that opens.
+struct JourneyDisclosureStyle: DisclosureGroupStyle {
+    /// On the trailing edge, as a folded list row has it in System Settings; before the label, as a
+    /// "Details" in running text does.
+    var chevronTrailing = false
+
+    static let chevronSize: CGFloat = 11
+
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) { configuration.isExpanded.toggle() }
+            } label: {
+                HStack(alignment: .center, spacing: 6) {
+                    if !chevronTrailing { DisclosureChevron(open: configuration.isExpanded) }
+                    configuration.label.foregroundStyle(.primary)
+                    if chevronTrailing {
+                        Spacer(minLength: 8)
+                        DisclosureChevron(open: configuration.isExpanded)
+                    }
+                }
+                .frame(minHeight: 24)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
+            if configuration.isExpanded {
+                configuration.content.padding(.top, 8)
+            }
+        }
+    }
+}
+
+private struct DisclosureChevron: View {
+    let open: Bool
+
+    var body: some View {
+        withSetupAppearance { look in
+            Image(systemName: "chevron.right")
+                .font(.system(size: JourneyDisclosureStyle.chevronSize, weight: .bold))
+                .foregroundStyle(look.accentText)
+                .rotationEffect(.degrees(open ? 90 : 0))
+                .frame(width: 14)
+        }
+        .accessibilityHidden(true)
     }
 }

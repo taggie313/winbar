@@ -1,5 +1,6 @@
 import AppKit
 import ServiceManagement
+import SwiftUI
 
 /// The menu bar app.
 ///
@@ -55,7 +56,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     static let setupWindowArgument = "--setup-window"
     static let setupWindowNotification = Notification.Name("net.elusive.winbar.setup-window")
 
+    /// Opening Winbar again while it runs — its Dock icon, Finder, Spotlight, Launchpad, `open -a
+    /// Winbar` — shows a window. Without this a second launch looked like nothing at all happened on a
+    /// Mac that was already set up.
+    ///
+    /// `hasVisibleWindows` isn't the question: AppKit counts alerts and panels too, and says nothing
+    /// about a minimised window. `reopenCandidates` asks about Winbar's own.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        AppDelegate.reopen(windows: AppPresence.reopenCandidates(), bringForward: AppPresence.bringForward,
+                           present: SetupWindowController.present)
+    }
+
+    /// What a reopen does, apart from AppKit. With the Dock icon, a click on it is the likeliest reopen
+    /// of all, and it is made to get back to the window the person was using: the New Windows VM form
+    /// behind another app, say. Opening Set Up Winbar in front of that instead covered it with a
+    /// different window, and a half-finished wizard then greyed out the menu's VM controls. So the
+    /// frontmost of Winbar's own windows (`windows`, frontmost first) comes back, minimised or not,
+    /// and Set Up Winbar opens only when there is none. Returns false: handled. Pure.
+    nonisolated static func reopen<Window>(windows: [Window], bringForward: (Window) -> Void, present: () -> Void) -> Bool {
+        if let front = windows.first { bringForward(front) } else { present() }
+        return false
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // First, before an abandoned install is picked up or a window opens: a copy that is about to
+        // move itself and quit mustn't claim a job or start a window it would then quit under.
+        if offerMoveToApplications(forLoginItem: false) { return }
         statusItem.autosaveName = "winbar"
         menu.autoenablesItems = false
         menu.delegate = self
@@ -96,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         pollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refresh() }
         pollTimer?.tolerance = 2
+        startWindowsIfAsked()
         // What the last check found, straight from settings, so the menu is right before anything
         // touches the network — and on a Mac that has been offline ever since.
         newerVersion = UpdateCheck.knownNewerVersion
@@ -206,7 +233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func render() {
         let filled = (activity != nil || installBlinking) ? blinkOn : (running || install != nil)
-        let image = NSImage(systemSymbolName: filled ? "square.split.2x2.fill" : "square.split.2x2",
+        let image = NSImage(systemSymbolName: MenuBarIntro.iconSymbol + (filled ? ".fill" : ""),
                             accessibilityDescription: "Winbar")
         image?.isTemplate = true
         statusItem.button?.image = image
@@ -217,9 +244,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusLine?.title = statusText
     }
 
+    // MARK: Introducing the icon
+
+    /// The finished page's popover, while it's up (`MenuBarIntro`).
+    private var introduction: NSPopover?
+
+    /// Where the icon is, for `MenuBarIntro.icon`: the button's frame on screen, whether macOS is showing
+    /// its window, and the screens with their camera housings.
+    @MainActor func iconPlace() -> MenuBarIntro.Icon {
+        let button = statusItem.button
+        let window = button?.window
+        let frame = button.flatMap { button in window?.convertToScreen(button.convert(button.bounds, to: nil)) }
+        let shown = statusItem.isVisible && window?.isVisible == true && window?.occlusionState.contains(.visible) == true
+        let screens = NSScreen.screens.map {
+            MenuBarIntro.Screen(frame: $0.frame, topLeft: $0.auxiliaryTopLeftArea ?? .zero,
+                                topRight: $0.auxiliaryTopRightArea ?? .zero)
+        }
+        return MenuBarIntro.icon(button: frame, windowShown: shown, screens: screens)
+    }
+
+    /// Points at the icon: a popover from the status item's button, saying Winbar lives there now and
+    /// what its menu does. Transient, so any click elsewhere puts it away; a second **Show Me** replaces
+    /// it rather than stacking another.
+    @MainActor func pointAtIcon() {
+        guard let button = statusItem.button, iconPlace() == .shown else { return }
+        introduction?.close()
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(rootView: MenuBarIntroBubble())
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        introduction = popover
+    }
+
     private var workLease: AppWorkGate.Lease?
-    private func begin(_ label: String) -> Bool {
-        switch AppWorkGate.shared.begin(.menu, label: label, vm: vmName) {
+    private func begin(_ label: String, as owner: AppWorkGate.Owner = .menu) -> Bool {
+        switch AppWorkGate.shared.begin(owner, label: label, vm: vmName) {
         case .failure(let error): fail(error.title, error.detail); return false
         case .success(let lease): workLease = lease
         }
@@ -277,6 +336,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                               hasSharedFolder: sharedFolderOnDisk != nil,
                               update: newerVersion.map { MenuUpdate(version: $0, homebrew: UpdateCheck.isHomebrewInstall) },
                               launchAtLogin: SMAppService.mainApp.status == .enabled,
+                              startsWindows: StartWindowsAtLaunch.live.isOn(),
                               offersSetUp: MenuState.offersSetUp(available: SetupWindow.availableToEveryone,
                                                                  coordinating: SetupWindowController.coordinatesVM,
                                                                  wizardShown: Config.setupWizardShown),
@@ -320,6 +380,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .reportProblem: return #selector(reportProblem)
         case .showUpdate: return #selector(showUpdate)
         case .launchAtLogin: return #selector(toggleLaunchAtLogin)
+        case .startWindowsAtLaunch: return #selector(toggleStartWindows)
         case .quit: return #selector(quit)
         case .chooseVM: return #selector(chooseVM(_:))
         case .openAutomationSettings: return #selector(openAutomationSettings)
@@ -374,7 +435,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: Actions
 
-    @objc private func connect() {
+    /// Also the Set Up Winbar window's **Open Windows** (`SetupCommand.openWindows`), so the done page
+    /// opens Windows the one way the menu does.
+    @objc func connect() {
         SetupWindowController.connectionRequested()
         guard let vm = vmName else { return }
         guard running else { startVM(thenConnect: true); return }
@@ -388,14 +451,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let (host, readiness) = result
             self.end()
             guard let host else {
-                self.fail("Winbar doesn't know \(vm)'s Remote Desktop address",
-                          "Windows' guest agent didn't answer, so Winbar couldn't ask for its name. Try again once Windows "
-                              + "has booted, or set it with “winbar config --host <name>” in Terminal.")
+                self.fail(MenuCopy.noHostTitle(vm: vm), MenuCopy.noHostDetail)
                 return
             }
             if readiness == .notReady {
-                self.fail("\(vm) isn't accepting Remote Desktop yet",
-                          "The VM is running but port 3389 on \(host) didn't answer within two minutes.")
+                self.fail(MenuCopy.notReadyTitle(vm: vm), MenuCopy.notReady(vm: vm))
             } else {
                 self.openRemoteDesktop(host: host)
             }
@@ -403,6 +463,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func start() { startVM(thenConnect: false) }
+
+    /// **Also start Windows when Winbar opens**: the menu's own Start, as Winbar opens — at login, with
+    /// Launch at Login on — when the person turned it on and nothing else has the VM
+    /// (`StartWindowsAtLaunch.starts`). The same path as the menu's Start, so it blinks, says what it's
+    /// doing on the status line and says why if Windows doesn't come up, as a press would. `refresh()`
+    /// has already looked for the VM's process, so `running` is this launch's answer.
+    @MainActor private func startWindowsIfAsked() {
+        let launch = StartWindowsAtLaunch.Launch(
+            on: StartWindowsAtLaunch.live.isOn(), vm: vmName, running: running,
+            installing: CreateJob.current().map { !$0.isFinished } ?? false,
+            workHeld: AppWorkGate.shared.isHeld, setupBusy: SetupWindowController.coordinatesVM)
+        guard StartWindowsAtLaunch.starts(launch) else { return }
+        NSLog("Winbar: starting \(vmName ?? "the VM") as it opens (Start Windows with Winbar is on)")
+        startVM(thenConnect: false)
+    }
 
     private func startVM(thenConnect: Bool) {
         guard let vm = vmName else { return }
@@ -421,8 +496,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .failure(let error):
                 self.fail(error.title, error.detail)
             case .success(.notReady):
-                self.fail("\(vm) started, but Remote Desktop never came up",
-                          "Nothing answered on port 3389 within three minutes.")
+                self.fail(MenuCopy.startedNotReadyTitle(vm: vm), MenuCopy.startedNotReady)
             case .success(let readiness):
                 self.rdpReady = readiness
                 self.render()
@@ -462,12 +536,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleConsole() {
         guard let vm = vmName else { return }
         let showing = consoleEnabled
-        guard confirm(showing ? "Switch \(vm) to headless?" : "Show \(vm)'s console window?",
-                      "This restarts \(vm) and UTM. " + (showing
-                        ? "Afterwards it's reachable only over Remote Desktop, and uses far less power."
-                        : "Useful for boot menus or when Remote Desktop won't connect. It costs about a CPU core while visible."),
-                      button: "Restart") else { return }
-        guard begin(showing ? "Going headless…" : "Enabling console…") else { return }
+        guard confirm(MenuCopy.confirmTitle(vm: vm, screenOn: showing), MenuCopy.confirmBody(vm: vm, screenOn: showing),
+                      button: MenuCopy.bRestart) else { return }
+        guard begin(MenuCopy.working(screenOn: showing)) else { return }
         let interaction = Interaction(
             progress: { [weak self] in self?.step($0) },
             confirmUnverifiedBitLocker: { [weak self] reason in
@@ -489,7 +560,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             case .success(let done) where done.display == nil:
                 // The menu's idea of the display was stale; Reconfigure has corrected it from UTM.
-                self.inform(showing ? "\(vm) is already headless" : "\(vm)'s console window is already on",
+                self.inform(MenuCopy.already(vm: vm, screenOn: showing),
                             "UTM says its display was already that way, so it wasn't changed.")
             case .success:
                 break
@@ -527,8 +598,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.prompt = "Share"
         panel.message = "Choose a folder for \(vm) to share with Windows."
         panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
-        NSApp.activate(ignoringOtherApps: true)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard AppPresence.modal({ panel.runModal() }) == .OK, let url = panel.url else { return }
         let path = SharedFolder.trimmingSlash(url.path)
         let name = SharedFolder.abbreviate(path)
         // A space in the path makes a drive Windows can read nothing from, so it is refused here
@@ -595,8 +665,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             force.keyEquivalent = ""
             force.hasDestructiveAction = true
             alert.addButton(withTitle: "Cancel")   // "Cancel" gets Escape: stop waiting, force nothing
-            NSApp.activate(ignoringOtherApps: true)
-            switch alert.runModal() {
+            switch AppPresence.modal({ alert.runModal() }) {
             case .alertFirstButtonReturn: return .keepWaiting
             case .alertSecondButtonReturn: return .forceStop
             default: return .giveUp
@@ -604,7 +673,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func openUTM() { UTM.open() }
+    @objc private func openUTM() {
+        AppDelegate.openUTM(installed: UTM.isInstalled, open: UTM.open, explain: { [weak self] in self?.offerUTMSetUp() })
+    }
+
+    /// Open UTM, or say why it can't be: on a new Mac the obvious item used to do nothing at all — no
+    /// window, no message — because `UTM.open()` returns quietly when there is no UTM. Pure.
+    nonisolated static func openUTM(installed: Bool, open: () -> Void, explain: () -> Void) {
+        if installed { open() } else { explain() }
+    }
+
+    /// The way to UTM from here is Set Up Winbar, which installs it; so the alert offers that.
+    private func offerUTMSetUp() {
+        let alert = NSAlert()
+        alert.messageText = MenuCopy.utmMissingTitle
+        alert.informativeText = MenuCopy.utmMissingDetail
+        alert.addButton(withTitle: SetupCopy.menuItem)
+        alert.addButton(withTitle: "Cancel")
+        guard AppPresence.modal({ alert.runModal() }) == .alertFirstButtonReturn else { return }
+        SetupWindowController.present()
+    }
 
     // MARK: Reporting a problem
 
@@ -617,9 +705,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     ///
     /// It takes up to a couple of minutes, nearly all of it waiting on UTM and Windows, so it runs
     /// off the main thread with the icon blinking and the status line saying which part it is on.
+    ///
+    /// Allowed during an install or a set-up step: it takes a `.report` lease, which nothing refuses
+    /// and which refuses nothing (see `AppWorkGate.Owner.report` for why that is safe). The one thing
+    /// it waits for is the menu's own operation, whose status line and blinking icon it would share;
+    /// the status menu greys the item out then, and this says so when the Help menu asks anyway.
     @objc func reportProblem() {
+        if let activity {
+            inform("Winbar is busy", "Winbar is still working (\(activity)). \(Diagnose.Copy.menuItem) is ready "
+                       + "again as soon as that finishes.")
+            return
+        }
         guard let anonymise = askAboutReport() else { return }
-        guard begin(Diagnose.Copy.working) else { return }
+        guard begin(Diagnose.Copy.working, as: .report) else { return }
         background({ Diagnose.gather(.fromTheMenu(anonymise: anonymise)) { self.step($0.label) } }) { [weak self] result in
             guard let self else { return }
             self.end()
@@ -627,10 +725,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .failure(let error):
                 self.fail(error.title, error.detail)
             case .success(let written):
-                // The Finder first, the issues page second, so the page ends up in front with the
+                // The Finder first, the new issue second, so the page ends up in front with the
                 // file's window behind it: that is the way round you can drag one into the other.
                 NSWorkspace.shared.activateFileViewerSelecting([written.url])
-                NSWorkspace.shared.open(UpdateCheck.issuesURL)
+                NSWorkspace.shared.open(UpdateCheck.newIssueFromMenuURL)
             }
         }
     }
@@ -643,13 +741,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.informativeText = Diagnose.Copy.askDetail
         alert.addButton(withTitle: Diagnose.Copy.askButton)
         alert.addButton(withTitle: "Cancel")
-        let anonymise = NSButton(checkboxWithTitle: Diagnose.Copy.anonymise, target: nil, action: nil)
-        anonymise.toolTip = Diagnose.Copy.anonymiseHelp
-        anonymise.sizeToFit()
+        let anonymise = AppDelegate.anonymiseCheckbox()
         alert.accessoryView = anonymise
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        guard AppPresence.modal({ alert.runModal() }) == .alertFirstButtonReturn else { return nil }
         return anonymise.state == .on
+    }
+
+    /// The dialog's one choice, ticked: see `Diagnose.Copy.anonymiseByDefault`.
+    static func anonymiseCheckbox() -> NSButton {
+        let box = NSButton(checkboxWithTitle: Diagnose.Copy.anonymise, target: nil, action: nil)
+        box.toolTip = Diagnose.Copy.anonymiseHelp
+        box.state = Diagnose.Copy.anonymiseByDefault ? .on : .off
+        box.sizeToFit()
+        return box
     }
 
     /// The update item. Homebrew put this copy here, so Homebrew should take it away again: its
@@ -664,14 +768,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSPasteboard.general.setString(UpdateCheck.brewCommand, forType: .string)
     }
 
+    /// The menu's **Start Windows with Winbar**: the setting only. Ticking it starts nothing now; the
+    /// next time Winbar opens, it does.
+    @MainActor @objc private func toggleStartWindows() {
+        let setting = StartWindowsAtLaunch.live
+        setting.set(!setting.isOn())
+    }
+
     @objc private func toggleLaunchAtLogin() {
         let service = SMAppService.mainApp
-        do {
-            if service.status == .enabled { try service.unregister() } else { try service.register() }
-        } catch {
-            fail("Couldn't change Launch at Login", error.localizedDescription)
+        Config.launchAtLoginDecided = true
+        switch LaunchAtLogin.set(service.status != .enabled, service: service, place: AppLocation.current) {
+        case .on, .off: break
+        case .refused(let why):
+            // The one thing a copy on the disk image must never do. Moving is the fix, so it is
+            // offered here even after a Not Now at launch.
+            if !offerMoveToApplications(forLoginItem: true) { inform(LaunchAtLogin.Copy.failedTitle, why) }
+        case .needsApproval:
+            // One sentence first, so System Settings doesn't open with no word of which switch.
+            if confirm(LaunchAtLogin.Copy.approvalTitle, LaunchAtLogin.Copy.approval, button: LaunchAtLogin.Copy.bOpenSettings) {
+                SMAppService.openSystemSettingsLoginItems()
+            }
+        case .failed(let why):
+            fail(LaunchAtLogin.Copy.failedTitle, why)
         }
-        if service.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
+    }
+
+    // MARK: Where this copy runs from
+
+    /// Offers to move a copy running from the disk image, a translocated copy or Downloads into
+    /// /Applications, and does it on a yes: copies itself there, starts the new copy once this one has
+    /// gone, and quits. True when it is doing that, so the caller stops.
+    ///
+    /// At launch it is asked once (`AppLocation.offersMove`); for Launch at Login it is asked whenever
+    /// the copy is temporary, since that is the one thing such a copy must not do. Nothing is offered
+    /// when a Winbar in Applications is already running: this one is then a duplicate, and moving it
+    /// would trash the app in use.
+    @discardableResult
+    private func offerMoveToApplications(forLoginItem: Bool) -> Bool {
+        let place = AppLocation.current
+        guard AppLocation.asksToMove(place, forLoginItem: forLoginItem, declined: Config.declinedMoveToApplications,
+                                     destinationRunning: AppLocation.destinationIsRunning()),
+              let source = AppBundle.url else { return false }
+        let alert = NSAlert()
+        alert.messageText = AppLocation.Copy.title(place)
+        alert.informativeText = (forLoginItem ? AppLocation.Copy.loginItemRefused(place) + "\n\n" : "") + AppLocation.Copy.detail
+        alert.addButton(withTitle: AppLocation.Copy.bMove)
+        alert.addButton(withTitle: AppLocation.Copy.bNotNow)
+        guard AppPresence.modal({ alert.runModal() }) == .alertFirstButtonReturn else {
+            if !forLoginItem { Config.declinedMoveToApplications = true }
+            return forLoginItem   // said why already; nothing more to add
+        }
+        switch AppLocation.move(from: source) {
+        case .notWritable:
+            inform(AppLocation.Copy.byHandTitle, AppLocation.Copy.byHand)
+            return forLoginItem
+        case .failed(let why):
+            fail(AppLocation.Copy.failedTitle, why)
+            return forLoginItem
+        case .moved:
+            let arguments = AppLocation.relaunchArguments(Array(CommandLine.arguments.dropFirst()))
+            if !AppLocation.relaunch(AppLocation.relaunchCommand(pid: getpid(), destination: AppLocation.destination,
+                                                                   arguments: arguments)) {
+                inform("Winbar is in Applications now", "Open it from the Applications folder. This copy quits now.")
+            }
+            NSApp.terminate(nil)
+            return true
+        }
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
@@ -686,7 +849,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let install, CreateWindowController.ownsJob {
             let quit = confirm("Windows is still installing",
                                "If you quit, Windows keeps installing in “\(install.plan.vmName)”, but the last steps "
-                                   + "(removing the install disks and checking the result) wait until you open Winbar again.",
+                                   + "(detaching the install disks from UTM and checking the result) wait until you open Winbar again.",
                                button: "Quit Anyway")
             guard quit else { return .terminateCancel }
         }
@@ -728,13 +891,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: Alerts
 
+    // Every alert and panel in this file runs through `AppPresence.modal`, which puts Winbar in the
+    // Dock and ⌘-Tab while it is up: one opened from the menu bar otherwise had no way back once it
+    // fell behind another app. A test holds the file to that.
+
     private func fail(_ title: String, _ detail: String) {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = title
         alert.informativeText = detail.trimmingCharacters(in: .whitespacesAndNewlines)
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        _ = AppPresence.modal { alert.runModal() }
     }
 
     private func inform(_ title: String, _ detail: String) {
@@ -742,8 +908,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.alertStyle = .informational
         alert.messageText = title
         alert.informativeText = detail
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        _ = AppPresence.modal { alert.runModal() }
     }
 
     private func confirm(_ title: String, _ detail: String, button: String) -> Bool {
@@ -752,7 +917,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.informativeText = detail
         alert.addButton(withTitle: button)
         alert.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
-        return alert.runModal() == .alertFirstButtonReturn
+        return AppPresence.modal { alert.runModal() } == .alertFirstButtonReturn
     }
 }

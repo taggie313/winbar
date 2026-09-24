@@ -55,6 +55,15 @@ enum SetupCopy {
             init(literalCapacity: Int, interpolationCount: Int) {}
             mutating func appendLiteral(_ words: String) { text += SetupCopy.markdown(words) }
             mutating func appendInterpolation(_ value: String) { text += AttributedString(value) }
+            /// A button's name that carries a chosen value (**Use “winlab01”**), bold like every other
+            /// button the deck names, and still never parsed: the weight is set on the value's run
+            /// rather than written as asterisks around it, which Markdown could only read if the value
+            /// were parsed too.
+            mutating func appendInterpolation(bold value: String) {
+                var run = AttributedString(value)
+                run.inlinePresentationIntent = .stronglyEmphasized
+                text += run
+            }
         }
 
         /// So a long sentence can be written across lines, the way the rest of the deck is.
@@ -73,10 +82,15 @@ enum SetupCopy {
     static let stepNames = ["Welcome", "Look around", "The VM", "Tune", "The certificate", "The saved PC",
                             "Connect", "Finish"]
 
-    /// The step bar's own, shorter labels, in the same order: eight equal segments across the window's
-    /// narrowest content leave each about 66 pt, which "The certificate" and "The saved PC" don't fit
-    /// at a legible size. The header says the step's full name; VoiceOver reads it (`stepBarLabel`).
+    /// The steps' shorter names, in the same order: what the footer's Continue calls the next step
+    /// (`journeyNext`), so the button and the bar name one step one way. The bar has no labels under
+    /// its segments (`StepBar`); VoiceOver reads the full name (`stepBarLabel`).
     static let stepBarNames = ["Welcome", "Look around", "The VM", "Tune", "Certificate", "Saved PC", "Connect", "Finish"]
+
+    /// A step's short name, from the list above.
+    static func stepBarName(_ step: WizardStep) -> String {
+        stepBarNames[WizardStep.allCases.firstIndex(of: step) ?? 0]
+    }
 
     /// A step's name, from the list above.
     static func stepName(_ step: WizardStep) -> String {
@@ -90,6 +104,84 @@ enum SetupCopy {
 
     /// What VoiceOver reads for the step bar, which is drawn as eight marks it can't read one by one.
     static func stepBarLabel(_ step: WizardStep) -> String { stepCounter(step) + ": " + stepName(step) }
+
+    /// What VoiceOver adds after the step bar's label when steps were passed over (`StepBar.flagged`),
+    /// which the bar marks with a warning; nil when none were.
+    static func stepBarFlagged(_ steps: [WizardStep]) -> String? {
+        guard !steps.isEmpty else { return nil }
+        return "Skipped or not confirmed: " + steps.map(stepName).joined(separator: ", ")
+    }
+
+    /// What the pointer is told over one of the step bar's segments: the step and how it stands, and
+    /// for a step passed over, what happened and why (`passedOver`). A segment used to say only its
+    /// step's name, so the owner found an orange ⚠ on the finished page that explained nothing. Pure.
+    static func stepBarHelp(_ step: WizardStep, _ mark: StepBar.Mark, passedOver: String? = nil) -> String {
+        let standing: String
+        switch mark {
+        case .done: standing = "done"
+        case .current: standing = "you're here"
+        case .pending: standing = "still to come"
+        case .flagged: standing = passedOver ?? "skipped or not confirmed"
+        }
+        return stepName(step) + ": " + standing
+    }
+
+    /// What happened to a step passed over, and why, from what Winbar read: the step bar's hover after
+    /// the step's name, and the finished page's list of what was passed over. nil for a step that can't
+    /// be passed over, or wasn't. Pure.
+    static func passedOver(_ step: WizardStep, _ facts: SetupFlow.Facts) -> String? {
+        switch step {
+        case .certificate:
+            switch SetupFlow.certificate(facts) {
+            case .trusted: return nil
+            case .trust: return "skipped — not approved, so Windows App may warn about it when you connect"
+            case .needsCertificate: return "skipped — Windows had no certificate for its name yet"
+            case .notYet: return "skipped — it couldn't be checked yet"
+            }
+        case .savedPC:
+            if case .saved = SetupFlow.savedPC(facts) { return nil }
+            if SetupFlow.windowsAppSkipped(facts) { return "skipped — Windows App isn't installed" }
+            if SetupFlow.commandLineSilent(facts) {
+                return "skipped — Windows App's command line didn't respond, so Winbar couldn't save it"
+            }
+            switch facts.kind("C2") {
+            case .manual?: return "skipped — Winbar couldn't save it"
+            case .fixable?: return "skipped — not saved, so Windows App asks for your password when you connect"
+            default: return "skipped"
+            }
+        case .connect:
+            switch Finish.outcome(facts) {
+            case .connected: return nil
+            case .notConnected: return "you said the Windows desktop didn't appear"
+            case .windowsAppSkipped: return "not tried — Windows App was skipped"
+            case .notTried: return "the desktop wasn't confirmed"
+            }
+        default:
+            return nil
+        }
+    }
+
+    /// What VoiceOver says for a status mark (`StatusMark`), which is a symbol it would otherwise read
+    /// as "checkmark circle" — or, for the text glyphs the marks used to be, as punctuation.
+    enum Status {
+        static let done = "Done"
+        static let attention = "Needs you"
+        static let failed = "Failed"
+        static let running = "In progress"
+        /// A check the window hasn't made yet (step 1's rows).
+        static let notChecked = "Not checked yet"
+        /// An install stage that hasn't begun: nothing is being checked there.
+        static let notStarted = "Not started yet"
+        /// A note: nothing to do, nothing to wait for.
+        static let info = "For information"
+    }
+
+    /// What VoiceOver says before a callout's words, for the tones whose meaning is otherwise only
+    /// the symbol and the tint. An information callout is just its words.
+    enum Tone {
+        static let attention = "Needs attention"
+        static let error = "Problem"
+    }
 
     /// Steps 3 to 7, until each is built (the spec's commits 7 to 11). The window stops after step 2
     /// in this build rather than showing screens that do nothing, and says where the rest is done.
@@ -132,9 +224,13 @@ enum SetupCopy {
     // MARK: - Step 0: Welcome
 
     enum Welcome {
-        /// Under Winbar's mark, as the welcome's opening. The spec's heading, "Set up Winbar", is gone:
-        /// the window's title bar says Set Up Winbar, and the header says Welcome, so a third heading
-        /// said the window's name twice.
+        /// The welcome's title, under Winbar's mark, the way Apple's own assistants open. The window
+        /// had none: the review found the mark repeated from the header and one sentence standing in
+        /// for a title. The header row is hidden on this page (`SetupScreen.showsHeader`), so this is
+        /// the only title here, and it isn't the title bar's "Set Up Winbar" said twice.
+        static let title = "Welcome to Winbar"
+
+        /// Under the title: what Winbar is, in one sentence.
         static let lead = "Winbar runs Windows 11 in a virtual machine on this Mac and connects to it over Remote Desktop."
 
         /// What the welcome promises, for a window whose last built step is `lastBuilt`. Pure.
@@ -149,15 +245,20 @@ enum SetupCopy {
             return lastBuilt >= .vm ? throughVM : soFar
         }
 
-        /// The spec's, for the finished window. The spec said "three or four times". Four is the most
-        /// there are (Automation, the certificate, Accessibility, Local Network) and a Mac that already
-        /// answered some sees fewer, so "up to four" is the version that is true on every Mac.
+        /// The spec's, for the finished window, in words Ben has: "adopts a VM" became "uses one you
+        /// already have".
+        ///
+        /// The third line names no questions and counts none. It listed five kinds of permission, the
+        /// longest sentence on the page and words ("certificate trust", "Local Network access") that
+        /// mean nothing before the page that asks; and every count it carried had to be kept in step
+        /// with Homebrew's App Management question and the rest. Each question is said on its own page
+        /// before it appears, which is the promise that matters. "May", because a Mac that allowed
+        /// everything before sees none of them.
         private static let whole = [
-            "This window does the whole thing: it checks what's here, makes or adopts a VM, tunes Windows, and "
-                + "connects once to prove it works. You don't need Terminal.",
+            "This window does the whole thing: it checks what's here, makes a Windows VM or uses one you already "
+                + "have, tunes Windows, and connects once to prove it works. You don't need Terminal.",
             "About five minutes. Installing Windows, if you need it, adds about ten more on a fast Mac.",
-            "macOS may ask you to approve opening or updating apps, control of UTM, certificate trust, Accessibility "
-                + "and Local Network access. Winbar explains each request before it appears.",
+            "macOS may ask your permission a few times. Winbar tells you what each question is before it appears.",
         ]
 
         /// While the window stops after looking around: it checks, installs UTM, and gets UTM to answer.
@@ -193,13 +294,14 @@ enum SetupCopy {
                 + "apps. Winbar says what each one is before it appears.",
         ]
 
-        /// While the window stops after the VM: it checks, installs UTM, gets UTM to answer, and makes or
-        /// adopts a VM. The questions are step 1's, and only step 1's: choosing or starting a VM asks UTM,
-        /// which step 1 already has an answer from, and an install the window starts leaves the one
+        /// While the window stops after the VM: it checks, installs UTM, gets UTM to answer, and makes a
+        /// VM or takes on one that's there ("adopts" was the spec's word, and not one Ben has). The
+        /// questions are step 1's, and only step 1's: choosing or starting a VM asks UTM, which step 1
+        /// already has an answer from, and an install the window starts leaves the one
         /// macOS question it could raise — Local Network — to set-up (`CreatePlan.inSetupWindow`).
         private static let throughVM = [
             "For now this window does the first part: it checks what's here, installs UTM if it's missing, and makes "
-                + "or adopts a Windows VM, then stops and says what does the rest.",
+                + "a Windows VM or uses one you already have, then stops and says what does the rest.",
             "A minute or two, plus UTM's download if it isn't installed yet (about \(Dependency.utmDownloadMB) MB). "
                 + "Installing Windows, if you need it, adds about ten more on a fast Mac.",
             soFar[2],
@@ -228,8 +330,9 @@ enum SetupCopy {
         /// isn't running), so the window can't tell the two apart before the button is pressed. So
         /// the prompt is predicted, as §2.2 requires, as an "if" and as something that happens once.
         static let askHeading = "Next, a question for UTM"
-        static let askBody = "**Open UTM and Ask** opens UTM and asks it something small. That's how Winbar will start, "
-            + "stop and reconfigure the VM."
+        /// The instruction first, in the deck's one verb; what the button does after it.
+        static let askBody = "Choose **Open UTM and Ask**: Winbar opens UTM and asks it something small. That's how "
+            + "Winbar will start, stop and change the VM."
         ///
         /// `quarantined`: UTM carries macOS's "downloaded from the internet" mark, which a browser's
         /// download and Homebrew's both leave (Winbar's own download doesn't).
@@ -254,10 +357,42 @@ enum SetupCopy {
                 + "takes, so a Mac left locked never gets past them. If you've answered both before, UTM just answers."
         }
         static let bOpenUTMAndAsk = "Open UTM and Ask"
-        /// Step 1's own way on, once the three rows are done.
+        /// A Continue with nowhere named: the welcome's. Step 1's own way on names the VM step
+        /// (`journeyNext`).
         static let bContinue = "Continue"
         /// For a refused Automation grant: the same page the menu's **Open Automation Settings…** opens.
         static let bOpenAutomationSettings = "Open Automation Settings…"
+        /// When UTM answered with an error: opens UTM and asks it again (`settleUTM`, which opens it
+        /// first), so the fix the card names is the button rather than an instruction.
+        static let bOpenUTM = "Open UTM"
+        /// For a copy of UTM Winbar won't replace: shows it in the Finder, where the Trash is a drag
+        /// away, rather than a path to go looking for.
+        static let bShowInFinder = "Show in Finder"
+
+        /// The fold over what only some people want to read: the install plan's particulars, UTM's own
+        /// error, Homebrew's output.
+        static let bShowDetails = "Show Details"
+        static let bHideDetails = "Hide Details"
+
+        /// Step 1's page title while Winbar reads the Mac, first time or pressed again, and the line
+        /// under the rows that says how long. The page showed a spinner and nothing else, or a card from
+        /// the read before beside a spinner that was about to replace it.
+        static let checkingTitle = "Checking this Mac"
+        static let checkingNote = "This takes a few seconds."
+
+        /// Step 1's page title once there is nothing left to do here. "For now" while Windows App is
+        /// missing or needs something: the saved-PC step deals with it, so the step is done, but
+        /// "everything" would be untrue.
+        static func readyTitle(windowsAppReady: Bool) -> String {
+            windowsAppReady ? "Everything Winbar needs is here" : "Everything Winbar needs for now is here"
+        }
+
+        /// A row's words for an app that's there, as a subtitle to its name: "Installed · 4.7.5". The
+        /// row said "UTM" over "UTM 4.7.5", the name twice. nil when `state` isn't installed.
+        static func installed(_ state: DependencyState) -> String? {
+            guard case .installed(let version) = state else { return nil }
+            return version.map { "Installed · \($0)" } ?? "Installed"
+        }
 
         /// The install button: the yes to `DependencyCopy.question`, which the card ends on, in a
         /// button's words. nil for a plan the window can't carry out (advice only, or the App Store,
@@ -286,8 +421,15 @@ enum SetupCopy {
         /// and UTM can't answer anything until it's answered. The card named only the Automation prompt.
         static let settleOpen = "If macOS asks whether to open UTM, an app downloaded from the internet, choose **Open** there."
 
-        /// utmctl said nothing after **Open UTM and Ask** or **Try Again**: the card's heading.
-        static let silentHeading = "UTM's command-line tool hasn't answered"
+        /// utmctl said nothing after **Open UTM and Ask** or **Try Again**, and a prompt may still be on
+        /// screen: the page's title. "UTM's command-line tool" was a name Ben doesn't have for what is,
+        /// to him, UTM.
+        static let silentHeading = "UTM hasn't answered"
+
+        /// The page's title when the way on is the switch in System Settings: Automation refused, or
+        /// utmctl silent with macOS's answer already on file. It says what's needed rather than what
+        /// went wrong ("Winbar isn't allowed to control UTM" read as a verdict).
+        static let permissionHeading = "Winbar needs permission to control UTM"
 
         /// What to do about it, in the window. Not `UTMFirstUse.how`, which is the terminal's: the
         /// window has already opened UTM itself (`settleUTM` calls `UTM.open()`) and **Try Again**
@@ -299,13 +441,22 @@ enum SetupCopy {
             case .wouldPrompt, .unknown:
                 return "Winbar opened UTM, and macOS is probably waiting for an answer to its prompt, "
                     + "\(Automation.promptWords(host: host)), which can be behind another window. Choose **Allow** there, "
-                    + "then press **\(bTryAgain)**."
+                    + "then choose **\(bTryAgain)**."
             case .decided:
+                // The settings page is the filled button here, and the window looks again by itself when
+                // it becomes key (`SetupJourneyActions.returnRead`, which asks UTM again:
+                // `SetupRunner.reasksUTM`), so the sentence ends on the button and on what happens
+                // after, not on Try Again.
                 return "Winbar opened UTM, and macOS already has an answer on whether \(host) may control it, so no "
-                    + "prompt is coming. Turn on UTM under \(host) in Privacy & Security → Automation, then press "
-                    + "**\(bTryAgain)**."
+                    + "prompt is coming. Choose **\(bOpenAutomationSettings)** and turn on UTM under \(host). "
+                    + comeBack
             }
         }
+
+        /// What happens once the switch is on, or the app is updated: the window looks again when it
+        /// becomes key (`SetupJourneyActions.returnRead`, which every card saying this is held to), and
+        /// asks UTM again when its last answer was a refusal (`SetupRunner.reasksUTM`).
+        static let comeBack = "Winbar checks again when you come back."
 
         /// Beside the silent card when UTM carries the quarantine mark: what the mark is, and the one
         /// way it can be what Winbar is waiting on here.
@@ -332,10 +483,13 @@ enum SetupCopy {
         /// then the row says what's true in any build: nothing needs Windows App before there's a VM to
         /// connect to, and `winbar setup` offers to install it (`Setup.run`, C1) — which is also where
         /// the placeholder sends a Mac that has a VM.
+        ///
+        /// It opens "Not installed", not "Windows App isn't installed": it is the subtitle under the row's
+        /// "Windows App", and the review found rows saying their own name twice.
         static func windowsAppLater(lastBuilt: WizardStep) -> String {
             lastBuilt >= .savedPC
-                ? "Windows App isn't installed. Winbar gets to that at the saved-PC step."
-                : "Windows App isn't installed. It isn't needed until there's a VM to connect to; winbar setup offers "
+                ? "Not installed yet. Winbar gets to it at the saved-PC step."
+                : "Not installed yet. It isn't needed until there's a VM to connect to; winbar setup offers "
                     + "to install it."
         }
 
@@ -406,11 +560,14 @@ enum SetupCopy {
         static func appManagementPromptWords(host: String) -> String {
             String(format: "“%@” would like to modify apps on your Mac", host)
         }
-        /// Over utmctl's own error, which the row shows. Every start and stop goes through it, so
-        /// nothing past this step can work until it answers.
-        static let utmFailedHeading = "UTM's command-line tool answered with an error"
-        static let utmFailed = "Every start and stop Winbar makes goes through it, so nothing after this step can work "
-            + "until it answers. **\(bTryAgain)** asks it again."
+        /// When utmctl answered with an error: the page's title, and what to do. The error itself
+        /// ("UTM is not running (error -600)") is under Details (`utmSaid`), not on the row.
+        static let utmFailedHeading = "UTM isn't answering Winbar"
+        static let utmFailed = "Winbar starts and stops Windows through UTM, so nothing after this step works until UTM "
+            + "answers. Choose **\(bOpenUTM)**: Winbar opens it and asks again."
+
+        /// UTM's own words about its error, for Details.
+        static func utmSaid(_ detail: String) -> String { "UTM said: \(detail)" }
 
         /// The card's heading when UTM needs installing, updating or replacing; the row above it has only
         /// its mark, so this is said once. Pure.
@@ -433,39 +590,123 @@ enum SetupCopy {
             }
         }
 
-        /// The install plan's paragraphs in the window. Where Winbar can't install UTM itself (a copy
-        /// signed by someone else, or too old and not Homebrew's to update) the shared text ends in
-        /// Terminal commands; here it says what to do with the Finder and this window instead.
+        /// The install plan's paragraphs in the window, for **Show Details**. A plan Winbar can't carry
+        /// out (a copy signed by someone else, or too old and not Homebrew's to update) has none: its
+        /// advice is Terminal's, ending in commands, and the window says what to do with the Finder and
+        /// this window instead, in the card's one sentence (`summary`).
         static func plan(_ plan: InstallPlan, state: DependencyState) -> [String] {
-            guard case .manual = plan else { return DependencyCopy.plan(.utm, plan) }
-            switch state {
-            case .wrongSignature:
-                return ["Winbar won't replace an app that's already installed. Move that copy of UTM to the Trash, "
-                        + "then choose Check Again: Winbar then offers to install UTM from \(Dependency.utm.vendor)."]
-            case .tooOld:
-                return ["Update UTM the way you installed it — its own Check for Updates, the Mac App Store, or a newer "
-                        + "copy from getutm.app — then choose Check Again."]
-            case .missing, .installed:
-                return DependencyCopy.plan(.utm, plan)
-            }
+            if case .manual = plan { return [] }
+            return DependencyCopy.plan(.utm, plan)
         }
 
         /// A Homebrew failure's detail in the window: its "try it again yourself: brew …" is the Try
-        /// Again button under it.
-        static func forWindow(_ detail: String) -> String {
-            detail.replacingOccurrences(of: #"(Try it again yourself|Run it yourself and watch what it says): .*$"#,
-                                        with: "Choose Try Again below. If it keeps failing, UTM's own download at "
-                                            + "getutm.app works too.", options: .regularExpression)
+        /// Again button under it. "It stopped with exit status 1; its own output is above" goes: the
+        /// title says Homebrew couldn't, an exit status is a number Ben can do nothing with, and in the
+        /// window the output is the open Details fold under this sentence, not above it.
+        ///
+        /// The sentence that replaces Terminal's names **Try Again** in bold, as every instruction in the
+        /// window does; the rest is Homebrew's own words, which stay plain rather than being read as
+        /// Markdown (an underscore in a path would turn to italics).
+        static func forWindow(_ detail: String) -> AttributedString {
+            let text = detail.replacingOccurrences(of: #"^It stopped with exit status -?\d+; its own output is above\. "#,
+                                                   with: "", options: .regularExpression)
+            guard let terminal = text.range(of: #"(Try it again yourself|Run it yourself and watch what it says): .*$"#,
+                                            options: .regularExpression) else { return AttributedString(text) }
+            return AttributedString(String(text[..<terminal.lowerBound])) + markdown(tryAgainBelow)
+                + AttributedString(String(text[terminal.upperBound...]))
         }
+        static let tryAgainBelow = "Choose **\(SetupCopy.bTryAgain)** below. If it keeps failing, UTM's own download at "
+            + "getutm.app works too."
 
         /// The silent UTM row: how long it was asked for, since the card says what that means.
         static func silentRow(seconds: Int) -> String { "No answer in \(seconds) seconds" }
 
-        /// Automation refused, in the window: where the switch is, and the two buttons under it. The
-        /// recipe's words (`Automation.deniedError`) end on a tccutil command for a terminal.
+        /// Automation refused, in the window: the filled button, what to do there, and what happens
+        /// after. The recipe's words (`Automation.deniedError`) end on a tccutil command for a terminal.
         static func denied(host: String) -> String {
-            "Turn on UTM under \(host) in Privacy & Security → Automation (**\(bOpenAutomationSettings)** goes there), "
-                + "then press **\(bTryAgain)**."
+            "Choose **\(bOpenAutomationSettings)** and turn on UTM under \(host) in Privacy & Security → Automation. "
+                + comeBack
+        }
+
+        // MARK: When UTM needs installing, updating or replacing
+
+        /// The card's one sentence when UTM needs installing, updating or replacing: what's needed and
+        /// the button that does it. The plan's particulars — Homebrew's command, the team ID, the
+        /// notarization check, the GitHub address, what Homebrew's update may make macOS ask — are
+        /// `details`, behind **Show Details**: about 160 words stood between the heading and the button.
+        /// Markdown. Pure.
+        static func summary(_ plan: InstallPlan?, state: DependencyState, host: String = "Winbar") -> String {
+            let what = "UTM is the free app Windows runs in."
+            let button = plan.flatMap { bInstall(.utm, $0) }.map { "Choose **\($0)**" }
+            switch (state, plan) {
+            case (.wrongSignature, _):
+                return "Winbar won't replace an app it didn't install. Choose **\(bShowInFinder)**, move this copy of UTM "
+                    + "to the Trash, and come back: Winbar then offers to install UTM from \(Dependency.utm.vendor)."
+            case (.tooOld(_, let minimum), .brewUpgrade?):
+                // The one consequence that can't wait for Details: a running VM stops. And what to press
+                // when macOS asks, which Details says in full (`updateMayAsk`).
+                return "Winbar needs UTM \(minimum) or later. \(button ?? ""): if UTM is open, it quits and any VM in "
+                    + "it stops. If macOS asks as it goes, choose **Allow** or **Open**."
+            case (.tooOld(_, let minimum), _):
+                return "Winbar needs UTM \(minimum) or later. Update UTM the way you installed it: its own Check for "
+                    + "Updates, the Mac App Store, or getutm.app. " + comeBack
+            case (_, .brew?):
+                return what + " \(button ?? ""): about \(Dependency.utmDownloadMB) MB, and a few minutes."
+            case (_, .download?):
+                return what + " \(button ?? ""): about \(Dependency.utmDownloadMB) MB from UTM's own site, checked "
+                    + "before it's opened."
+            case (_, .manual?), (_, .appStore?), (_, .brewUpgrade?), (_, nil):
+                // Never UTM's plan for a copy that's missing (`Dependencies.plan`): Homebrew or the
+                // download. A manual plan's advice is Terminal's, so it isn't said here either way.
+                return what
+            }
+        }
+
+        /// What's under **Show Details** on that card: the lead and the plan's paragraphs the card used
+        /// to open with, minus what the summary already says. Plain text, since the plan's are shared
+        /// with Terminal. Pure.
+        static func details(_ plan: InstallPlan?, state: DependencyState, host: String = "Winbar") -> [String] {
+            switch state {
+            case .wrongSignature(let detail):
+                // What's wrong with the copy that's there; the plan's advice is the summary.
+                return [detail]
+            case .tooOld:
+                guard let plan, case .brewUpgrade = plan else { return [] }
+                return self.plan(plan, state: state) + [updateMayAsk(host: host)]
+            case .missing, .installed:
+                return plan.map { self.plan($0, state: state) } ?? []
+            }
+        }
+
+        /// The install's one line of progress under its bar, from the newest thing said: the download's
+        /// count beside what it counts ("Downloading UTM · 112 of 250 MB"), Winbar's own sentences as they
+        /// are, and in place of Homebrew's output — "==> Moving App 'UTM.app' to '/Applications/UTM.app'"
+        /// in monospace, while the install went well — what Homebrew is doing, in words. Its output is
+        /// under **Show Details**. Pure.
+        static func progress(_ line: String?, download: SetupWindowState.DownloadCount?, update: Bool) -> String {
+            let name = Dependency.utm.name
+            if let download { return "Downloading \(name) · \(downloaded(done: download.done, total: download.total))" }
+            let homebrew = update ? "Homebrew is updating \(name)…" : "Homebrew is installing \(name)…"
+            guard let line, !line.isEmpty else { return update ? "Updating \(name)…" : "Installing \(name)…" }
+            if line.hasPrefix("==> Downloading") { return "Downloading \(name)…" }
+            return ownWords(line) ? line : homebrew
+        }
+
+        /// Whether `line` is one of Winbar's own progress sentences (`DependencyCopy`), which are plain
+        /// words already, rather than Homebrew's output or the command Winbar hands it. Read off each
+        /// sentence's own function around values no install says, so the two can't drift. Pure.
+        static func ownWords(_ line: String) -> Bool {
+            let utm = Dependency.utm
+            let marker = "\u{1}"
+            let url = URL(string: "https://example.invalid/UTM.dmg")!
+            let starts = [DependencyCopy.downloading(utm, from: url).replacingOccurrences(of: "example.invalid", with: marker),
+                          DependencyCopy.copying(utm, to: marker), DependencyCopy.checkingDownload(utm),
+                          DependencyCopy.checking(utm),
+                          DependencyCopy.downloadTrusted(utm, assessment: .init(accepted: true, source: nil, origin: marker))]
+                .map { $0.components(separatedBy: marker)[0] }
+            // "UTM 4.7.5 is installed, signed by …": matched by its tail, since its head is only the name.
+            let installed = String(DependencyCopy.installed(utm, version: nil).dropFirst(utm.name.count))
+            return starts.contains { !$0.isEmpty && line.hasPrefix($0) } || line.hasSuffix(installed)
         }
     }
 
@@ -481,28 +722,81 @@ enum SetupCopy {
                 + "you'd otherwise do by hand in UTM's wizard, Windows Setup and the out-of-box questions.",
             "You need Microsoft's Windows 11 Arm64 ISO, about 8 GB. Winbar's next screen has the link.",
         ]
-        static let bMakeOne = "Make One"
-        static let bMakeNew = "Make a New One"
+        /// The way into the New Windows VM form, named for what its last page's button does
+        /// (`CreateCopy.bInstall`): the wizard said **Make One** and the form **Create**, then **Install
+        /// Windows**, which is three names for one thing. The dots are the form's pages, asked first.
+        static let bMakeOne = CreateCopy.bInstall + "…"
+        /// The same, beside a VM that's already there.
+        static let bMakeNew = "Install Windows in a New VM…"
         static let bChooseAnother = "Choose Another VM"
-        static let notKnownWindows = "Winbar supports Windows guests. This VM doesn't have a Windows icon; if it runs Linux or another system, make a new Windows VM instead."
+        /// Markdown. "Guests" was UTM's word for what, to Ben, is a VM.
+        static let notKnownWindows = "Winbar looks after Windows VMs. This one doesn't have a Windows icon in UTM; if it "
+            + "runs Linux or another system, choose **\(bMakeNew)** instead."
 
         static let oneHeading = "One Windows VM"
         /// `windows` is `VMInfo.isWindows`. It comes from the icon UTM shows, and the candidates fall back
         /// to every QEMU VM when none has a Windows icon — so the one VM on offer may not say it's
         /// Windows, and the sentence mustn't claim it does.
-        static func oneBody(_ name: String, windows: Bool) -> AttributedString {
-            fill((windows ? "UTM has one Windows VM: “\(name)”." : "UTM has one virtual machine: “\(name)”.")
-                 + " If you choose Use, Winbar will look after it — its settings, Connect, and the menu bar item will all mean this one.")
+        ///
+        /// `use` is the VM the page's **Use** button names — the ticked row where the page lists VMs,
+        /// which needn't be `name` — or nil where no **Use** is the way on (a ticked VM that doesn't
+        /// say it's Windows, whose caution names **Install Windows in a New VM…** instead). The
+        /// sentence named `name`'s button while the corner said Use for the row ticked.
+        static func oneBody(_ name: String, windows: Bool, use: String?) -> AttributedString {
+            let fact: Filled = windows ? "UTM has one Windows VM: “\(name)”." : "UTM has one virtual machine: “\(name)”."
+            guard let use else { return fill(fact) }
+            return fill(fact + " If you choose \(bold: bUseTitle(use)), Winbar will look after it: its settings, Connect "
+                        + "and the menu bar item will all mean this one.")
         }
         /// A button's title, and an `AttributedString` like every other string with a name in it:
         /// the view gives it to `Button(action:label:)` as a `Text`.
-        static func bUse(_ name: String) -> AttributedString { fill("Use “\(name)”") }
+        static func bUse(_ name: String) -> AttributedString { fill("\(bUseTitle(name))") }
+        /// The button's words as plain text, for the sentence that names it (`oneBody`).
+        static func bUseTitle(_ name: String) -> String { "Use “\(name)”" }
 
         static let severalHeading = "Which VM?"
         static func severalBody(count: Int) -> String {
             "UTM has \(count) virtual machines. Which Windows VM should Winbar look after?"
         }
+        /// The corner's title on a list of VMs while none is ticked, greyed out: the list's rows are
+        /// what to press first. Once one is, the corner names it (`bUse`).
         static let bUseThisOne = "Use This One"
+        /// Beside it while it's greyed out.
+        static let pickFirst = "Pick a VM in the list first"
+
+        /// A VM row's second line: what it is and how it stands, as far as UTM says. The system is
+        /// UTM's icon, which a hand-made Windows VM may not have, so a VM with no icon Winbar knows
+        /// says nothing about its system rather than something that may be wrong. Pure.
+        static func rowDetail(_ vm: VMInfo) -> String? {
+            let parts = [system(vm), state(vm)].compactMap { $0 }
+            return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        }
+
+        static func system(_ vm: VMInfo) -> String? {
+            if vm.isWindows { return "Windows" }
+            let icon = vm.icon.lowercased()
+            let linux = ["linux", "debian", "ubuntu", "fedora", "arch", "centos", "kali", "mint", "alpine", "suse", "rhel",
+                         "gentoo", "manjaro"]
+            return linux.contains { icon.contains($0) } ? "Linux" : nil
+        }
+
+        /// UTM's status words (`VMInfo.status`), in the ones a Mac uses for a machine.
+        static func state(_ vm: VMInfo) -> String? {
+            switch vm.status {
+            case "started": return "Running"
+            case "stopped": return "Stopped"
+            case "starting", "resuming": return "Starting"
+            case "stopping", "pausing": return "Stopping"
+            case "paused": return "Paused"
+            default: return nil
+            }
+        }
+
+        /// Step 2 with no VM list from UTM, which step 1 exists to get. The way on is the way back.
+        static let unlistedHeading = "Check UTM first"
+        static let unlisted = "Winbar hasn't had UTM's list of VMs yet. Choose **\(bGoBack)** to check that UTM is "
+            + "installed and allowed to answer Winbar."
+        static let bGoBack = "Go Back to Look Around"
 
         static func stopped(_ name: String) -> AttributedString {
             fill("“\(name)” is stopped. Winbar needs Windows running to check and tune it.")
@@ -538,13 +832,25 @@ enum SetupCopy {
 
         /// An install is running that step 2 isn't showing: the New Windows VM window's, Terminal's, or
         /// this window's own after Winbar was quit and opened again. One install at a time, so the step
-        /// offers to show that one rather than a second **Make One**.
+        /// offers to show that one rather than a second **Install Windows…**.
         static let installingHeading = "Windows is being installed"
         static let installing = "A Windows install is running on this Mac, and Winbar does one at a time. "
-            + "**\(bShowInstallProgress)** shows it here."
+            + "Choose **\(bShowInstallProgress)** to see it here."
         /// The menu's **Show Install Progress…** without its dots: here it shows the install in place,
         /// rather than opening a window that asks for more.
         static let bShowInstallProgress = "Show Install Progress"
+
+        /// W_MEDIA_LEFT in the window's words, with its two buttons beside it (`SetupDiskNote`). The
+        /// job's own sentence names the folder's path and the error, and ends "delete the folder
+        /// yourself" without saying where that is.
+        static let setupDiskLeft = "Winbar couldn't delete the setup disk it made for this install. It holds your "
+            + "Windows password, scrambled: move it to the Trash, then empty the Trash."
+        static let bShowSetupDisk = "Show in Finder"
+        static let bTrashSetupDisk = "Move to Trash"
+        static let setupDiskTrashed = "The setup disk is in the Trash. Empty the Trash to delete it for good."
+        static func setupDiskNotTrashed(_ reason: String) -> String {
+            "Winbar couldn't move the setup disk to the Trash (\(reason)). Choose \(bShowSetupDisk) to see where it is."
+        }
 
         /// Between an install that ended well and step 3: the Mac is read again first, since a new VM
         /// exists now and the install chose it.
@@ -564,14 +870,120 @@ enum SetupCopy {
             }
         }
         static func detail(_ row: SetupFlow.Row, keptBitLocker: Bool) -> String {
-            row.id == "G9" && keptBitLocker && row.kind != .ok ? "BitLocker is kept on by choice." : row.detail
+            row.id == "G9" && keptBitLocker && row.kind != .ok ? "BitLocker is kept on by choice." : words(row.detail)
         }
         static func how(_ id: String, _ text: String) -> String {
-            id == "H6" ? text.replacingOccurrences(of: "Terminal has Full Disk Access", with: "Winbar has Full Disk Access") : text
+            let text = id == "H6" ? text.replacingOccurrences(of: "Terminal has Full Disk Access", with: "Winbar has Full Disk Access") : text
+            // "Run this again" is Terminal's: in the window a manual row's way on is its own button.
+            return words(text).replacingOccurrences(of: "then run this again.", with: "then choose \(bDone(id)).")
+        }
+
+        /// A row's name in the window. The recipe's titles are `winbar setup`'s too and stay as they
+        /// are there; three of them are words Ben doesn't have ("vCPUs", "RAM", "RDP certificate").
+        /// The certificate is **Certificate** here because that is the step bar's name for the step
+        /// that approves it, and `Certificate.goBack` sends Ben to this row by it.
+        static func title(_ id: String, recipe: String) -> String {
+            switch id {
+            case "H3": return "Processor cores"
+            case "H4": return "Memory"
+            case "H5": return "Windows' screen"
+            case "G7": return "Certificate"
+            case "H7": return "Certificate approved"
+            default: return recipe
+            }
+        }
+        static func title(_ row: SetupFlow.Row) -> String { title(row.id, recipe: row.title) }
+
+        /// Why a row matters, in the window: one plain sentence or two, where the recipe's `why` (which
+        /// `winbar setup` prints, and keeps) names the machinery — the QEMU guest agent, vCPUs, NLA and
+        /// TLS, netplwiz and LSA secrets, the readiness probe and port 3389. Each says only what the
+        /// recipe's says, in other words; nil leaves a row's own, which is plain already.
+        static func why(_ id: String) -> String? {
+            switch id {
+            case "G0":
+                return "Winbar checks and tunes Windows through UTM's Guest Tools. Connect needs an edition that "
+                    + "accepts Remote Desktop, and Home doesn't."
+            case "G5":
+                return "Remote Desktop needs a real password: a Windows Hello PIN never works over it, and Winbar can't "
+                    + "give a Microsoft account one."
+            case "G1":
+                return "Balanced, set to speed up quickly, keeps Windows responsive and lets your Mac's cores rest while "
+                    + "Windows is idle. The screen turns off after 5 minutes."
+            case "G2":
+                return "Windows sets it to a kind of sleep the VM doesn't have, so UTM's power button does nothing "
+                    + "useful. Shut down makes it a real off switch."
+            case "G3":
+                return "SysMain, Windows Search and Windows' diagnostics reporting keep the processor and disk busy in "
+                    + "the background, which buys nothing in a VM."
+            case "G4":
+                return "In a VM, your Mac's processor draws Windows' transparency, animations and shadows, so they cost "
+                    + "more than they're worth. They take full effect the next time you sign in to Windows."
+            case "G6":
+                return "Connect opens Windows over Remote Desktop, so it has to be on, with Windows' safe settings: it "
+                    + "checks your password first, and accounts with no password can't sign in over the network."
+            case "G7":
+                return "Windows App checks the certificate Windows shows it. Windows' own is made out to a different "
+                    + "name, so Winbar makes one for the name your Mac uses, which the Certificate step approves."
+            case "G8":
+                return "When Windows signs in by itself at startup, Connect picks up the session that's already "
+                    + "running, apps and all. Windows keeps the password protected, not as plain text."
+            case "G9":
+                return "When FileVault already encrypts the VM's disk, BitLocker only adds work to every read and "
+                    + "write, and changing the VM's screen, processor cores or memory can make Windows ask for its "
+                    + "recovery key."
+            case "G10":
+                return "UTM's Guest Tools give Windows its network driver and the helper Winbar checks and tunes it "
+                    + "through, and make the shared folder work. Winbar checks each one is there."
+            case "H6":
+                return "The VM's disk is a file of tens of gigabytes that changes all the time, so backing it up every "
+                    + "hour and indexing it for Spotlight is work for nothing. macOS protects UTM's folder, so Winbar "
+                    + "can only check this, not change it."
+            case "H8":
+                return "With UTM's Shared network only this Mac can reach the VM, and Winbar can find it to check "
+                    + "whether Windows is ready. Bridged puts Remote Desktop on your whole network, where Winbar can't "
+                    + "find the VM."
+            case "H3":
+                return "Winbar gives Windows as many processor cores as your Mac has fastest ones, between 4 and 8. In "
+                    + "testing, more cost your Mac extra work without making Windows any faster."
+            case "H4":
+                return "Room for Windows to keep the files it uses in memory: 16 GB on a Mac with 64 GB or more, 12 GB "
+                    + "from 32 GB, otherwise 8 GB, and never more than half your Mac's. More that you chose is left alone."
+            default:
+                return nil
+            }
+        }
+        static func why(_ row: SetupFlow.Row) -> String { plain(why(row.id) ?? row.why) }
+
+        /// The recipe's status lines and instructions in the window's words, phrase by phrase. They are
+        /// `winbar setup`'s too, built from what Windows answers, so the window can't have its own copy
+        /// of each; these are the phrases in them that name machinery Ben can't see. Codes go too
+        /// (`plain`). Each phrase is one the recipe says, which `SetupCopyWordsTests` holds it to.
+        static let windowWords: [(recipe: String, window: String)] = [
+            ("the QEMU guest agent isn't answering", "Windows isn't answering Winbar"),
+            ("Just after boot the agent can take a minute to start.", "Just after Windows starts, this can take a minute."),
+            ("winbar start, wait for Windows, then run this again.", "Start the VM in UTM, wait for Windows, then run this again."),
+            ("(console window or Remote Desktop)", "(on Windows' screen or over Remote Desktop)"),
+            ("(console window)", "(on Windows' screen)"),
+            ("on, listening on 3389", "on"),
+            ("Network Level Authentication is off", "the password check before sign-in is off"),
+            ("TLS isn't required", "encryption isn't required"),
+            ("blank-password network logons are allowed", "accounts with no password can sign in over the network"),
+            ("firewall rules not all enabled", "the firewall doesn't let all of Remote Desktop through"),
+            ("and Network Level Authentication would lock", "and Remote Desktop's password check would lock"),
+            ("the listener uses Windows' generated certificate, not one for", "Windows uses its own certificate, not one for"),
+            ("no RDP host yet (winbar config --host)", "Winbar doesn't know Windows' name yet"),
+            ("no RDP host yet", "Winbar doesn't know Windows' name yet"),
+            ("Windows didn't report the listener certificate", "Windows didn't show Winbar its certificate"),
+            ("Hello-only sign-in hides the netplwiz setting that turns it on", "Windows Hello sign-in hides the setting that turns it on"),
+            ("In the netplwiz window setup opens in Windows,", "In the window Winbar opens in Windows,"),
+            ("press OK,", "choose OK,"),
+        ]
+
+        /// `text` with `windowWords` put in and its check codes taken out. Pure.
+        static func words(_ text: String) -> String {
+            plain(windowWords.reduce(text) { $0.replacingOccurrences(of: $1.recipe, with: $1.window) })
         }
         static let heading = "Tuning Windows"
-        static let body = "Verified means Winbar checked the current setting and it matches the recipe. "
-            + "The Windows installer may already have applied it. Any remaining changes need your approval."
 
         static func status(_ status: SetupTuneStatus) -> String {
             switch status {
@@ -586,13 +998,86 @@ enum SetupCopy {
             }
         }
 
-        /// Said under the counts when something waits on the person, because those rows are drawn first
-        /// and a count alone ("1 needs attention") left them to find it — card 12 of 15, below the fold.
-        static func attentionPointer(_ counts: [SetupTuneStatus: Int]) -> String? {
-            guard let count = counts[.needsAttention], count > 0 else { return nil }
-            return count == 1 ? "One setting needs you. It's first below."
-                : "\(count) settings need you. They're first below."
+        /// The word at a row's trailing edge. A row Winbar couldn't read, or whose Fix failed, says so
+        /// rather than "Needs attention": nothing about it is Ben's doing.
+        static func trailing(_ status: SetupTuneStatus, _ row: SetupFlow.Row) -> String {
+            guard status == .needsAttention else { return self.status(status) }
+            if row.failure != nil { return "Fix didn't work" }
+            if row.kind == .error { return "Couldn't check" }
+            return self.status(status)
         }
+
+        /// The page's opening line and the sentence under it (`SetupTuneHeadline`). It replaces a
+        /// paragraph about what Verified means and a count line ("12 verified · 2 skipped · 1 needs
+        /// attention") that left Ben to work out which row was his and what to press.
+        static func headline(_ headline: SetupTuneHeadline) -> (title: String, detail: String?) {
+            switch headline {
+            case .working(let line):
+                return (line, nil)
+            case .notAsked:
+                return ("Winbar hasn't asked Windows yet", "Choose **\(SetupCopy.bCheckAgain)** to ask it. It takes a few seconds.")
+            case .needsYou(let count, let fixable):
+                let title = count == 1 ? "1 setting needs you" : "\(count) settings need you"
+                if fixable == count {
+                    return (title, "Choose **\(bFixEverything)**, or fix or skip each one below.")
+                }
+                if fixable > 0 {
+                    return (title, "Choose **\(bFixEverything)** for the ones Winbar can fix. The rest are below: "
+                                + "follow their steps, or skip them.")
+                }
+                return (title, count == 1 ? "It's first below: follow its steps, or skip it."
+                                          : "They're first below: follow their steps, or skip them.")
+            case .unchecked(let count):
+                return (count == 1 ? "Winbar couldn't check 1 setting" : "Winbar couldn't check \(count) settings",
+                        "You can carry on. To try once more, choose **\(SetupCopy.bCheckAgain)** on it.")
+            case .tuned(let staged):
+                let restart: String
+                switch staged {
+                case 0: restart = ""
+                case 1: restart = " One change waits for the restart at the end of setup."
+                default: restart = " \(staged) changes wait for the restart at the end of setup."
+                }
+                return ("Windows is tuned", "Winbar checked each setting it looks after, in Windows and on this Mac." + restart)
+            }
+        }
+
+        /// The folded group of rows that passed: how many, as the one line Ben needs about them.
+        static func alreadyRight(_ count: Int) -> String {
+            count == 1 ? "1 setting already right" : "\(count) settings already right"
+        }
+
+        /// What the headline says while work runs on this step, in row titles rather than
+        /// `Working.doing(_:)`'s "fixing G1 (Power plan)", which carries the recipe's code.
+        static func busy(_ flight: SetupRunner.InFlight) -> String {
+            func title(_ id: String) -> String { Recipe.check(id).map { self.title(id, recipe: $0.title) } ?? "the setting" }
+            switch flight.work {
+            case .survey, .checkAgain: return "Checking Windows' settings…"
+            case .fix(let id): return "Fixing \(title(id))…"
+            case .fixEverything: return "Fixing what Winbar can fix…"
+            case .recordDone(let id): return "Checking \(title(id)) again…"
+            case .guide(let id): return id == "H6" ? "Opening Time Machine settings…" : "Opening it in Windows…"
+            case .keepBitLocker: return "Keeping BitLocker on…"
+            case .discardChanges: return "Undoing the change…"
+            default: return Working.sentence(Working.doing(flight))
+            }
+        }
+
+        /// A row left alone by a choice made in the New Windows VM form: what was chosen, and when,
+        /// rather than the form's checkbox label after "Off by choice:", which read as an instruction.
+        static func leftAlone(declined flag: String) -> String {
+            let what: String
+            switch flag {
+            case "--autologon": what = "automatic sign-in"
+            case "--remote-desktop": what = "Remote Desktop"
+            case "--winbar-tuning": what = "performance tuning"
+            default: return "Left alone: you turned this off when Windows was installed."
+            }
+            return "Left alone: you turned off \(what) when Windows was installed."
+        }
+        /// A row Ben chose **Skip** on.
+        static let leftAloneSkipped = "Left alone: you chose Skip."
+        /// G9 after BitLocker's **No**, which Winbar remembers for the VM.
+        static let keptBitLocker = "Left alone: you chose to keep BitLocker on."
 
         /// A recipe sentence without its check codes: "Remote Desktop is on (G6)" reads as "Remote
         /// Desktop is on" in the window, which names rows by title. The CLI keeps the codes.
@@ -600,22 +1085,21 @@ enum SetupCopy {
             text.replacingOccurrences(of: #" \((?:[GHC][0-9]+(?:, )?)+\)"#, with: "", options: .regularExpression)
         }
 
-        static func summary(_ counts: [SetupTuneStatus: Int]) -> String {
-            SetupTuneStatus.allCases.compactMap { status in
-                guard let count = counts[status], count > 0 else { return nil }
-                let label: String
-                switch status {
-                case .verified: label = "verified"
-                case .pendingRestart: label = "pending restart"
-                case .skipped: label = "skipped"
-                case .needsAttention: label = count == 1 ? "needs attention" : "need attention"
-                case .information: label = count == 1 ? "information item" : "information items"
-                case .checking: label = "being checked"
-                case .applying: label = "being applied"
-                case .notChecked: label = "not checked"
-                }
-                return "\(count) \(label)"
-            }.joined(separator: " · ")
+        /// A manual row's **Open** button, named for where it goes. H6's opens Time Machine's settings
+        /// (the check's `guide`), where UTM's folder is added to the exclusions; the Windows rows'
+        /// open a page on the Windows desktop.
+        static func bGuide(_ id: String) -> String { id == "H6" ? "Open Time Machine Settings…" : "Open in Windows…" }
+        /// A manual row's **Done**, as what Ben says he did. "Done" alone read as "close this".
+        static func bDone(_ id: String) -> String { id == "H6" ? "I've Added the Folder" : "I've Done It" }
+
+        /// What VoiceOver says for a row's button: the button and the row it acts on, since every row
+        /// has a **Skip** and several a **Fix**, and "Skip, button" five times over says nothing.
+        static func spoken(_ button: String, row title: String) -> String {
+            switch button {
+            case bFix, SetupCopy.bSkip: return "\(button) \(title)"
+            case SetupCopy.bCheckAgain: return "Check \(title) again"
+            default: return "\(button.replacingOccurrences(of: "…", with: "")), \(title)"
+            }
         }
 
         /// The guest survey's progress line. It used to be a literal inside `Context.surveyGuest`,
@@ -627,7 +1111,6 @@ enum SetupCopy {
         static func still(_ detail: String) -> String { "still: \(detail)" }
 
         static let bFix = "Fix"
-        static let bOpen = "Open"
         static let bFixEverything = "Fix Everything"
 
         /// Under H3 and H4, which are staged into `Context.pending` here and applied at the end.
@@ -694,13 +1177,15 @@ enum SetupCopy {
     // MARK: - Step 4: The certificate
 
     enum Certificate {
-        static let heading = "Approve the connection certificate"
+        /// "The certificate", as the step bar names it. It was also the connection certificate, the
+        /// RDP certificate and the Remote Desktop certificate, one thing under four names.
+        static let heading = "Approve the certificate"
 
         static func result(_ phase: SetupCertificatePage.Phase) -> String {
             switch phase {
             case .needsApproval: return "Your turn: approve on this Mac"
             case .approving: return "Approval in progress"
-            case .checking: return "Checking certificate trust"
+            case .checking: return "Checking the certificate"
             case .verified: return "Certificate verified"
             case .skipped: return "Approval skipped"
             case .attention: return "Approval not confirmed"
@@ -710,31 +1195,45 @@ enum SetupCopy {
         static let bApproveInstead = "Approve Instead…"
         static let bRetry = "Try Approval Again…"
         static let bSkip = "Skip for Now"
-        static let instructions = "Choose Approve Certificate below. If macOS opens an approval dialog, approve it there. "
-            + "If it asks for a password, use your Mac login password—not your Windows password."
-        static let completion = "Then wait here. Winbar checks the result automatically. This step is complete only when "
-            + "it says Certificate verified."
+        static let instructions = "Choose **Approve Certificate…**, then approve in the macOS dialog. If it asks for a "
+            + "password, use your Mac login password—not your Windows password."
+        static let completion = "Winbar checks the result automatically, and says **Certificate verified** here when it's done."
         static let waiting = "If a macOS approval dialog is open, approve it there; it may be behind another window. "
-            + "If you already approved it, wait while Winbar checks the result. You don't need to click Approve again."
+            + "If you already approved it, wait while Winbar checks the result. You don't need to choose "
+            + "**\(bApprove)** again."
         static let checking = "No action is needed while Winbar checks. The result will appear here."
-        static let verifiedNext = "This step is complete. Choose Continue to Windows App below."
-        static let skippedDetail = "Certificate trust has not been verified. Windows App may show a certificate warning when you connect."
-        static let skippedNext = "Choose Continue Without Approval to move on, or Approve Instead to do this now."
-        static let skippedNoApproval = "Choose Continue Without Approval to move on, or Check Again to recheck the certificate."
-        static let attentionNext = "This step is not complete. Check Again to recheck, try approval if available, or choose Skip for Now."
-        static let stopped = "Winbar stopped waiting. This does not confirm approval or close any macOS dialog. "
-            + "If you approved it there, choose Check Again."
-        static let notVerified = "The approval request finished, but Winbar could not verify trust. "
-            + "Choose Check Again; a finished request alone does not mean this step succeeded."
+        static let verifiedNext = "This step is complete."
+        static let skippedDetail = "The certificate isn't approved on this Mac, so Windows App may warn about it when you connect."
+        static let skippedNext = "Choose **Continue Without Approval** to move on, or **\(bApproveInstead)** to approve it now."
+        /// A skipped certificate with nothing to approve right now (the VM stopped, or Windows has no
+        /// certificate for the name yet): the Skip taken back, and the step read again, which then
+        /// says what it's waiting for. Without it the page was a dead end.
+        static let bCheckAgainInstead = "Check the Certificate Again"
+        static let skippedNoApproval = "Choose **Continue Without Approval** to move on, or **\(bCheckAgainInstead)** to take "
+            + "the step up again."
+        /// What happened, in each problem state; what to do about it is `next(_:)`'s, one action per
+        /// state. Every one of them used to end on the same three-way sentence ("Check Again to
+        /// recheck, try approval if available, or choose Skip for Now").
+        static let stopped = "Winbar stopped waiting, so the approval isn't confirmed. If macOS's dialog is still open, "
+            + "it may be behind another window."
+        static let notVerified = "macOS finished the request, but Winbar can't see the certificate as trusted. A finished "
+            + "request alone doesn't mean it worked."
+        static let notRunning = "Windows isn't running, so there's no certificate to approve yet. Start the VM in UTM, "
+            + "then choose **\(SetupCopy.bCheckAgain)**."
 
-        static func next(_ phase: SetupCertificatePage.Phase, canApprove: Bool) -> String {
-            switch phase {
-            case .needsApproval: return completion
-            case .approving: return completion
-            case .checking: return checking
-            case .verified: return verifiedNext
-            case .skipped: return canApprove ? skippedNext : skippedNoApproval
-            case .attention: return attentionNext
+        /// The page's one next action, in words that name its button (`SetupCertificatePage.Next`).
+        static func next(_ page: SetupCertificatePage) -> String {
+            switch (page.phase, page.next) {
+            case (.approving, _): return waiting
+            case (.checking, _): return checking
+            case (.verified, _): return verifiedNext
+            case (.skipped, _): return page.canApprove ? skippedNext : skippedNoApproval
+            case (.needsApproval, .approve): return completion
+            case (.needsApproval, _): return notRunning
+            case (.attention, .approve(let title)): return "Choose **\(title)** and approve in the macOS dialog."
+            case (.attention, .checkAgain): return "Choose **\(SetupCopy.bCheckAgain)**."
+            case (.attention, .goBack): return goBack
+            case (.attention, .none): return ""
             }
         }
 
@@ -761,39 +1260,165 @@ enum SetupCopy {
 
         static let bTrustIt = "Trust It"
 
-        static let noCertificate = "Windows hasn't got a Remote Desktop certificate for this name yet. Go back to "
-            + "**RDP certificate** on the Tune step and let Winbar make one."
+        static let noCertificate = "Windows doesn't have the certificate for this name yet."
+        /// The corner's button when the certificate is made one step back: the VM step's **Go Back to
+        /// Look Around** in the same words. The card said "Choose **Back**" over a footer with no
+        /// filled button, so Return did nothing on a page that asked Ben to act.
+        static let bGoBack = "Go Back to Tune"
+        /// The tune row's own title, so Ben can find it: the window's name for the row, not its code.
+        static let goBack = "Choose **\(bGoBack)** and let Winbar make it: it's the **\(Tune.title("G7", recipe: ""))** row on "
+            + "the Tune step."
     }
 
     /// Name the destination or the consequence of moving on. Enabling a generic Continue after
     /// Skip must not look like confirmation that the skipped work succeeded.
+    ///
+    /// The destination is the step bar's own name for it (`continueTo`). The buttons had names of
+    /// their own: "Continue to Windows App" led to Saved PC, "Continue to Connection Test" to
+    /// Connect, and Look around and The VM said only "Continue".
     static func journeyNext(_ step: WizardStep, facts: SetupFlow.Facts?) -> String {
         switch step {
-        case .tune: return "Continue to Certificate"
+        case .welcome: return LookAround.bContinue
+        case .lookAround: return continueTo(.vm)
+        case .vm: return continueTo(.tune)
+        case .tune: return continueTo(.certificate)
         case .certificate:
             if let facts, facts.kind("H7") != .ok, facts.answers.leftAlone.contains("H7") {
                 return "Continue Without Approval"
             }
-            return "Continue to Windows App"
-        case .savedPC: return "Continue to Connection Test"
+            return continueTo(.savedPC)
+        case .savedPC: return continueTo(.connect)
         case .connect:
-            return facts?.answers.connected == true ? "Continue to Finish" : "Continue Without Connecting"
+            return facts?.answers.connected == true ? continueTo(.finish) : "Continue Without Connecting"
         case .finish: return bDone
-        default: return LookAround.bContinue
         }
+    }
+
+    /// Beside a journey step's greyed-out Continue, what it waits for: the step's own question or
+    /// action, which the page shows. Nil where Continue can be pressed.
+    static func notYetReason(_ step: WizardStep, facts: SetupFlow.Facts?) -> String? {
+        guard let facts, !SetupFlow.isSatisfied(step, facts) else { return nil }
+        switch step {
+        case .tune:
+            let count = SetupTuneGroups(facts).needsYou.count
+            return count == 1 ? "1 setting needs you" : "\(count) settings need you"
+        case .certificate: return "Approve the certificate or skip it first"
+        case .savedPC: return "Save the PC or skip it first"
+        case .connect:
+            if case .didItWork = SetupFlow.connect(facts) { return "Answer Yes or No first" }
+            return "Test the connection first"
+        default: return nil
+        }
+    }
+
+    /// "Continue to Saved PC": a Continue that names where it goes, in the step bar's words. Title
+    /// case keeps an article lower-case mid-title, so The VM is "Continue to the VM".
+    static func continueTo(_ step: WizardStep) -> String {
+        let name = stepBarName(step)
+        return "Continue to " + (name.hasPrefix("The ") ? "the " + name.dropFirst(4) : name)
+    }
+
+    /// "Go Back to Saved PC": the way back to a step, in the step bar's words, as the certificate's
+    /// **Go Back to Tune** and the VM step's **Go Back to Look Around** are.
+    static func goBackTo(_ step: WizardStep) -> String {
+        let name = stepBarName(step)
+        return "Go Back to " + (name.hasPrefix("The ") ? "the " + name.dropFirst(4) : name)
     }
 
     // MARK: - Step 5: The saved PC
 
     enum SavedPC {
-        static func missing(host: String?, user: String?) -> String {
-            if host == nil { return "Winbar doesn't know the Windows PC's address yet. Check Again, or skip saving and enter the connection details in Windows App." }
-            if user == nil { return "Winbar doesn't know the Windows account name yet. Sign in to Windows and Check Again, or skip saving and enter the account in Windows App." }
-            return "The saved connection hasn't been checked yet. Check Again or skip saving it."
+        /// Why the saved PC can't be saved yet, as a status line, what to do, and the button that does
+        /// it (`SetupJourneyActions`). The account name is the usual one: Windows only says it once
+        /// someone has signed in, which Ben does on Windows' own screen, so that is the button.
+        struct NotYet: Equatable {
+            var title: String
+            var body: String
+            var showsWindowsScreen: Bool
         }
+        static func notYet(host: String?, user: String?) -> NotYet {
+            if host == nil {
+                return NotYet(title: "Winbar doesn't know Windows' name yet",
+                              body: "Windows says its network name once it has started up. Choose **\(SetupCopy.bCheckAgain)** "
+                                  + "in a minute, or skip saving and type the details into Windows App yourself.",
+                              showsWindowsScreen: false)
+            }
+            if user == nil {
+                return NotYet(title: "Your turn: sign in to Windows",
+                              body: "Winbar learns your Windows account's name once someone has signed in. Choose "
+                                  + "**\(bShowWindowsScreen)**, sign in to Windows there, then come back here: Winbar "
+                                  + "checks again by itself.",
+                              showsWindowsScreen: true)
+            }
+            return NotYet(title: "The saved PC hasn't been checked yet",
+                          body: "Choose **\(SetupCopy.bCheckAgain)**, or skip saving it.", showsWindowsScreen: false)
+        }
+        /// Brings UTM forward, where the VM's window is Windows' screen. The menu's item of a similar
+        /// name adds a screen to a VM that has none, which restarts it; at this step the VM still has
+        /// its screen, so there's nothing to add, only a window to show.
+        static let bShowWindowsScreen = "Show Windows' Screen"
+        static let bSkipSaving = "Skip Saving the PC"
+        static let bSkipWindowsApp = "Skip Windows App"
+        static let bOpenAppStore = "Open the App Store"
+        /// Where the step goes without a saved PC, in the step bar's words (`continueTo`): "Sign-in"
+        /// named no step, and the sign-in happens at Connect.
+        static let bContinueToSignIn = continueTo(.connect)
+        static let bContinueToSignInInstead = continueTo(.connect) + " Instead"
+        /// "The saved PC", one name: this said "the Connection" for the thing the step calls the PC.
+        static let bSavedItMyself = "I've Saved the PC"
+        /// The card's line while the field waits, and the fold for saving it by hand.
+        static let yourTurn = "Your turn: save the PC"
+        static let saveItYourself = "Save the PC yourself"
+        /// When Windows App won't let Winbar save it: what happened, as a status line.
+        static let manualTitle = "Winbar couldn't save the PC"
+
+        static let installWindowsApp = "Choose **\(bOpenAppStore)** and install Windows App there. When its button says "
+            + "**Open**, come back here: Winbar checks for it by itself."
+        static let manual = "You can still connect: Windows App asks for your Windows user name and password when you do. "
+            + "Your Mac password and Windows PIN won't work there."
+        static let manualNext = "Choose **\(bContinueToSignIn)**, or **\(SetupCopy.bTryAgain)** to have Winbar save it once more."
+        /// Opens Windows App itself, never its command line (C2's `guide`).
+        static let bOpenWindowsApp = "Open Windows App"
+
+        /// Windows App's command line didn't answer (`SetupFlow.commandLineSilent`): what that is, whose
+        /// problem it is, and what it costs, plainly. The card said "Winbar couldn't save the PC", with
+        /// the reason in the terminal's words under a fold, so it read as something the person had got
+        /// wrong. How to save it by hand is C2's own `how` (`WindowsAppBookmarks.Copy.byHand`), shown
+        /// once, beside `editInstead`.
+        static let silentTitle = "Windows App's command line isn't responding"
+        static let silent = "Windows App's command line isn't responding on this Mac. That's a problem in Windows App, "
+            + "not in your setup, and it means Winbar can't save the PC for you or see whether one is saved already."
+        static let silentNext = "Save the PC in Windows App yourself, then choose **\(bSavedItMyself)**. Or choose "
+            + "**\(bContinueToSignIn)**: Windows App asks for your Windows password when you connect."
+        /// After the steps for adding the PC: a PC Windows App already has for this name is changed, not
+        /// doubled — two tiles for one name leave Connect pressing either.
+        static func editInstead(host: String, user: String?) -> AttributedString {
+            guard let user else {
+                return fill("If Windows App already has a PC called \(host), edit that one instead of adding another.")
+            }
+            return fill("If Windows App already has a PC called \(host), edit that one instead of adding another, so "
+                        + "it signs in as \(user).")
+        }
+        static let saved = "This step is complete."
+        /// The skipped page's way back (`SetupCommand.revisit`): the page had nothing on it to press,
+        /// though Windows App might answer a second time.
+        static let bTrySavingAgain = "Try Saving Again"
+        static let skipped = "You can add it later in Windows App, or choose **\(bTrySavingAgain)** now."
+        static let skippedTitle = "Saved PC skipped"
+        /// Skipped with Windows App: saving again starts with installing it, which the step then offers.
+        static let windowsAppSkippedTitle = "Windows App skipped"
+        static let windowsAppSkipped = "Winbar opens Windows with Windows App, which isn't on this Mac yet. Choose "
+            + "**\(bTrySavingAgain)** to install it and save the PC."
+        /// Under the field: when the step is done, since that's the other question on this page.
+        static let afterSaving = "Winbar saves it in Windows App and says **\(savedAnnouncement)** here."
+
         /// Neutral: the step is often only checking, or the PC is already saved, and "Saving…" said
         /// otherwise. What is happening right now is `busy(_:)`'s to say.
         static let heading = "The saved PC in Windows App"
+        /// The card's status once the save is confirmed, and what VoiceOver hears then. "PC saved" was
+        /// one more name for the saved PC; this is the step's own, with its state after it, the way
+        /// **Certificate verified** reads.
+        static let savedAnnouncement = "Saved PC ready"
 
         /// The card while the step's work runs, named for that work.
         static func busy(_ flight: SetupRunner.InFlight) -> String {
@@ -806,7 +1431,11 @@ enum SetupCopy {
             default: return "Winbar is \(Working.doing(flight))…"
             }
         }
-        static let lead = "Only a saved PC uses Windows App's stored password; a one-off connection asks every time."
+        /// What to type and press, first: the reasoning is behind **Where this password goes**.
+        static func lead(user: String) -> AttributedString {
+            fill("Type the Windows password for \(user), then choose **Save It**. Windows App keeps it, so Connect "
+                 + "doesn't ask every time.")
+        }
 
         /// Said before the password is asked for, in both front-ends, because this is the moment the
         /// person decides. Both halves: where the password goes, and what handing it over costs.
@@ -822,10 +1451,17 @@ enum SetupCopy {
         static func passwordLabel(user: String) -> AttributedString { fill("Windows password for \(user)") }
         static let whereItGoes = "Where this password goes"
         static let bSaveIt = "Save It"
+        /// Beside **Save It** while the field is empty.
+        static let typeFirst = "Type the password first"
 
         /// Windows App is running, so a save could corrupt its database. The refusal is the one
         /// `WindowsAppBookmarks` already gives, then what the window's buttons are for.
-        static let appOpen = WindowsAppBookmarks.Copy.quitFirst + " Once it has quit, press **Check Again**."
+        /// Winbar looks at the step again once Windows App has quit (`WindowsAppQuitter`,
+        /// `SetupWindowController.windowsAppQuit`), so the one button is the quit: "then **Check
+        /// Again**" asked for a press the window now makes itself.
+        static let appOpen = "Windows App is open, and Winbar can't save the PC while it is. Choose **\(bQuitWindowsApp)**."
+        /// Why, one click away (`SetupJourneyView`'s **Details**): the refusal `WindowsAppBookmarks` gives.
+        static let appOpenWhy = WindowsAppBookmarks.Copy.quitFirst
         static let bQuitWindowsApp = "Quit Windows App"
 
         /// Installing Windows App from the window. The window always uses the App Store (§3.6), so it
@@ -846,7 +1482,7 @@ enum SetupCopy {
                                  + "offers Homebrew.")
             }
             lines.append("An App Store app needs your Apple Account, so Winbar can't install it for you. Winbar can open "
-                             + "Windows App's page; the Get button is yours to press. It's about "
+                             + "Windows App's page, and you choose Get there yourself. It's about "
                              + "\(Dependency.windowsAppDownloadMB) MB.")
             return lines
         }
@@ -867,6 +1503,18 @@ enum SetupCopy {
             + "That needs Accessibility access for Winbar. **Allow Accessibility** asks macOS for it and opens System "
             + "Settings at Privacy & Security → Accessibility, where Winbar has to be switched on; then come back here. "
             + "Without it, Connect opens a one-off connection instead, and Windows App asks for your password every time."
+        /// The card's one sentence; `accessibility` is its **Details**.
+        static let accessibilityLead = "Winbar opens your saved PC by pressing its tile in Windows App, which needs "
+            + "Accessibility access. Choose **\(bAllowAccessibility)**, switch on Winbar in System Settings, then come back "
+            + "here: Winbar checks by itself."
+        static let bUseOneOff = "Use a One-off Connection"
+
+        /// The ready card: what to press and what happens, then the one thing about Local Network Ben
+        /// has to act on. The 60 words of why were first on the card, before "Choose Connect"; they are
+        /// its **Details** now (`localNetwork`).
+        static let readyLead = "Choose **\(bConnect)**. When Windows App opens, sign in there if it asks, then come back "
+            + "and say whether you see the Windows desktop."
+        static let localNetworkLead = "If macOS or Windows App asks to find devices on your local network, choose **Allow**."
 
         /// Local Network: the RDP readiness probe is Winbar's only local-network traffic. The spec also
         /// promised "Connect works either way". The code means it to — a denied probe reads as
@@ -875,27 +1523,33 @@ enum SetupCopy {
         /// against a denied grant. If it misreads, Connect waits two minutes and gives up. Until that is
         /// measured, the deck says what the grant is for and nothing it can't stand behind.
         static let localNetwork = "macOS may ask whether Winbar can find and connect to devices on your local "
-            + "network. Winbar uses that only to check whether the VM's Remote Desktop port is answering, which is how "
-            + "it knows Windows is ready. The first time, Windows App may ask the same about itself; choose Allow, "
-            + "or it can't reach the VM."
+            + "network. Winbar uses that only to check whether Windows is ready for Windows App to connect. The first "
+            + "time, Windows App may ask the same about itself; choose **Allow**, or it can't reach the VM."
         /// Only on the recovery card's `.blocked` branch: the one case where the evidence points at the
         /// Local Network setting. Windows App asks for the same access separately, so both are named.
-        static let networkRecovery = "In System Settings → Privacy & Security → Local Network, turn on Winbar, and "
-            + "Windows App too: it needs the same access to reach the VM. Then choose **\(bTryAgain)**."
+        static let networkRecovery = "Choose **\(bOpenLocalNetworkSettings)** (System Settings → Privacy & Security → "
+            + "Local Network), turn on Winbar, and Windows App too: it needs the same access to reach the VM. Then come "
+            + "back and choose **\(bTryAgain)**."
+        /// Where Local Network's switches are. The card said where in words; this goes there.
+        static let bOpenLocalNetworkSettings = "Open Local Network Settings…"
 
         /// The recovery card after **No, something's wrong** (or a Connect that failed): a heading, the
-        /// steps in Markdown, and whether to offer closing setup for the menu's **Show Console Window…**.
+        /// steps in Markdown, and whether to offer closing setup for the menu's **Bring Back Windows' Screen…**.
         /// The view draws `recovery(_ diagnosis:)`, so the card is worked out from the facts alone.
         struct Recovery: Equatable {
             var heading: String
             var steps: [String]
             var offersConsole = false
-            /// The card's own button, which its steps name in bold: filled, and the one Return presses.
-            /// The footer's Continue Without Connecting held both once, so Return skipped the one step
-            /// that proves the setup works; and the unchecked card said "Choose Check Again" above a
-            /// button labelled Try Again, which only reopens Windows App without the port check it asked
-            /// for. One value for the words and the button, so they can't disagree again.
+            /// The retry its steps name in bold: the footer's filled corner, which Return presses
+            /// (`SetupJourneyActions.footerAction`), or the card's plain one beside **Open Local Network
+            /// Settings…**. The footer's Continue Without Connecting held both once, so Return skipped the
+            /// one step that proves the setup works; and the unchecked card said "Choose Check Again"
+            /// above a button labelled Try Again, which only reopens Windows App without the port check
+            /// it asked for. One value for the words and the button, so they can't disagree again.
             var retry: Retry = .tryAgain
+            /// The corner is **Open Local Network Settings…** and the retry waits in the card: when macOS
+            /// refused the check, a retry before the setting changes can only be refused again.
+            var opensLocalNetwork = false
         }
 
         /// **Try Again** redoes the connection (`SetupCommand.retryConnection`); **Check Again** reads the
@@ -904,6 +1558,8 @@ enum SetupCopy {
             case tryAgain, checkAgain
 
             var title: String { self == .tryAgain ? bTryAgain : SetupCopy.bCheckAgain }
+            /// What pressing it sends: the connection again, or a read of the port.
+            var command: SetupCommand { self == .tryAgain ? .retryConnection : .perform(.run(.checkAgain(.connect))) }
         }
 
         /// What to do, from what Winbar's own check of the VM's Remote Desktop port found, and nothing
@@ -919,7 +1575,7 @@ enum SetupCopy {
         /// - nil: not read since the answer (the read after **No** was turned down); says how to read it.
         ///
         /// `console` only matters when nothing answered, where the card says how to watch Windows start:
-        /// a headless VM (H5 ok) is watched through the menu's **Show Console Window…**, one with its
+        /// a headless VM (H5 ok) is watched through the menu's **Bring Back Windows' Screen…**, one with its
         /// console on (H5 fixable) in its UTM window, and with H5 unread the card says both as
         /// conditions, because someone whose VM was made headless outside this session reaches Connect
         /// with no reading (`SetupFlow.Console`). Close Setup comes with any advice that may need it.
@@ -931,22 +1587,22 @@ enum SetupCopy {
             switch readiness {
             case .blocked?:
                 return Recovery(heading: "macOS blocked Winbar's check of the VM",
-                                steps: ["macOS refused Winbar's connection to the VM's Remote Desktop port, which is what "
-                                            + "it does when Local Network access is off. So Winbar can't tell whether "
-                                            + "Windows is ready.",
-                                        networkRecovery])
+                                steps: ["macOS stopped Winbar's check of the VM, which is what it does when Local "
+                                            + "Network access is off. So Winbar can't tell whether Windows is ready.",
+                                        networkRecovery],
+                                opensLocalNetwork: true)
             case .notReady?:
-                return Recovery(heading: "Windows isn't answering Remote Desktop yet",
-                                steps: ["Nothing answered on the VM's Remote Desktop port just now, so Windows is most "
-                                            + "likely still starting, restarting or installing updates.",
+                return Recovery(heading: "Windows isn't answering yet",
+                                steps: ["Windows didn't answer Winbar's check just now, so it's most likely still "
+                                            + "starting, restarting or installing updates.",
                                         "Wait until Windows has finished and shows its sign-in screen or desktop, "
                                             + "then choose **\(bTryAgain)**.",
                                         watchWindows(console)],
                                 offersConsole: console != .onScreen)
             case .ready?:
                 return Recovery(heading: "Windows is answering; the sign-in is what's left",
-                                steps: ["Windows answered on the VM's Remote Desktop port, so the problem is in Windows "
-                                            + "App or the sign-in.",
+                                steps: ["Windows answered Winbar's check, so the problem is in Windows App or the "
+                                            + "sign-in.",
                                         "If Windows App is asking for your password, finish signing in there. If its "
                                             + "prompt closed or timed out, choose **\(bTryAgain)** for a new one.",
                                         "Use your Windows account's password, not its PIN: Remote Desktop doesn't "
@@ -958,11 +1614,15 @@ enum SetupCopy {
                                                 + "connections don't ask; a one-off connection can't."])
             case nil:
                 return Recovery(heading: "Check whether Windows is answering",
-                                steps: ["Winbar hasn't looked at the VM's Remote Desktop port since this connection. "
+                                steps: ["Winbar hasn't checked whether Windows is answering since this connection. "
                                             + "Choose **\(Retry.checkAgain.title)**, and Winbar then says what to try."],
                                 retry: .checkAgain)
             }
         }
+
+        /// Under Connect's own wait.
+        static let openingIsNotProof = "Opening Windows App alone doesn't prove the connection works: Winbar asks next "
+            + "whether you see the Windows desktop."
 
         static let bAllowAccessibility = "Allow Accessibility"
         static let bConnect = "Connect"
@@ -973,15 +1633,26 @@ enum SetupCopy {
         static let didItAppearHeading = "Did the Windows desktop appear?"
         static let openedConnection = "Winbar opened a connection in Windows App. If the Windows desktop appeared, "
             + "the connection works. If the saved PC couldn't be opened, Windows App may ask for your password."
-        static let afterRestart = "The VM restarted with your changes. Connect once more to check that its desktop still opens."
-        static let recoverConsole = "This VM has no console screen. To see what Windows is doing, close this window and "
-            + "choose **Show Console Window…** in Winbar's menu to bring its screen back; **Set Up Winbar…** there "
-            + "reopens this window."
+        static let afterRestart = "The VM restarted with your changes. Choose **\(bConnect)** once more to check that its "
+            + "desktop still opens."
+        /// The menu item that gives a VM in the background its screen back, by the name the menu gives it
+        /// (`MenuCopy.bringBackScreen`), with **Close Setup**, the card's button that comes with this advice
+        /// (`Recovery.offersConsole`), first. It said "console screen" and **Show Console Window…**.
+        static let recoverConsole = "This VM runs in the background, with no screen of its own. To see what Windows is "
+            + "doing, choose **\(bCloseSetup)**, then **\(MenuCopy.bringBackScreen)** in Winbar's menu. **\(menuItem)** "
+            + "in the same menu brings this window back."
         static let recoverOnScreen = "The VM's window in UTM shows what Windows is doing."
-        /// H5 unread: true of a VM with a console and of one without, in the Connect error's own terms.
-        static let recoverEither = "If the VM has a window in UTM, it shows what Windows is doing. If the VM has no "
-            + "screen, close this window and choose **Show Console Window…** in Winbar's menu to bring it back; "
-            + "**Set Up Winbar…** there reopens this window."
+        /// H5 unread: true of a VM with a screen and of one without, in the Connect error's own terms.
+        static let recoverEither = "If the VM has a window in UTM, it shows what Windows is doing. If it runs in the "
+            + "background, choose **\(bCloseSetup)**, then **\(MenuCopy.bringBackScreen)** in Winbar's menu. "
+            + "**\(menuItem)** in the same menu brings this window back."
+        /// Closes the window so the menu can be used, with the advice above.
+        static let bCloseSetup = "Close Setup"
+        /// A connection that timed out waiting for Windows: the runner's error, in the words the
+        /// recovery card uses. It said "port 3389" and **Show Console Window…**.
+        static let timedOutTitle = "Windows isn't answering yet"
+        static let timedOut = "Windows didn't answer within two minutes. Check Windows in UTM, then choose Try Again. "
+            + "If the VM runs in the background, choose Close Setup, then \(MenuCopy.bringBackScreen) in Winbar's menu."
         static func watchWindows(_ console: SetupFlow.Console) -> String {
             switch console {
             case .headless: return recoverConsole
@@ -1004,93 +1675,189 @@ enum SetupCopy {
 
     enum Finish {
         /// The single restart, in both front-ends. The terminal passes the bare VM name, the window a
-        /// quoted one (“Windows 11”), and `summary` is `ConfigChanges.summary` either way.
+        /// quoted one (“Windows 11”), and `summary` is `ConfigChanges.summary` either way. The window
+        /// says it in its own words (`restartLine`); this stays the progress line both print while the
+        /// restart runs, which Terminal's users read in its terms.
         static func oneRestart(of vm: String, applies summary: String) -> String {
             "One restart of \(vm) applies: \(summary)."
         }
 
-        static let headlessHeading = "Run it without a screen?"
+        // MARK: The choice
 
-        /// Shown only when step 6 ended in **Yes** and `otherVMsRefusal` returned nil; the other two
-        /// answers get `afterRefusal` instead. The spec's step 7 now has the same figure and the same
-        /// refusal rule (both settled 2026-09-22), and the deck still words three things its own way.
-        ///
-        /// The saving: about two thirds, as the spec and the README now say — re-measured 2026-09-21
-        /// with both sides taken the same way, a median of 0.5 CPU-seconds a minute headless against
-        /// 1.7 with the window open. The spec states it flatly; the deck says "in testing" and adds
-        /// that both are a small fraction of one core, because the README qualifies the same number
-        /// that way ("real but small in absolute terms"), and the window shouldn't promise more than it.
-        ///
-        /// The restart. The spec says "Nothing else is running in UTM right now, so nothing else
-        /// stops." That was true when the step asked UTM, and stops being true if the person starts a
-        /// VM while the offer sits on screen — which is exactly when **Go Headless** meets the refusal.
-        /// So the deck states the rule instead, which is true whenever it is read, and holds for the
-        /// way back as much as the way there.
-        ///
-        /// The way back. The spec says **Show Console Window** brings the screen back "at any time",
-        /// but it is a display change too and has the same rule; the menu item's title has an ellipsis.
-        static let headlessBody = [
-            "A headless VM has no screen of its own, so the Mac's CPU no longer copies what Windows draws. In testing, "
-                + "idle host CPU came out about two thirds lower — though with the screen it was already a small "
-                + "fraction of one core. Remote Desktop becomes the only way in, and you've just proved that works.",
-            "Changing the screen either way restarts UTM, and restarting UTM stops every VM that's running, so Winbar "
-                + "only does it while this is the only one.",
-            "**Show Console Window…** in Winbar's menu brings the screen back, the same way.",
-        ]
-        static let bKeepScreen = "Keep the Screen"
-        static let bGoHeadless = "Go Headless"
+        /// The page's title while it asks. The question is the page: the step's name ("Finish") said
+        /// nothing about what to decide.
+        static let choiceHeading = "How should Windows run?"
 
-        /// In place of the offer when another VM is running, or UTM wouldn't say (COHERENCE C2), and
+        /// The two tiles. "Headless" is a word the person reading this doesn't have (the owner's call,
+        /// 0.2.1): it names what the VM lacks, where these name what the person gets. The CLI's
+        /// `--headless` and `winbar display` keep theirs.
+        static let bBackground = "Run in the Background"
+        static let bKeepScreen = "Keep Windows' Screen"
+        static let recommended = "Recommended"
+
+        /// The saving. It was "about two thirds lower" of idle host CPU, which is true (re-measured
+        /// 2026-09-21: a median 0.5 CPU-seconds a minute against 1.7), but both are a small fraction
+        /// of one core, and a fraction of a fraction asks the reader to do sums to learn it's small.
+        /// The README keeps the figure. Remote Desktop being the only way in is the other half: the
+        /// person has just watched it work, which is the only reason it is offered.
+        static let backgroundBody = "No window of its own. You open Windows with Windows App, the way you just did. "
+            + "It uses a little less of your Mac's power."
+        static let keepBody = "UTM keeps a window showing Windows' own screen, as it does now."
+
+        /// The rule both ways, stated rather than a list of VMs that could be stale by the time it's read
+        /// (COHERENCE C2): a display change restarts UTM, and that stops every VM it runs. The way back
+        /// is named as the menu names it (`MenuCopy.bringBackScreen`), so it stays true whatever the menu
+        /// calls it: "Winbar's menu can switch it back later" left the owner asking for a way to give the
+        /// VM its screen back, which the menu already had. It doesn't say "at any time", since the way
+        /// back has the same rule.
+        static let choiceRule = "Switching either way restarts UTM, which stops every VM it's running, so Winbar "
+            + "only does it while this is the only one. If you choose the background, **\(MenuCopy.bringBackScreen)** "
+            + "in Winbar's menu switches it back later, the same way."
+
+        /// In place of the choice when another VM is running, or UTM wouldn't say (COHERENCE C2), and
         /// under the refusal itself: `otherVMsRefusal`'s title where the heading goes and its detail
         /// as the body, both from `Reconfigure` and both verbatim, so the window, the menu and the CLI
         /// give one answer in one set of words. The deck keeps no copy of them; these are only the
-        /// window's own words about its two buttons, **Keep the Screen** and **Check Again**. There is
-        /// no **Go Headless** button in this state, since pressing it could only end on that refusal.
+        /// window's own words about what is left: **Check Again**, or finishing as it is. There are no
+        /// tiles in this state, since **Run in the Background** could only end on that refusal.
         ///
         /// The refusal's detail names the other VMs, so the view shows it as plain text
         /// (`Text(verbatim:)`), the way it shows the lines shared with Terminal.
-        static let afterRefusal = "**\(SetupCopy.bCheckAgain)** asks UTM again. **\(bKeepScreen)** finishes without "
-            + "going headless; **Go Headless…** in Winbar's menu can do it later, and checks the same thing first."
+        static let afterRefusal = "Choose **\(SetupCopy.bCheckAgain)** once they've stopped. Or finish with Windows' "
+            + "screen as it is: Winbar's menu can switch it later, and checks the same thing first."
+        static let couldNotConfirm = "Winbar couldn't confirm that it is safe to restart UTM."
 
-        /// Instead of the offer, when the person said the desktop didn't appear and the VM still has its
-        /// screen (a VM `create` already took headless has nothing to offer either way).
+        /// Instead of the choice, when the person said the desktop didn't appear and the VM still has
+        /// its screen (a VM `create` already put in the background has nothing to offer either way).
         ///
         /// The spec's "Fix Connect first, then open this window again", which the window couldn't say
         /// while the menu had no way back to it. It has one now (`SetupWindow.availableToEveryone`).
-        static let notOffering = "Winbar isn't offering to remove the VM's screen, because Remote Desktop hasn't worked "
-            + "yet. A headless VM with no working Remote Desktop has no way in until you choose **Show Console Window…** "
-            + "in the menu. Fix Connect first (**\(SetupCopy.bBack)** returns to it), then come back here, or open "
-            + "**\(SetupCopy.menuItem)** from the menu again later."
+        static let notOffering = "Winbar isn't offering to run Windows in the background, because Remote Desktop "
+            + "hasn't worked yet, and in the background it's the only way in. Fix Connect first (choose "
+            + "**\(SetupCopy.bBack)**), then come back here, or choose **\(SetupCopy.menuItem)** in the menu later."
+        static let alreadyInBackground = "Windows already runs in the background, with no window of its own."
+        static let notReady = "Windows keeps its screen: Remote Desktop isn't ready for it to run in the background."
+        static let checking = "Checking whether Windows can run in the background…"
 
-        static let doneHeading = "Winbar is set up"
-        /// `connected` is the answer to step 6. "Is ready" is only true when the desktop appeared; after
-        /// a **No** the VM is tuned, but Connect is exactly the part that hasn't worked, and **Set Up
-        /// Winbar…** is where to pick it up again.
-        /// How step 6 ended. A Bool couldn't say the third one: Windows App skipped, so Connect was never
-        /// tried — and the ready sentence ("Connect … opens its desktop") would then be untrue.
-        enum Outcome { case connected, notConnected, windowsAppSkipped }
+        // MARK: The restart
 
+        /// The footer's corner while a restart is owed: the background chosen, or processor cores or
+        /// memory staged on Tune. It restarts, and Winbar then asks once more whether Windows opens,
+        /// since the restart is exactly what could stop it.
+        static let bRestartAndFinish = "Restart and Finish"
+        /// The corner once nothing is owed.
+        static let bFinish = "Finish"
+        /// Drops what is staged and finishes, in one press: it used to be **Discard Changes and Finish
+        /// Without Restarting**, which only discarded, and left a greyed-out Done to find.
+        static let bFinishWithoutRestarting = "Finish Without Restarting"
+
+        /// The restart in the window's words: `ConfigChanges.summary` says "6 vCPUs, headless", which is
+        /// Terminal's vocabulary. Pure.
+        static func restartLine(vm: String, _ changes: ConfigChanges) -> String {
+            "Finishing restarts “\(vm)” once to apply: \(summary(changes))."
+        }
+
+        static func summary(_ changes: ConfigChanges) -> String {
+            var parts: [String] = []
+            if let cores = changes.cpuCores { parts.append("\(cores) processor \(cores == 1 ? "core" : "cores")") }
+            if let memory = changes.memoryMB {
+                parts.append(memory % 1024 == 0 ? "\(memory / 1024) GB of memory" : "\(memory) MB of memory")
+            }
+            switch changes.display {
+            case .headless: parts.append("running in the background")
+            case .console: parts.append("Windows' screen back on")
+            case nil: break
+            }
+            switch changes.sharedFolder {
+            case .folder(let path): parts.append("sharing \(SharedFolder.abbreviate(path))")
+            case .off: parts.append("no shared folder")
+            case nil: break
+            }
+            return CreateCopy.list(parts)
+        }
+
+        /// Only once a restart has been tried and stopped: the failure's own words are above it, and
+        /// this says what is left. It used to sit under every staged restart as a warning in advance,
+        /// "If Winbar can't verify BitLocker or Windows won't shut down, it stops safely", about a
+        /// case that hadn't happened.
+        static let restartStopped = "Winbar stopped rather than restart unsafely, and the changes are still waiting. "
+            + "Choose **\(bRestartAndFinish)** to try again, or **\(bFinishWithoutRestarting)** to keep Windows as it "
+            + "is now."
+
+        // MARK: Done
+
+        /// Only when the desktop appeared. After a **No**, or with Windows App skipped, Connect is
+        /// exactly the part that hasn't worked, and the page says so rather than calling it ready.
+        static let readyHeading = "Windows is ready"
+        static let almostHeading = "Almost done"
+        static let bOpenWindows = "Open Windows"
+        static let bTryConnectingAgain = "Try Connecting Again"
+
+        /// How step 6 ended. A Bool couldn't say the others: Windows App skipped, so Connect was never
+        /// tried — and the ready sentence ("Open Windows …") would then be untrue — and Windows App
+        /// installed since, so Connect can be tried but hasn't been. "Try Connecting Again … once more"
+        /// was said then, about an attempt that never happened.
+        enum Outcome { case connected, notConnected, notTried, windowsAppSkipped }
+
+        static func outcome(_ facts: SetupFlow.Facts) -> Outcome {
+            if facts.answers.connected == true { return .connected }
+            if SetupFlow.windowsAppSkipped(facts) { return .windowsAppSkipped }
+            return facts.answers.connected == false ? .notConnected : .notTried
+        }
+
+        /// The finished page's Connect when it hasn't been tried: what the Connect step calls it.
+        static let bConnect = Connecting.bConnect
+        /// The finished page's corner once Windows App is here after it was skipped: the saved PC step
+        /// the skip passed over, named as every way back to a step is (`goBackTo`, "Go Back to Tune").
+        static let bGoBackToSavedPC = SetupCopy.goBackTo(.savedPC)
+
+        static func heading(_ outcome: Outcome) -> String { outcome == .connected ? readyHeading : almostHeading }
+
+        /// On the finished page when the VM runs in the background (`SetupFinishPage.runsInBackground`):
+        /// where its screen is, by the menu item's own name.
+        static let inBackground = "Windows runs in the background, with no window of its own. To see its screen, "
+            + "choose **\(MenuCopy.bringBackScreen)** in Winbar's menu."
+
+        /// Over the finished page's list of the steps passed over (`SetupFinishPage.passedOver`): what
+        /// VoiceOver says of the step bar's warning marks too (`stepBarFlagged`).
+        static let passedOverHeading = "Skipped or not confirmed"
+
+        /// A step's line in that list: the step bar's hover words for it (`SetupCopy.passedOver`), as
+        /// a sentence. Pure.
+        static func passedOverLine(_ words: String) -> String {
+            guard let first = words.first else { return words }
+            return first.uppercased() + words.dropFirst() + (words.hasSuffix(".") ? "" : ".")
+        }
+
+        /// The one sentence under the heading, naming the VM, and the reopen line under it when the
+        /// menu offers **Set Up Winbar…**.
         static func doneBody(vm: String, connected: Bool) -> [AttributedString] {
             doneBody(vm: vm, connected ? .connected : .notConnected)
         }
 
         static func doneBody(vm: String, _ outcome: Outcome, canReopenFromMenu: Bool = true) -> [AttributedString] {
-            let ready: Filled = "“\(vm)” is ready. **Connect** in Winbar's menu opens its desktop; **Shut Down** and "
-                + "**Restart** are there too."
-            let tuned: Filled = "“\(vm)” is tuned, but Connect hasn't worked yet. **Connect** in Winbar's menu tries again; "
-                + "**Report a Problem…** there gathers what Winbar sees for you to review and share."
-            let noApp: Filled = "“\(vm)” is tuned. Winbar connects to it through Windows App, which isn't installed; "
-                + "it's on the Mac App Store."
+            let ready: Filled = "“\(vm)” is set up. From now on, choose **Connect** in Winbar's menu to open it."
+            // The button's name written out, not interpolated: an interpolation is a value, and a value's
+            // text is never Markdown (`Filled`), so the bold around it would show as asterisks.
+            let tuned: Filled = "“\(vm)” is tuned, but Windows hasn't opened on this Mac yet. "
+                + "Choose **Try Connecting Again** to test it once more."
+            let untried: Filled = "“\(vm)” is tuned, and Windows App is here now. Choose **Go Back to Saved PC** to save "
+                + "your Windows password in it, then test that Windows opens on this Mac."
+            let noApp: Filled = "“\(vm)” is tuned. Winbar opens it with Windows App, which isn't installed. "
+                + "It's free: choose **Open the App Store** to get it."
             let first: Filled
             switch outcome {
             case .connected: first = ready
             case .notConnected: first = tuned
+            case .notTried: first = untried
             case .windowsAppSkipped: first = noApp
             }
             var lines = [fill(first)]
             if canReopenFromMenu {
-                lines.append(markdown("Run this window again from **Set Up Winbar…** in the menu whenever you like. It changes nothing "
-                                     + "that's already right."))
+                lines.append(markdown(outcome == .connected
+                    ? "To run this window again, choose **Set Up Winbar…** in the menu. It changes nothing that's already "
+                        + "right."
+                    : "To pick up where this leaves off, choose **Set Up Winbar…** in the menu."))
             }
             return lines
         }
@@ -1101,6 +1868,8 @@ enum SetupCopy {
     /// What the terminal says when it hands the window over to Winbar.app. Plain text: Terminal
     /// prints it.
     enum HandOff {
+        /// Said first by `winbar setup` in a terminal: the same set-up exists as a window.
+        static let windowTip = "Prefer a window? Run winbar setup --window, or choose \(menuItem) in Winbar's menu bar menu."
         /// Said once the window is open, for a window whose last built step is `lastBuilt`. Pure.
         ///
         /// The finished window does the whole thing, so the set-up carries on there. The partial
@@ -1166,7 +1935,7 @@ enum SetupCopy {
 
         static func doing(_ inFlight: SetupRunner.InFlight) -> String {
             switch inFlight.work {
-            case .checkAgain: return "looking at what's on this Mac"
+            case .checkAgain, .lookAgain: return "looking at what's on this Mac"
             case .installUTM: return "installing UTM"
             case .installWindowsApp: return "opening Windows App in the App Store"
             case .settleUTM: return "waiting for UTM to answer"
@@ -1174,9 +1943,15 @@ enum SetupCopy {
             case .startVM(let name): return "starting “\(name)”"
             case .survey: return "asking Windows how it's set up"
             case .fix(let id): return "fixing \(named(id))"
-            case .fixEverything: return "fixing what Windows can have fixed"
+            case .fixEverything: return "fixing what Winbar can fix"
             case .recordDone(let id): return "checking \(named(id)) again"
-            case .guide(let id): return "opening \(named(id))"
+            case .guide(let id):
+                switch id {
+                case "H6": return "opening Time Machine settings"
+                case "C2": return "opening Windows App"
+                case "C3": return "opening Accessibility settings"
+                default: return "opening \(named(id)) in Windows"
+                }
             case .keepBitLocker: return "remembering to keep BitLocker on"
             case .discardChanges: return "discarding the staged changes"
             case .trustCertificate: return "waiting for you to approve the certificate in the macOS dialog"
@@ -1187,9 +1962,10 @@ enum SetupCopy {
             }
         }
 
-        /// "G1 (Power plan)": the row's id and title, as the tune screen shows them.
+        /// A row by the name the Tune page shows it under: the quit prompt said "fixing G1 (Power
+        /// plan)", and the code is `winbar setup`'s, never the window's.
         private static func named(_ id: String) -> String {
-            Recipe.check(id).map { "\(id) (\($0.title))" } ?? id
+            Recipe.check(id).map { Tune.title(id, recipe: $0.title) } ?? "a setting"
         }
 
         /// What a piece of work is waiting on the person for, in a window that isn't Winbar's: said to a
@@ -1217,7 +1993,7 @@ enum SetupCopy {
         static func whereToLook(_ waiting: SetupRunner.Waiting, host: String = Automation.host.name) -> String {
             switch waiting {
             case .certificateApproval:
-                return "It can open behind other windows; approve it there, or press **\(bStopWaiting)** and trust "
+                return "It can open behind other windows; approve it there, or choose **\(bStopWaiting)** and approve "
                     + "it later."
             case .automationPrompt:
                 return "If macOS asks whether \(host) may control UTM (its prompt says "
@@ -1227,15 +2003,74 @@ enum SetupCopy {
 
         static let bStopWaiting = "Stop Waiting"
 
-        /// A press the runner turned down because something else is in flight. Names what that is, and
-        /// when it's waiting on the person, where to look.
-        static func refusal(_ inFlight: SetupRunner.InFlight, host: String = Automation.host.name) -> AttributedString {
-            let busy: Filled = "Winbar is still \(doing(inFlight)), and it does one thing at a time."
-            guard let waiting = inFlight.waitingFor else {
-                return fill(busy + " This can go ahead once that's done.")
+        /// Over a card a page keeps while a read nobody pressed runs (`QuietReadLine`).
+        static let lookingAgain = "Checking again…"
+
+        /// A start's progress line, in the window's words. `Setup.waitForWindows` says Terminal's,
+        /// which name the guest agent, a word Ben doesn't have; the lines are matched, not reworded at
+        /// the source, so Terminal keeps its own. Anything else is shown as it was said.
+        static func windowLine(_ line: String) -> String {
+            switch line {
+            case SetupCopy.waitingForWindows: return startWaiting
+            case SetupCopy.agentNotYet: return startSlow
+            default: return line
             }
-            return fill(busy) + AttributedString(" ") + markdown(whereToLook(waiting, host: host))
         }
+        static let startWaiting = "Waiting for Windows to start. This can take up to three minutes."
+        static let startSlow = "Windows is taking longer than usual to start. Winbar is still checking…"
+        /// Beside **Stop Waiting** on the VM step: what stopping does, and doesn't.
+        static let stopStart = "Windows keeps starting if you stop waiting."
+        /// Beside it on the certificate: stopping ends Winbar's wait, not macOS's dialog, which isn't
+        /// Winbar's to close (`whereToLook`).
+        static let stopApproval = "macOS's dialog stays open if you stop waiting."
+        /// Beside it on Connect, whose wait is for Windows to take Remote Desktop before Windows App
+        /// is opened: stopping means no desktop this time, and nothing more.
+        static let stopConnect = "Winbar won't open the desktop if you stop waiting. Windows carries on starting."
+        /// Beside it on Finish, during the restart: the restart itself can't be cut short.
+        static let stopRestart = "The restart carries on either way; stopping only ends Winbar's wait for Windows afterwards."
+
+        /// What stopping a wait does, said beside **Stop Waiting** wherever it is drawn: nil for work
+        /// that can't be stopped (`Work.canStopWaiting`).
+        static func stopConsequence(_ work: SetupRunner.Work) -> String? {
+            switch work {
+            case .startVM: return stopStart
+            case .trustCertificate: return stopApproval
+            case .connect: return stopConnect
+            case .applyChanges: return stopRestart
+            default: return nil
+            }
+        }
+
+        /// A press the runner turned down because something else is in flight. Names what that is, and
+        /// when it's waiting on the person, where to look. It says the press didn't start and to choose
+        /// it again: "This can go ahead once that's done" read as a promise that it would, and nothing
+        /// ever did — the runner refuses, it doesn't queue (`SetupRunner`).
+        static func refusal(_ inFlight: SetupRunner.InFlight, host: String = Automation.host.name) -> AttributedString {
+            let busy: Filled = "Winbar is still \(doing(inFlight)), and it does one thing at a time"
+            guard let waiting = inFlight.waitingFor else {
+                return fill(busy + ", so what you chose didn't start. Choose it again once that's done.")
+            }
+            return fill(busy + ".") + AttributedString(" ") + markdown(whereToLook(waiting, host: host))
+        }
+
+        /// A refusal as the page says it for as long as it stands (`SetupWindowState.refusal`): the
+        /// app's gate's own words when it was the gate, until the gate has been free since
+        /// (`Refusal.reasonPassed`); what is still running, while something is (`refusal(_:host:)`, for
+        /// what runs now, which may be the read after the work it was refused for); and once nothing
+        /// runs, what it was doing then and to choose again — "Winbar is still …" would be untrue by
+        /// then, and the press still didn't start. The gate's refusal names what held it only in its
+        /// own words, so its past tense says only that Winbar was busy.
+        static func refused(_ refusal: SetupRunner.Refusal, busy: SetupRunner.InFlight?,
+                            host: String = Automation.host.name) -> AttributedString {
+            if let reason = refusal.reason, !refusal.reasonPassed { return AttributedString(reason) }
+            if let busy { return self.refusal(busy, host: host) }
+            if refusal.reason != nil { return AttributedString(refusedWhileBusy) }
+            return fill("Winbar didn't start that: it was \(doing(refusal.inFlight)) at the time. Choose it again.")
+        }
+
+        /// A press the app's gate turned away, said once the work that held the gate has finished.
+        static let refusedWhileBusy = "Winbar didn't start that: it was busy with something else at the time. Choose it again."
+
 
         /// Step 7, coming back to a VM that's off with a UTM restart still owed
         /// (`SetupRunner.RestartReport.offWithUTMRestartOwed`). The restart Reconfigure started was
@@ -1281,7 +2116,11 @@ enum SetupCopy {
     ///
     /// The line about "pretending to be an Intel chip" is deliberately missing: it is only true once
     /// someone has run an x86 app, which nothing here can know, and a line that might be untrue is
-    /// filler.
+    /// filler. So is "No translating.", a Rosetta joke for people who know what Rosetta is.
+    ///
+    /// Each line is one fact, ending on what it means for Ben, and never what the page already says
+    /// beside him: the card's heading, the status line, the stage row. He said "guest agent" under
+    /// "Waiting for Windows to start", and on Finish repeated the sentence above him.
     enum Armie {
         enum Moment: Hashable, Sendable {
             /// Step 2, UTM has no Windows VM yet.
@@ -1311,65 +2150,66 @@ enum SetupCopy {
             case .noVM:
                 // `winbar create` refuses anything but an Arm64 ISO (WindowsISO.evaluate), and an
                 // aarch64 guest runs on Apple silicon without emulation (H2 calls anything else slow).
-                return "No Windows here yet. Winbar only makes the Arm version, which runs on this chip as it is. "
-                    + "No translating."
+                // The card already says there's no VM, and names the Arm64 ISO; this is why Arm.
+                return "Winbar installs the Arm version of Windows. It's made for this Mac's chip, so it runs quickly."
             case .installing(let stage):
                 return installing(stage)
             case .startingWindows:
                 // `Setup.waitForWindows` waits up to three minutes for the guest agent, then — only when
-                // Windows is set to sign itself in (AutoAdminLogon) — up to 90 s more for explorer.exe,
-                // because a survey that runs before the desktop is up finds nobody signed in.
-                return "Windows is starting. Winbar waits for its guest agent, and for the desktop too if Windows "
-                    + "signs itself in."
+                // Windows is set to sign itself in (AutoAdminLogon) — up to 90 s more for explorer.exe.
+                // The status line beside him says what's awaited and for how long; he says how it feels.
+                return "Windows is waking up. It takes its time. I'll wait."
             case .done:
-                return "That's the lot. Windows is set up, and Connect in Winbar's menu opens it. I'll be quiet now."
+                // The page above him names the VM and the menu's Connect; he only signs off.
+                return "That's the lot. I'll be quiet now."
             case .installingUTM:
                 // One line for the whole install, since it stays up for all of it: the download, the
                 // copy, Homebrew's "Moving App" and "Linking Binary", and the check at the end. True
                 // of both routes the window takes (`Dependencies.windowPlan`): each ends in
                 // `DependencyInstaller.verify`, which checks the bundle, its signature, the team and
-                // the version before the install counts as done. UTM is where the VM will run. Not
-                // said during an update, where he doesn't appear (`LookAroundPage.armieLine`).
-                return "Installing UTM, the app Windows is going to live in. Winbar checks it's the real one before "
-                    + "calling it done. I'll watch."
+                // the version before the install counts as done. Not said during an update, where he
+                // doesn't appear (`LookAroundPage.armieLine`). "Installing UTM" is the line above him.
+                return "Winbar checks this is the real UTM before it calls it installed. I'll watch."
             }
         }
 
         /// One line per install stage, each saying what that stage really does (CreateJobRun):
         /// preflight reads the ISO and asks UTM for its VMs; every Guest Tools copy, downloaded,
         /// cached or supplied, is checked against the pinned SHA-256; the setup disk holds the answer
-        /// file; the VM is created with both discs; the boot watcher answers "Press any key" when the
+        /// file; the VM is created with both disks; the boot watcher answers "Press any key" when the
         /// ISO asks; the oobe stage is the account, region and privacy questions the answer file
         /// answers; the first-logon script runs its steps in turn; and the finish shuts Windows down,
-        /// removes the discs and starts it again.
+        /// detaches the disks from UTM and starts it again.
         private static func installing(_ stage: CreateStage) -> String {
             switch stage {
+            // "Disk", as the stage rows say it ("Made the setup disk"): he said "disc", one more name.
             case .check:
-                return "Reading the ISO to see which Windows is in it, and asking UTM what it already has."
+                return "Reading which editions and language are in the ISO, so the right Windows goes in."
             case .guestTools:
-                return "Getting UTM's Guest Tools: drivers, and the agent Winbar talks to Windows through. They're "
-                    + "checked against the checksum Winbar ships with before they go anywhere."
+                return "These are the drivers Windows needs inside a VM. Winbar checks they're the real ones before "
+                    + "they go anywhere."
             case .media:
-                return "Writing a small disc with the answers to Windows Setup's questions on it. Nobody has to click "
-                    + "through them."
+                return "The setup disk holds the answers to Windows Setup's questions, so nobody has to click through "
+                    + "them."
             case .vm:
-                return "Asking UTM for a virtual machine with two discs in it: Windows, and the answers."
+                return "The new VM gets two disks: Windows, and the answers."
             case .boot:
-                return "Starting the Windows installer from its disc. If it asks for a key press, it gets one."
+                return "If the installer asks for a key press, it gets one."
             case .copy:
+                // The spec's own example, and the review's model of his tone: it names the stage, but
+                // as the setup for the joke, not as news.
                 return "Copying files. There are a lot of them. I'll be here."
             case .devices:
                 return "Windows is deciding what kind of computer it lives in. It'll be a minute."
             case .oobe:
-                return "Windows is asking its first-run questions: account, region, privacy. The disc is answering."
+                return "Windows is asking its first-run questions: account, region, privacy. The setup disk is answering."
             case .firstLogon:
                 return "Windows has signed in for the first time and is working through the list Winbar left it, one "
                     + "step at a time."
             case .finish:
                 // The whole stage, not its next step: it is shown from the audit to the restart, and "next
-                // it shuts down" stopped being true halfway through.
-                return "Windows is installed. Winbar checks it over, shuts it down, takes the install discs out "
-                    + "and starts it again without them."
+                // it shuts down" stopped being true halfway through. The stage row says the disks are detached from UTM.
+                return "Windows is installed. One more restart, and it's ready."
             }
         }
 
@@ -1409,7 +2249,7 @@ enum SetupCopy {
         /// The warnings he may talk beside: preflight's cautions about the conditions the install
         /// runs in, said before anything has started, none of them saying anything went wrong or
         /// contradicting a line of his. W_ISO_UNTESTED isn't one: it says Setup may stop to ask
-        /// something, and his line for that stage says the answer disc is answering.
+        /// something, and his line for that stage says the answer disk is answering.
         static let cautions: Set<String> = ["W_BATTERY", "W_SPACE", "W_ISO_REMOVABLE", "W_UTM_PRERELEASE",
                                             "W_UTM_UNTESTED"]
 

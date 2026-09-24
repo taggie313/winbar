@@ -72,8 +72,14 @@ private func installing(_ vm: String = "winlab01", stage: CreateStage = .copy, i
 
 private func menu(_ given: MenuState) -> [String] { lines(MenuShape.items(given)) }
 
-/// The last three lines of every menu there is.
-private let foot = ["---", "Launch at Login | → launchAtLogin", "Quit Winbar | → quit | keys: ⌘q"]
+/// The last six lines of every menu there is: the two switches, Quit, and the version, greyed, below
+/// it. Start Windows with Winbar's hover names the VM the menu looks after, or none.
+private func foot(_ vm: String? = "winlab01") -> [String] {
+    ["---", "Launch at Login | → launchAtLogin | tip: \(LaunchAtLogin.Copy.menuHelp)",
+     "Start Windows with Winbar | → startWindowsAtLaunch | tip: \(StartWindowsAtLaunch.Copy.menuHelp(vm: vm))",
+     "Quit Winbar | → quit | keys: ⌘q",
+     "---", "Winbar dev | disabled"]
+}
 
 /// Every situation, with Set Up Winbar… directly above Open UTM, as 0.2.0 ships the menu
 /// (`SetupWindow.availableToEveryone`). These were written beside the lists the menu had while the
@@ -117,8 +123,34 @@ struct MenuShapeSetUpOfferedTests {
     @Test("Launch at Login is ticked when it is on, and nothing else changes")
     func launchAtLoginOn() {
         var expected = menu(state())
-        expected[expected.count - 2] = "Launch at Login | → launchAtLogin | ✓"
+        expected[expected.count - 5] = "Launch at Login | → launchAtLogin | ✓ | tip: \(LaunchAtLogin.Copy.menuHelp)"
         #expect(menu(state(launchAtLogin: true)) == expected)
+    }
+
+    /// The setting's tick, and nothing else: it is a setting, so it is never greyed out, whatever runs.
+    /// Control: build the item with `checked: false` and the first expectation fails.
+    @Test("Start Windows with Winbar is ticked when it is on, and nothing else changes")
+    func startWindowsOn() {
+        var ticked = state()
+        ticked.startsWindows = true
+        var expected = menu(state())
+        expected[expected.count - 4] = "Start Windows with Winbar | → startWindowsAtLaunch | ✓ | tip: "
+            + StartWindowsAtLaunch.Copy.menuHelp(vm: "winlab01")
+        #expect(menu(ticked) == expected)
+        // Enabled while the VM is starting and while Set Up Winbar has it: ticking starts nothing now.
+        var busy = state(activity: "Starting…")
+        busy.setupBusy = true
+        #expect(menu(busy).contains("Start Windows with Winbar | → startWindowsAtLaunch | tip: "
+                                        + StartWindowsAtLaunch.Copy.menuHelp(vm: "winlab01")))
+    }
+
+    /// The live menu takes the bundle's version (`MenuState.version`'s default); a build names itself.
+    @Test("The last line is the version, greyed out")
+    func versionLine() {
+        var given = state()
+        given.version = "0.3.0"
+        #expect(Array(menu(given).suffix(2)) == ["---", "Winbar 0.3.0 | disabled"])
+        #expect(MenuState(status: MenuStatus()).version == AppBundle.version)
     }
 
     @Test("No VM chosen: Choose VM, the setup hint, and New Windows VM… once, beside them")
@@ -135,7 +167,7 @@ struct MenuShapeSetUpOfferedTests {
             "Set Up Winbar… | → setUpWinbar",
             "Open UTM | → openUTM",
             "Report a Problem… | → reportProblem",
-        ] + foot)
+        ] + foot(nil))
     }
 
     @Test("No VM chosen and a report being written: only Report a Problem… waits")
@@ -151,7 +183,7 @@ struct MenuShapeSetUpOfferedTests {
             "Set Up Winbar… | → setUpWinbar",
             "Open UTM | → openUTM",
             "Report a Problem… | → reportProblem | disabled",
-        ] + foot)
+        ] + foot(nil))
     }
 
     @Test("Stopped, with a console window and no shared folder")
@@ -164,13 +196,13 @@ struct MenuShapeSetUpOfferedTests {
             "---",
             "Start | → start",
             "---",
-            "Go Headless… | → toggleConsole",
+            "Run in the Background… | → toggleConsole",
             "Share a Folder… | → sharedFolder",
             "Set Up Winbar… | → setUpWinbar",
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM",
             "Report a Problem… | → reportProblem",
-        ] + foot)
+        ] + foot())
     }
 
     @Test("Stopped and headless, sharing a folder: the display and folder items offer the other thing")
@@ -183,13 +215,13 @@ struct MenuShapeSetUpOfferedTests {
             "---",
             "Start | → start",
             "---",
-            "Show Console Window… | → toggleConsole",
+            "Bring Back Windows' Screen… | → toggleConsole",
             "Open Shared Folder | → sharedFolder",
             "Set Up Winbar… | → setUpWinbar",
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM",
             "Report a Problem… | → reportProblem",
-        ] + foot)
+        ] + foot())
     }
 
     @Test("Starting: everything that would fight the start is greyed out, and nothing moves")
@@ -202,13 +234,13 @@ struct MenuShapeSetUpOfferedTests {
             "---",
             "Start | → start | disabled",
             "---",
-            "Go Headless… | → toggleConsole | disabled",
+            "Run in the Background… | → toggleConsole | disabled",
             "Share a Folder… | → sharedFolder | disabled",
             "Set Up Winbar… | → setUpWinbar",
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM",
             "Report a Problem… | → reportProblem | disabled",
-        ] + foot)
+        ] + foot())
     }
 
     @Test("Running, before the first readiness probe has answered")
@@ -223,13 +255,13 @@ struct MenuShapeSetUpOfferedTests {
             "Force Stop | → forceStop | keys: ⌥ | alternate",
             "Restart | → restart",
             "---",
-            "Go Headless… | → toggleConsole",
+            "Run in the Background… | → toggleConsole",
             "Share a Folder… | → sharedFolder",
             "Set Up Winbar… | → setUpWinbar",
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM",
             "Report a Problem… | → reportProblem",
-        ] + foot)
+        ] + foot())
     }
 
     @Test("Running headless, sharing a folder")
@@ -244,13 +276,13 @@ struct MenuShapeSetUpOfferedTests {
             "Force Stop | → forceStop | keys: ⌥ | alternate",
             "Restart | → restart",
             "---",
-            "Show Console Window… | → toggleConsole",
+            "Bring Back Windows' Screen… | → toggleConsole",
             "Open Shared Folder | → sharedFolder",
             "Set Up Winbar… | → setUpWinbar",
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM",
             "Report a Problem… | → reportProblem",
-        ] + foot)
+        ] + foot())
     }
 
     @Test("Running and shutting down: the lifecycle items stay where they are, greyed out")
@@ -265,13 +297,13 @@ struct MenuShapeSetUpOfferedTests {
             "Force Stop | → forceStop | disabled | keys: ⌥ | alternate",
             "Restart | → restart | disabled",
             "---",
-            "Go Headless… | → toggleConsole | disabled",
+            "Run in the Background… | → toggleConsole | disabled",
             "Share a Folder… | → sharedFolder | disabled",
             "Set Up Winbar… | → setUpWinbar",
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM",
             "Report a Problem… | → reportProblem | disabled",
-        ] + foot)
+        ] + foot())
     }
 
     @Test("Installing into the VM the menu looks after: no lifecycle items, and no second install")
@@ -286,7 +318,7 @@ struct MenuShapeSetUpOfferedTests {
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM | disabled",
             "Report a Problem… | → reportProblem",
-        ] + foot
+        ] + foot()
         #expect(offered(state(install: installing())) == expected)
         // The VM exists in UTM by now, so it may well be running; the install still owns it.
         #expect(offered(state(running: true, readiness: .ready, install: installing())) == expected)
@@ -304,7 +336,7 @@ struct MenuShapeSetUpOfferedTests {
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM | disabled",
             "Report a Problem… | → reportProblem",
-        ] + foot)
+        ] + foot(nil))
     }
 
     @Test("Installing while a report is written: the report's label wins the status line")
@@ -319,7 +351,7 @@ struct MenuShapeSetUpOfferedTests {
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM | disabled",
             "Report a Problem… | → reportProblem | disabled",
-        ] + foot)
+        ] + foot())
     }
 
     @Test("Installing another VM: this VM keeps all its items and gains one line")
@@ -337,13 +369,13 @@ struct MenuShapeSetUpOfferedTests {
             "Force Stop | → forceStop | keys: ⌥ | alternate",
             "Restart | → restart",
             "---",
-            "Go Headless… | → toggleConsole",
+            "Run in the Background… | → toggleConsole",
             "Share a Folder… | → sharedFolder",
             "Set Up Winbar… | → setUpWinbar",
             "Open UTM | → openUTM",
             "New Windows VM… | → newWindowsVM | disabled",
             "Report a Problem… | → reportProblem",
-        ] + foot)
+        ] + foot())
     }
 
     @Test("An update adds one item behind its own separator, in the words for how Winbar got here")
@@ -356,7 +388,7 @@ struct MenuShapeSetUpOfferedTests {
             "---",
             "Start | → start",
             "---",
-            "Go Headless… | → toggleConsole",
+            "Run in the Background… | → toggleConsole",
             "Share a Folder… | → sharedFolder",
             "Set Up Winbar… | → setUpWinbar",
             "Open UTM | → openUTM",
@@ -366,18 +398,18 @@ struct MenuShapeSetUpOfferedTests {
         #expect(offered(state(update: MenuUpdate(version: "0.2.0", homebrew: false))) == top + [
             "---",
             "Winbar 0.2.0 is available… | → showUpdate",
-        ] + foot)
+        ] + foot())
         #expect(offered(state(update: MenuUpdate(version: "0.2.0", homebrew: true))) == top + [
             "---",
             "Winbar 0.2.0 is available: copy “brew upgrade” | → showUpdate",
-        ] + foot)
+        ] + foot())
         // And it is offered whatever else is going on, since reading about a release fights nothing.
         #expect(Array(offered(state(vm: nil, activity: "Writing a diagnostic report…",
-                                 update: MenuUpdate(version: "0.2.0", homebrew: false))).suffix(6)) == [
+                                 update: MenuUpdate(version: "0.2.0", homebrew: false))).suffix(9)) == [
             "Report a Problem… | → reportProblem | disabled",
             "---",
             "Winbar 0.2.0 is available… | → showUpdate",
-        ] + foot)
+        ] + foot(nil))
     }
 }
 
@@ -404,6 +436,9 @@ struct MenuShapeInvariantTests {
                                                                   console: console, sharedFolder: sharedFolder,
                                                                   update: update, launchAtLogin: launchAtLogin)
                                                 given.offersSetUp = offersSetUp
+                                                // Both ticks both ways, without doubling the menus:
+                                                // across offersSetUp, every pair of the two switches.
+                                                given.startsWindows = launchAtLogin != offersSetUp
                                                 all.append(given)
                                             }
                                         }
@@ -440,13 +475,21 @@ struct MenuShapeInvariantTests {
         }
     }
 
-    @Test("Open UTM, Report a Problem…, Launch at Login and ⌘Q are in every menu")
+    @Test("Open UTM, Report a Problem…, both switches, ⌘Q and the version are in every menu")
     func alwaysThere() {
         for given in Self.every {
             let items = MenuShape.items(given)
-            #expect(items.last == .item(MenuItem(title: "Quit Winbar", action: .quit, key: "q")))
-            #expect(items.dropLast().last == .item(MenuItem(title: "Launch at Login", action: .launchAtLogin,
-                                                            checked: given.launchAtLogin)))
+            #expect(items.last == .note("Winbar dev"))
+            #expect(items.dropLast().last == .separator)
+            #expect(items.dropLast(2).last == .item(MenuItem(title: "Quit Winbar", action: .quit, key: "q")))
+            #expect(items.dropLast(3).last == .item(MenuItem(title: "Start Windows with Winbar",
+                                                             action: .startWindowsAtLaunch,
+                                                             checked: given.startsWindows,
+                                                             toolTip: StartWindowsAtLaunch.Copy.menuHelp(
+                                                                vm: given.status.vmName))))
+            #expect(items.dropLast(4).last == .item(MenuItem(title: "Launch at Login", action: .launchAtLogin,
+                                                             checked: given.launchAtLogin,
+                                                             toolTip: LaunchAtLogin.Copy.menuHelp)))
             #expect(items.contains(.action("Open UTM", .openUTM)))
             // Enabled whenever Winbar is idle, install or no install: a report is wanted exactly where
             // the rest of the menu has nothing to offer.

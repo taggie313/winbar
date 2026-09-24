@@ -24,5 +24,6 @@ case .app:
     let delegate = AppDelegate()
     app.delegate = delegate
     app.setActivationPolicy(.accessory)
+    MainActor.assumeIsolated { app.mainMenu = AppPresence.mainMenu() }
     app.run()
 }

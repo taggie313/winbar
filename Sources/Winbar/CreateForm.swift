@@ -18,20 +18,58 @@ extension CreateCopy {
     static let winTitle = "New Windows VM"
     static let menuNew = "New Windows VM…"
     static let menuProgress = "Show Install Progress…"
-    static let hImage = "Windows image"
-    static let hVM = "Virtual machine"
-    static let hWUE = "Windows User Experience"
-    static let hWUESub = "Customize Windows installation?"
-    static let hWinbar = "Winbar"
-    static let isoDrop = "Drop a Windows 11 Arm64 ISO here, or"
-    static let isoChoose = "Choose…"
+    // The form is three assistant pages (0.2.1): the download, the account, then a summary with the
+    // rest behind **Customize…**. It was Rufus's dialog in Winbar's words — every option on one long
+    // page, headed "Windows User Experience" — which suits someone who has used Rufus, and nobody else.
+    static let hImage = "Windows download"
+    static let hVM = "Your Windows VM"
+    static let hWUE = "Windows account"
+    static let hWinbar = "Extras"
+    static let hAccountPage = "Your Windows account"
+    static let hReadyPage = "Ready to install"
+    static let isoDrop = "Drop the Windows 11 ISO here"
+    static let isoOr = "or"
+    static let isoChoose = "Choose File…"
     static let isoChange = "Change…"
-    static let isoGet = "Don't have one? Get it from Microsoft ↗"
+    static let isoGet = "Get Windows 11 from Microsoft"
     static let isoGetURL = "https://www.microsoft.com/software-download/windows11arm64"
+    /// "ISO", explained once, where the person meets it: the page's own question is "where do I get
+    /// this?", so the answer names the file and where it comes from, and says nothing about its size,
+    /// which changes with every release.
+    static let isoWhat = "Windows installs from an ISO, a single file that holds the whole of Windows. Microsoft "
+        + "offers the Arm version of Windows 11 free: on its page, choose Windows 11 for Arm64 and your language, "
+        + "and the file lands in your Downloads folder."
+    static let isoMissing = "Don't have it yet?"
+    static let accountLead = "Windows needs an account of its own. This is the name and password you'll sign in "
+        + "to Windows with."
+    static let lUserName = "User name"
+    static let lConfirmPassword = "Confirm password"
+    static let lEdition = "Edition"
+    static let bContinue = "Continue"
+    static let bBack = "Back"
+    /// The last page's button: what it does, in the words the page's title and the progress after it
+    /// use. **Create** was a third name for one thing, after the wizard's **Make One**.
+    static let bInstall = "Install Windows"
+    static let bCustomize = "Customize…"
+    /// The summary's opening line. `fReady` begins "Ready.", which under "Ready to install" says it twice.
+    static let readyLead = "It takes about 10 minutes on a fast Mac, and there's nothing to click while it runs."
+    /// The summary's row names.
+    static let sWindows = "Windows"
+    static let sAccount = "Account"
+    static let sVM = "VM"
+    static let sExtras = "Extras"
+    /// What Winbar always does, which the old form showed as three greyed-out, ticked rows marked
+    /// "Always on": not choices, so not drawn as ones. Each one's full reason is in `tooltip(_:)`, which
+    /// the "Why?" beside this shows.
+    static let alwaysDone = "Always done: Windows 11's TPM and Secure Boot checks are skipped (a VM UTM makes by "
+        + "script can't have a TPM), your account is a local one, and UTM's drivers go in with Windows."
+    static let lWhy = "Why?"
     static let isoReading = "Reading the ISO…"
     static let nISOKeep = "Keep the ISO where it is until Windows finishes installing."
     static let lName = "Name"
     static let lCores = "vCPUs"
+    /// The window's name for them: the review's "vCPUs" was a word Ben doesn't have.
+    static let lProcessorCores = "Processor cores"
     static let lMemory = "Memory"
     static let lDisk = "Disk"
     static let lPassword = "Password"
@@ -52,7 +90,6 @@ extension CreateCopy {
     static let bCreate = "Create"
     static let bShowVM = "Show VM Window"
     static let bCancelInstall = "Cancel Install…"
-    static let bHide = "Hide"
     static let bCopy = "Copy"
     static let bDone = "Done"
     static let bShowLog = "Show Log"
@@ -62,9 +99,6 @@ extension CreateCopy {
     static let bKeepInstalling = "Keep Installing"
     /// The destructive button in the cancel alert, where there is no room for a second "…".
     static let bDeleteVMNow = "Delete VM"
-    static let pFooter = "Usually about 10 minutes on a fast Mac, longer on an older one. You don't need to watch or "
-        + "click anything, and you can close this "
-        + "window: Winbar carries on, and the menu bar shows how it's going."
     static let pFooterCLI = "Running in Terminal. Closing this window doesn't affect it."
     static let pAutomation = "macOS is asking whether Winbar can control UTM. Choose Allow."
     /// The Automation detail, which the job writes while macOS's prompt is up. In Terminal the
@@ -147,6 +181,38 @@ extension CreateCopy {
     static let eCouldntCancel = "Couldn't cancel the install"
     /// The failure view's heading when the job ended badly without saying how.
     static let eStopped = "Installing Windows stopped"
+
+    /// A checklist row as the window says it: what the person gets, in their words. `label(_:)` is
+    /// Rufus's row, which Terminal's checklist prints beside Rufus's own options (`CreateScreens`);
+    /// its "(with Network Level Authentication)" and "(Skip privacy questions)" mean something to
+    /// someone who has used Rufus and nothing to anyone else. The tooltips say the rest.
+    static func windowLabel(_ option: CreateOption) -> String {
+        switch option {
+        case .noOnlineAccount: return "Skip the online Microsoft account"
+        case .regionalFromMac: return "Use this Mac's region, keyboard and time zone"
+        case .skipPrivacy: return "Answer Windows' optional privacy questions with no"
+        case .noBitLocker: return "Don't let Windows encrypt its disk with BitLocker"
+        case .qol: return "Don't push Copilot, OneDrive, Outlook or Fast Startup"
+        case .remoteDesktop: return "Turn on Remote Desktop"
+        case .guestTools: return "Install UTM Guest Tools"
+        default: return label(option)
+        }
+    }
+
+    /// The summary's short name for a choice that is on.
+    static func extraName(_ option: CreateOption) -> String? {
+        switch option {
+        case .remoteDesktop: return "Remote Desktop"
+        case .autologon: return "automatic sign-in"
+        case .winbarTuning: return "Winbar's tuning"
+        case .regionalFromMac: return "this Mac's region"
+        case .skipPrivacy: return "no privacy questions"
+        case .noBitLocker: return "no BitLocker"
+        case .qol: return "no Copilot or OneDrive"
+        case .noOnlineAccount: return "no Microsoft account"
+        case .bypassRequirements, .localAccount, .guestTools: return nil
+        }
+    }
 
     // Checklist labels
     static func label(_ option: CreateOption) -> String {
@@ -260,6 +326,11 @@ extension CreateCopy {
         "Suggested: \(suggested) GB (16 GB on a Mac with 64 GB or more, 12 GB from 32 GB, otherwise 8 GB, never more "
             + "than half your Mac's memory)."
     }
+    /// The disk's size read as a cost ("128 GB") scared people: it's the most the disk can grow to, not what
+    /// it takes. UTM's disk is a file that grows as Windows writes to it (QEMU qcow2), so the Mac gives up
+    /// only what Windows has used. No "a fresh install takes N GB": it hasn't been measured here.
+    static func diskSummary(_ gb: Int) -> String { "a disk that grows as needed, up to \(gb) GB" }
+    static let diskCaption = "It takes space on your Mac only as Windows fills it: this is the most it can grow to."
     static let diskTooltip = "The disk is a file that grows as Windows uses it, up to this size. Windows 11 needs at "
         + "least 64 GB. Making it bigger later takes both UTM and Windows' Disk Management, so leave room."
     static let passwordTooltip = "The password for your Windows account. Winbar also saves this PC in Windows App with "
@@ -330,13 +401,24 @@ extension CreateCopy {
         case "N_PC_APP_RUNNING", "N_PC_FAILED":
             return "The PC wasn't saved in Windows App. The Saved PC step after installation will help you save it."
         case "N_KEPT_CONSOLE":
-            return "The VM keeps its UTM window. Setup offers headless mode only after you confirm that Remote Desktop works."
+            return "The VM keeps its screen. Set Up Winbar offers to run it in the background once you've confirmed that "
+                + "Remote Desktop works."
         case "W_RDP_OFF": return "Remote Desktop didn't turn on. Check Remote Desktop on the Tune step after installation."
         case "W_BITLOCKER_ON": return "Windows encrypted its disk with BitLocker after all. Winbar left it alone. The Tune step will ask whether to keep it on."
         case "W_PANTHER":
             return text.replacingOccurrences(of: "or let winbar setup report them", with: "then use Report a Problem… in Winbar's menu if you need help")
         case "W_AUTOLOGON_PLAINTEXT":
             return text.replacingOccurrences(of: "winbar setup", with: "the Tune step")
+        // Said after the stall recovery's own Try Again at a late stage; its fix was a --cancel. While
+        // the install runs, the way to delete the VM is Cancel Install….
+        case "N_RESUME_LATE":
+            return "The VM was stopped after Windows Setup had copied its files. Starting it again from its own disk; if "
+                + "Windows says “The computer restarted unexpectedly”, the quickest fix is to start over: cancel the "
+                + "install, which deletes the VM, then install Windows again."
+        case "W_UTM_RESTART_OWED":
+            return text.replacingOccurrences(of: "then run winbar start.", with: "then start it from Winbar's menu.")
+        case "W_SLOW_BOOT":
+            return text.replacingOccurrences(of: "winbar doctor says how it's doing", with: "give it a minute before you go on")
         default: return text
         }
     }
@@ -346,8 +428,8 @@ extension CreateCopy {
         recover it.
 
         The answer file sits on a small setup disk in Winbar's folder on this Mac, readable only by your account and \
-        kept out of Time Machine. When Windows has finished installing, Winbar removes the disk from the VM and \
-        deletes it. If an install stops partway, the disk stays until you resume it, cancel it, or delete the VM.
+        kept out of Time Machine. When Windows has finished installing, Winbar detaches the setup disk from the VM \
+        in UTM, then deletes that file, because it holds your password. If an install stops partway, the disk stays until you resume it, cancel it, or delete the VM.
 
         \(nPWPanther) \(nPWLSA)
 
@@ -398,7 +480,7 @@ extension CreateCopy {
     }
 
     static func nNextSetup(savedPC: Bool) -> String {
-        nNextSetupSteps(savedPC: savedPC) + " Then it offers to go headless."
+        nNextSetupSteps(savedPC: savedPC) + " Then it offers to run Windows in the background."
     }
 
     /// "a and b", "a, b, and c" — the deck's own punctuation, serial comma included.
@@ -484,11 +566,34 @@ extension CreateCopy {
         text.replacingOccurrences(of: wStallRecovery(vmName: vmName), with: wStallRecoveryWindow)
     }
 
-    /// A failure's next step in a window: a `--resume` is the Try Again button beside it when the job
-    /// can carry on, and nothing to say when it can't (Close and Delete VM… are the only ways on).
+    /// A failure's next step in a window, in Markdown: the job writes one for Terminal, and every
+    /// command in it is a button or a menu item here. Only `--resume` was rewritten, so E_TIMEOUT said
+    /// "winbar create --cancel" and E_RESTART "winbar start" inside Set Up Winbar, whose person never
+    /// opens Terminal.
+    ///
+    /// - `--resume`: the **Try Again** beside it when the job can carry on, and nothing to say when it
+    ///   can't (Close and Delete VM… are the only ways on). E_SHUTDOWN keeps its first step, which only
+    ///   Ben can do: Try Again alone would find Windows still running.
+    /// - `--cancel`: **Delete VM…**, which does what `--cancel` does, and then installing again.
+    /// - `winbar start` and `winbar setup`: the menu items that do them.
+    /// - A wizard install's own "Close this result": the button is **Close**.
+    ///
+    /// Anything else is the job's own words, which say no command.
     static func windowNextStep(_ next: String, resumable: Bool) -> String? {
-        guard next.contains("--resume") else { return next }
-        return resumable ? "Try Again starts the VM again and carries on from where the install stopped." : nil
+        if next.hasPrefix("Shut Windows down yourself") {
+            return resumable ? "Shut Windows down in the VM's window first, then choose **\(bTryAgain)**." : nil
+        }
+        if next.contains("--resume") {
+            return resumable ? "Choose **\(bTryAgain)** to start the VM again and carry on from where the install stopped." : nil
+        }
+        if next.contains("--cancel") {
+            return next.contains("create it again") ? "To start over, choose **\(bDeleteVM)**, then install Windows again."
+                                                     : "Choose **\(bDeleteVM)** to delete it."
+        }
+        if next.contains("winbar start") { return "Choose **Start** in Winbar's menu." }
+        if next.contains("winbar setup") { return "Choose **\(SetupCopy.menuItem)** in Winbar's menu to check and tune it." }
+        if next.hasPrefix("Close this result") { return "Choose **\(bClose)**, then pick the new VM and continue to Tune." }
+        return next
     }
 
     /// Each stall's first clause, for a line with no room for the rest: the CLI's spinner shows it
@@ -522,6 +627,90 @@ extension CreateCopy {
         "Your Mac has \(freeGB) GB free on \(volume); installing Windows needs at least "
             + "\(CreatePreflight.neededBytes >> 30) GB."
     }
+    /// A checklist row's tooltip and VoiceOver hint as the window says it. `tooltip(_:)` is Terminal's
+    /// too (its `?` help), and compares Winbar with Rufus row by row, in Rufus's terms: Network Level
+    /// Authentication, the QEMU guest agent, SYSTEM, vCPUs, DiagTrack. These say the same things,
+    /// each consequence kept, in words someone who has never used Rufus has. Rows whose tooltip is
+    /// plain already fall through to it.
+    static func windowTooltip(_ option: CreateOption) -> String {
+        switch option {
+        case .bypassRequirements:
+            return "Always on. UTM can't give a VM it makes by script a TPM, the security chip Windows 11 asks for, so "
+                + "without this Windows Setup would stop with “This PC can't run Windows 11”. It only skips Setup's "
+                + "checks: Windows still uses all the memory and processor cores you give it. Without a TPM, features "
+                + "that need one aren't available, Microsoft treats the VM as an unsupported device, and a yearly "
+                + "feature update may need the Windows download again. You can add a TPM later in UTM's settings for "
+                + "the VM."
+        case .noOnlineAccount:
+            return "The VM has no network while Windows installs, and Winbar makes your account itself, so Windows "
+                + "doesn't ask for a Microsoft account. This also sets a switch that Windows 11 25H2 ignores, so today "
+                + "it changes nothing you can see. You can still sign in to the Store, OneDrive and other apps with a "
+                + "Microsoft account later."
+        case .localAccount:
+            return "Always on. Winbar makes a local administrator account with the password you type here. It can't "
+                + "be blank, because Remote Desktop refuses blank passwords, and Windows doesn't make you change it at "
+                + "first sign-in, because nobody's at the screen to. It's a local account, not a Microsoft one: a "
+                + "Windows Hello PIN never works over Remote Desktop, and Windows installs with no network, so there's "
+                + "no Microsoft account to sign in with."
+        case .skipPrivacy:
+            return "Answers “no” to the privacy questions Windows asks while it sets up (optional diagnostic data, "
+                + "location, tailored experiences and similar). It only answers the optional ones: Windows still sends "
+                + "its required diagnostic data unless “\(windowLabel(.winbarTuning))”, which turns that off too, is "
+                + "ticked. Unticked, nobody's there to answer them, so Windows turns on its recommended settings "
+                + "instead. You can change each one later in Settings > Privacy & security."
+        case .qol:
+            return "Keeps out what Windows pushes at you: no Copilot button, OneDrive, Outlook or Teams apps, no Fast "
+                + "Startup, no web results or suggestions in Start and Search, no news feed, no Edge welcome tour. "
+                + "Unticked, Windows keeps its own defaults. Most of it can be undone in Settings; OneDrive is blocked "
+                + "by a policy (the README says how to lift it)."
+        case .remoteDesktop:
+            return "Turns on Remote Desktop, which is how Winbar's Connect opens Windows. Windows checks your password "
+                + "before it opens a session, and accounts with no password can't sign in over the network. Your Mac "
+                + "and other VMs in UTM can reach it; if you later switch the VM to UTM's Bridged network, so can "
+                + "every device on your network. Needs Pro, Enterprise or Education. Unticked, Connect won't work "
+                + "until Set Up Winbar turns it on."
+        case .guestTools:
+            return "Always on. UTM's drivers for the VM's network, disks, display and memory, and the helper Winbar "
+                + "talks to Windows through: to see when setup has finished, to shut Windows down properly and to "
+                + "check its settings. The helper has full rights in Windows, so anything on your Mac that can control "
+                + "UTM can run commands in Windows. Without the drivers Windows has no network at all. Winbar "
+                + "downloads version \(GuestTools.version) from UTM's releases on GitHub and checks it's the right "
+                + "file first."
+        case .winbarTuning:
+            return "Does what Set Up Winbar's Tune step would do inside Windows, straight away: a Balanced power plan "
+                + "that speeds up quickly, the display off after 5 minutes, no sleep or hibernation, the power button "
+                + "shuts Windows down, background indexing and diagnostics reporting off, and fewer animations and "
+                + "less transparency. Each was measured; the README has the numbers. Unticked, the Tune step offers "
+                + "them later."
+        case .regionalFromMac, .noBitLocker, .autologon:
+            return tooltip(option)
+        }
+    }
+
+    /// The edition row's tooltip in the window: `installTooltip` without Rufus's warning to compare with.
+    static let windowInstallTooltip = "Always on. Windows goes on the VM's new, empty disk, so nothing of yours can "
+        + "be erased. Choose the edition to install: Pro is the default, and what Winbar needs for Remote Desktop. "
+        + productKeyTooltip
+
+    /// The processor cores field's tooltip in the window: `coresTooltip` says vCPUs and host CPU.
+    static func windowCoresTooltip(topTier: Int) -> String {
+        "Winbar suggests as many as your Mac has fastest cores (\(topTier) here), kept between 4 and 8: in testing, "
+            + "more cost your Mac extra work without making Windows any faster."
+    }
+
+    /// The computer name's tooltip in the window: the certificate by the one name the window gives it.
+    static func windowComputerTooltip(host: String) -> String {
+        computerTooltip(host: host).replacingOccurrences(of: "the VM's Remote Desktop certificate",
+                                                         with: "the VM's certificate")
+    }
+
+    /// The processor cores' two messages in the window. The rules and their numbers are
+    /// `CreateChoices`', which Terminal words in vCPUs.
+    static func windowCoresRange(max: Int) -> String { "Processor cores: 2 to \(max)." }
+    static func windowCoresHigh(topTier: Int) -> String {
+        "More processor cores than your Mac's \(topTier) fastest cost it extra work, and weren't faster in testing."
+    }
+
     static let eSpaceNext = "Free some space, then try again."
 
     /// The Rufus rows Winbar leaves out, shown as a footnote under the checklist.
@@ -631,6 +820,11 @@ final class CreateFormModel: ObservableObject {
     /// Confirm only shows its mismatch caption once it has lost focus, or once Create was pressed.
     @Published var confirmationBlurred = false
     @Published var submitted = false
+    /// Which of the form's three pages is showing (`Page`).
+    @Published var page: Page = .windows
+    /// Whether the last page shows what **Customize…** reveals. It also shows by itself while one of
+    /// those fields is what blocks the install (`showsCustomize`).
+    @Published var customizing = false
 
     /// What Remote Desktop was set to before a Home edition forced it off, so choosing Pro again
     /// restores the person's choice rather than assuming yes.
@@ -737,7 +931,11 @@ final class CreateFormModel: ObservableObject {
 
     // MARK: - Warnings (never block)
 
-    var coresWarning: String? { CreateChoices.coresWarning(cores, mac: facts.mac)?.description }
+    /// In processor cores, the window's word for them (`CreateCopy.windowCoresHigh`).
+    var coresWarning: String? {
+        guard case .coresHigh(let topTier)? = CreateChoices.coresWarning(cores, mac: facts.mac) else { return nil }
+        return CreateCopy.windowCoresHigh(topTier: topTier)
+    }
 
     var memoryWarnings: [String] { CreateChoices.memoryWarnings(memoryGB, mac: facts.mac).map(\.description) }
 
@@ -813,6 +1011,7 @@ final class CreateFormModel: ObservableObject {
         // The steppers keep these in range, but the editable number beside them doesn't have to.
         if let problem = CreateChoices.coresProblem(cores, mac: facts.mac) ?? CreateChoices.memoryProblem(memoryGB, mac: facts.mac)
             ?? CreateChoices.diskProblem(diskGB) {
+            if case .coresRange(let max) = problem { return .blocked(CreateCopy.windowCoresRange(max: max)) }
             return .blocked(problem.description)
         }
         if edition == nil { return .blocked(CreateCopy.fNeedISO) }
@@ -824,9 +1023,102 @@ final class CreateFormModel: ObservableObject {
     /// Whether the status names something wrong rather than the next thing to fill in. A form that has
     /// just opened is missing its ISO and its password, and saying so in red read as an error before
     /// anyone had touched it; a bad ISO, a clash or a mismatch still is one.
-    var statusIsProblem: Bool {
+    var statusIsProblem: Bool { isProblem(status) }
+
+    /// Whether `status` names something wrong rather than the next thing to fill in (`statusIsProblem`).
+    func isProblem(_ status: Status) -> Bool {
         guard case .blocked(let reason) = status else { return false }
         return ![CreateCopy.fNeedISO, CreateCopy.isoReading, CreateCopy.fNeedPassword(user: userName)].contains(reason)
+    }
+
+    // MARK: - The pages
+
+    /// The form as an assistant's pages: the download, the account, then what will be installed.
+    /// Each page asks one thing, so what to do next is always what the page is about; the rest has
+    /// recommended values and waits behind **Customize…**.
+    enum Page: Int, CaseIterable, Comparable {
+        case windows, account, ready
+
+        static func < (a: Page, b: Page) -> Bool { a.rawValue < b.rawValue }
+
+        var title: String {
+            switch self {
+            case .windows: return CreateCopy.hImage
+            case .account: return CreateCopy.hAccountPage
+            case .ready: return CreateCopy.hReadyPage
+            }
+        }
+    }
+
+    /// What stops `page`'s **Continue**, in the same words and order `status` uses; the last page's is
+    /// `status` itself, which also covers everything before it. Pure.
+    func status(of page: Page) -> Status {
+        switch page {
+        case .windows:
+            if !facts.utmInstalled { return .blocked(CreateCopy.eUTMMissing) }
+            switch iso {
+            case .none: return .blocked(CreateCopy.fNeedISO)
+            case .reading: return .blocked(CreateCopy.isoReading)
+            case .failed(_, let message): return .blocked(message)
+            case .read: break
+            }
+            return edition == nil ? .blocked(CreateCopy.fNeedISO) : .ready
+        case .account:
+            if let error = userNameError { return .blocked(error) }
+            if password.isEmpty { return .blocked(CreateCopy.fNeedPassword(user: userName)) }
+            if let error = passwordError { return .blocked(error) }
+            if confirmation != password { return .blocked(ChoiceProblem.passwordMismatch.description) }
+            return .ready
+        case .ready:
+            return status
+        }
+    }
+
+    func canContinue(from page: Page) -> Bool { status(of: page).isReady }
+
+    /// **Continue**: the next page, once this one has what it needs.
+    func goForward() {
+        guard page != .ready, canContinue(from: page), let next = Page(rawValue: page.rawValue + 1) else { return }
+        page = next
+    }
+
+    /// **Back**. What was typed stays.
+    func goBack() {
+        guard let previous = Page(rawValue: page.rawValue - 1) else { return }
+        page = previous
+    }
+
+    /// Whether the fields behind **Customize…** are what stops the install: then they show by
+    /// themselves, since a greyed-out **Install Windows** over a summary that looks fine would give the
+    /// person nothing to fix. A name UTM already has, found when **Install Windows** is pressed,
+    /// is the usual one.
+    var customizeHasProblem: Bool {
+        vmNameError != nil || computerNameError != nil || productKeyError != nil
+            || CreateChoices.coresProblem(cores, mac: facts.mac) != nil
+            || CreateChoices.memoryProblem(memoryGB, mac: facts.mac) != nil || CreateChoices.diskProblem(diskGB) != nil
+    }
+
+    var showsCustomize: Bool { customizing || customizeHasProblem }
+
+    /// The last page's summary, a row per thing that will happen. Never the password or the product
+    /// key: the summary is drawn, and a drawn screen can be recorded or shared. Pure.
+    var summary: [(label: String, value: String)] {
+        var rows: [(String, String)] = []
+        if let iso = iso.facts {
+            let windows = CreateCopy.isoSummary(build: iso.info.build, language: iso.info.language)
+            rows.append((CreateCopy.sWindows, edition.map { windows.replacingOccurrences(of: "Windows 11", with: $0.displayName) }
+                                              ?? windows))
+        }
+        rows.append((CreateCopy.sAccount, userName))
+        rows.append((CreateCopy.sVM, "“\(vmName)” · \(cores) processor cores · \(memoryGB) GB memory · "
+                         + CreateCopy.diskSummary(diskGB)))
+        // What the person will notice first comes first.
+        let order: [CreateOption] = [.remoteDesktop, .autologon, .winbarTuning, .regionalFromMac, .skipPrivacy, .noBitLocker,
+                                     .qol, .noOnlineAccount]
+        let extras = order.filter { options.contains($0) && isEnabled($0) }.compactMap(CreateCopy.extraName)
+        let named = extras.count > 3 ? Array(extras.prefix(2)) + ["\(extras.count - 2) more"] : extras
+        rows.append((CreateCopy.sExtras, named.isEmpty ? "None" : CreateCopy.list(named).capitalizedFirst))
+        return rows
     }
 
     // MARK: - What Create sends to the job
@@ -856,5 +1148,12 @@ final class CreateFormModel: ObservableObject {
         confirmation = ""
         confirmationBlurred = false
         productKey = ""
+        // The summary can't install with no password, and would only say so: back to where it's typed.
+        if page == .ready { page = .account }
     }
+}
+
+private extension String {
+    /// "Remote Desktop, …" stays as it is; "automatic sign-in, …" starts a row, so it takes a capital.
+    var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
 }

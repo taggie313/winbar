@@ -28,10 +28,15 @@ final class LiveSetupMachine: SetupMachine {
     private var ctx: Context!
     /// The work in flight, for the `Context`'s progress lines (the survey's "Asking Windows…").
     private var job: SetupRunner.Job?
-    /// What utmctl said to the last **Open UTM and Ask**. A utmctl that said nothing for a minute is
-    /// not asked again by a mere re-read (twenty more seconds of nothing, and every Apple Event after
-    /// it would wait out a timeout of its own); only pressing **Try Again** asks again.
+    /// What utmctl said to the last **Open UTM and Ask**, or to a read since. A utmctl that said nothing
+    /// for a minute is not asked again by a mere re-read (twenty more seconds of nothing, and every
+    /// Apple Event after it would wait out a timeout of its own); only pressing **Try Again** asks
+    /// again. Any other answer is asked again (`SetupRunner.reasksUTM`).
     private var settled: UTM.CtlAnswer?
+    /// The host whose saved-PC tile the last Connect pressed (`Connection.openDesktop` answered true),
+    /// or nil after a one-off connection: what the window pairs with the person's answer to "Did the
+    /// Windows desktop appear?" (`Recipe.connectedSavedPC`). Forgotten when the chosen VM changes.
+    private var pressedSavedPC: String?
 
     init(questions: Questions = .unattended) {
         self.questions = questions
@@ -49,6 +54,7 @@ final class LiveSetupMachine: SetupMachine {
         // into a name token on every read and erase the same VM's answers. The snapshot binds it.
         let answers = changed ? answers.forVM(ctx.vmID ?? ctx.vmName.map { "name:" + $0 }) : answers
         let step: WizardStep = changed ? .vm : step
+        if changed { pressedSavedPC = nil }
         forget(after: work)
 
         var readings = SetupRunner.Readings()
@@ -73,8 +79,15 @@ final class LiveSetupMachine: SetupMachine {
         var plan = SetupRunner.readPlan(through: step, readings: readings, answers: answers, utmUp: UTM.isAppRunning,
                                         settled: settled, consent: { Automation.consent(bundleID: Config.utmBundleID) })
         if plan.asksUTM {
-            if let settled, !settled.isAnswered { ctx.noteUTMCtl(settled) }
+            if let settled, !settled.isAnswered,
+               !SetupRunner.reasksUTM(after: settled, justAsked: work == .settleUTM,
+                                      consent: { Automation.consent(bundleID: Config.utmBundleID) }) {
+                ctx.noteUTMCtl(settled)
+            }
             let answer = ctx.utmctl
+            // What UTM says now is what the next read goes by: a refusal lifted in System Settings stays
+            // lifted, and a UTM that has gone quiet since isn't asked again by a mere re-read.
+            if settled != nil { settled = answer }
             readings.utmAnswers = answer
             if answer.isAnswered {
                 readings.vms = ctx.vms
@@ -109,6 +122,7 @@ final class LiveSetupMachine: SetupMachine {
             })
         }
         if plan.windowsAppRunning { readings.windowsAppRunning = WindowsAppBookmarks.appIsRunning }
+        readings.savedPCPressed = pressedSavedPC
         if plan.readiness {
             // UTM's word on the MAC only when UTM may be asked; the process's and the remembered one
             // otherwise, which `vmMAC` falls back to anyway.
@@ -122,10 +136,18 @@ final class LiveSetupMachine: SetupMachine {
     }
 
     /// Drops what `work` can have changed, and nothing else: a Fix's re-read shouldn't cost a fresh
-    /// VM list, nor a saved PC a fresh survey. nil — a re-read nobody pressed, or anything having
+    /// VM list, nor a saved PC a fresh survey. A look nobody pressed drops the one cache it names
+    /// (`SetupRunner.Forget`). nil — the runner's own re-read after a wake, or anything having
     /// happened while the work ran — drops everything. `SetupRunner.execute` decides which.
     private func forget(after work: SetupRunner.Work?) {
         switch work {
+        case .lookAgain(_, let forget)?:
+            switch forget {
+            case .statuses: ctx.forgetStatuses()
+            case .utm: ctx.forgetUTM()
+            case .guest: ctx.refreshGuest()
+            case .selfTest: ctx.forgetSelfTest()
+            }
         case .fix(let id)?, .recordDone(let id)?, .guide(let id)?:
             if let check = Recipe.check(id) { ctx.refresh(after: check) } else { ctx.refreshAll() }
         case .survey?, .fixEverything?, .keepBitLocker?, .discardChanges?:
@@ -150,9 +172,9 @@ final class LiveSetupMachine: SetupMachine {
             throw WinbarError("The selected VM changed", "Check again before continuing. Nothing was changed.")
         }
         switch work {
-        case .checkAgain, .survey:
+        case .checkAgain, .lookAgain, .survey:
             // A read, which the runner takes straight after: everything for Check Again, a fresh
-            // survey for this (`forget(after:)`).
+            // survey for this (`forget(after:)`). A look never comes here (`SetupRunner.lookAgain`).
             return
         case .installUTM:
             try install(.utm, job)
@@ -169,7 +191,10 @@ final class LiveSetupMachine: SetupMachine {
             ctx.adoptSelection(name: name, id: Config.vmID)
         case .startVM(let name):
             if case .failure(let error) = UTM.start(name, id: facts.chosen?.id) { throw error }
-            Setup.waitForWindows(name, note: job.say)
+            Setup.waitForWindows(name, note: job.say, cancelled: { job.isCancelled })
+            // Stopped from the window: the start is ended as a cancel, and the fresh read after it
+            // says where Windows has got to.
+            try job.checkCancellation()
         case .fix(let id):
             try fix(id, job)
         case .fixEverything:
@@ -201,14 +226,16 @@ final class LiveSetupMachine: SetupMachine {
         case .savePC:
             try save(password: password)
         case .connect:
+            pressedSavedPC = nil
             guard let vm = ctx.vmName, let host = ctx.rdpHost else { throw WinbarError("No Windows address is known yet") }
             job.say(SetupCopy.Connecting.waiting)
             let ready = Connection.waitForRemoteDesktop(vm: vm, timeout: 120, cancelled: { job.isCancelled })
             try job.checkCancellation()
             guard ready != .notReady else {
-                throw WinbarError("Windows isn't accepting Remote Desktop yet", "Nothing answered on port 3389 within two minutes. Check Windows in UTM, then try again. If the VM has no screen, close setup and choose Show Console Window… in Winbar's menu.")
+                throw WinbarError(SetupCopy.Connecting.timedOutTitle, SetupCopy.Connecting.timedOut)
             }
-            try Connection.openDesktop(host: host, user: ctx.rdpUser)
+            // True only when the saved PC's own tile was pressed; a one-off connection is false.
+            if try Connection.openDesktop(host: host, user: ctx.rdpUser) { pressedSavedPC = host }
         case .applyChanges:
             try applyChanges(job)
         }
@@ -272,7 +299,9 @@ final class LiveSetupMachine: SetupMachine {
             throw error
         case .success:
             ctx.pending = ConfigChanges()
-            if VMProcesses.isRunning(vm) { Setup.waitForWindows(vm, note: job.say) }
+            // Stop Waiting ends only this wait (`Work.canStopWaiting`): the restart has finished either
+            // way, so it isn't thrown as a cancel, and the window moves on to prove Connect as usual.
+            if VMProcesses.isRunning(vm) { Setup.waitForWindows(vm, note: job.say, cancelled: { job.isCancelled }) }
         }
     }
 }

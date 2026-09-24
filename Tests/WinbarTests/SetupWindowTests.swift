@@ -13,19 +13,21 @@ import Testing
 
 private typealias F = SetupFixtures
 
-/// Everything a step-1 page says, as the words a person reads, joined into one string: the rows, the
-/// card's words (or an install's heading, output and failure), the buttons, and Armie's line.
+/// Everything a step-1 page says, as the words a person reads, joined into one string: its title, the
+/// rows, the card's words and what it folds under Show Details (or an install's output and failure),
+/// the buttons, and Armie's line.
 private func said(_ state: SetupWindowState) -> String {
     let page = LookAroundPage.page(state)
-    var words = page.rows.flatMap { [$0.title, $0.detail ?? ""] }
+    var words = [page.title] + page.rows.flatMap { [$0.title, $0.detail ?? ""] } + [page.note ?? ""]
     if let text = LookAroundPage.cardText(page.card) {
         words.append(text.heading)
         words += ([text.lead] + text.paragraphs.map(Optional.some) + [text.emphasis, text.aside])
             .compactMap { $0.map { String($0.characters) } }
     }
+    words += LookAroundPage.details(page.card)
     switch page.card {
-    case .installing(let lines, _, _): words += [page.card.heading ?? ""] + lines
-    case .installFailed(let problem, let lines, _): words += [problem.title, problem.detail] + lines
+    case .installing(let lines, _, _): words += lines
+    case .installFailed(let problem, let lines, _): words += [problem.detail] + lines
     default: break
     }
     words += [page.primary?.title, page.secondary?.title, LookAroundPage.armieLine(state)].compactMap { $0 }
@@ -49,12 +51,13 @@ struct SetupStepBarTests {
     }
 
     /// The segments were sized to their labels ("Tune" about 24 pt, "The certificate" about 70), so
-    /// the bar had no rhythm. Now every segment is the same, and the labels are the short ones.
+    /// the bar had no rhythm. Now every segment is the same. The short names are the segments' tooltips.
     @Test("Every segment of the bar is the same width, and the eight fit the narrowest window")
     func equalSegments() {
         let width = StepBar.segmentWidth(total: SetupStyle.contentWidth)
         #expect(abs(width * 8 + StepBar.spacing * 7 - SetupStyle.contentWidth) < 0.001)
-        #expect(width > 60)
+        // Beside the counter ("Step 5 of 8", about 70 pt with its gap), each is still a clear dash.
+        #expect(StepBar.segmentWidth(total: SetupStyle.contentWidth - 90) > 40)
         #expect(SetupCopy.stepBarNames.count == WizardStep.allCases.count)
         // Each short label is its step's own name or the end of it: "Certificate" for "The certificate".
         for (short, full) in zip(SetupCopy.stepBarNames, SetupCopy.stepNames) {
@@ -117,16 +120,17 @@ struct SetupPaletteTests {
     private static let white = SetupStyle.RGB(0xFFFFFF)
 
     /// WCAG AA for text (4.5:1), and AAA (7:1) under Increase Contrast, which asked for more. Each
-    /// pairing is one the window draws: white on the default button; the accent's words and lines on a
-    /// card and on both ends of the backdrop, where the step bar and Winbar's mark sit.
-    @Test("White on the accent fill, and the accent's words on cards and the backdrop, pass AA — AAA with Increase Contrast")
+    /// pairing is one the window draws: the default button's title on its fill (white, or black on
+    /// dark mode's pale Increase Contrast fill); the accent's words and lines on a card and on both
+    /// ends of the backdrop, where the step bar and Winbar's mark sit.
+    @Test("The title on the accent fill, and the accent's words on cards and the backdrop, pass AA — AAA with Increase Contrast")
     func contrast() {
         for dark in [false, true] {
             for increased in [false, true] {
                 let p = SetupStyle.palette(dark: dark, increasedContrast: increased)
                 let floor = increased ? 7.0 : 4.5
                 let name = "\(dark ? "dark" : "light")\(increased ? ", increased contrast" : "")"
-                #expect(SetupStyle.contrast(Self.white, p.accentFill) >= floor, "white on the fill, \(name)")
+                #expect(SetupStyle.contrast(p.onAccentFill, p.accentFill) >= floor, "the title on the fill, \(name)")
                 for surface in [p.card, p.backdropTop, p.backdropBottom] {
                     #expect(SetupStyle.contrast(p.accentText, surface) >= floor, "the accent's words, \(name)")
                 }
@@ -196,16 +200,62 @@ struct SetupPaletteTests {
 
 @Suite("What the runner's events do to the window")
 struct SetupWindowStateTests {
-    @Test("Work that isn't a read starts a fresh output; a read keeps what the last work said")
+    /// A refusal outlasting the next start is deliberate: that start is often the read that took the
+    /// refused press's place, and it used to take the banner with it before anyone read it
+    /// (`stillRefused` decides when it goes).
+    @Test("Work that isn't a read starts a fresh output; a read keeps what the last work said, and the refusal")
     func startClearsLines() {
         var state = F.installFailed
         state.refusal = SetupRunner.Refusal(wanted: .settleUTM, inFlight: F.flight(.installUTM))
         let read = state.applying(.started(F.flight(.checkAgain(.lookAround))))
         #expect(read.lines == state.lines)
-        #expect(read.refusal == nil)
+        #expect(read.refusal == state.refusal)
         let install = state.applying(.started(F.flight(.installUTM)))
         #expect(install.lines.isEmpty)
         #expect(install.inFlight?.work == .installUTM)
+    }
+
+    /// Josh's Approve Certificate…, refused by a read he hadn't pressed: the banner went with the next
+    /// event, before anyone read it. A refusal now stands while the press is still one the page offers,
+    /// and goes once it isn't: a fresh snapshot answers a refused read; the press, pressed again and
+    /// taken, ends it; the step changing, or the Mac making the press pointless, ends it. The controls
+    /// are HEAD's reducer (gone at `.refreshing`) and a rule that never drops it (the trusted case).
+    @Test("A refused press is said until it stops being true")
+    func refusalLifetime() throws {
+        let read = F.flight(.lookAgain(.certificate, forgetting: .statuses))
+        var state = CertificateFixtures.state("initial")
+        let facts = try #require(state.facts)
+        let refusal = SetupRunner.Refusal(wanted: .trustCertificate, inFlight: read)
+        state.refusal = refusal
+        let reading = state.applying(.refreshing(read))
+        #expect(reading.refusal == refusal)
+        #expect(reading.applying(.refreshed(facts)).refusal == refusal, "still one the page offers")
+        var trusted = facts
+        trusted.rows["H7"] = JourneyFixtures.row("H7", .ok("Trusted"))
+        #expect(reading.applying(.refreshed(trusted)).refusal == nil, "trusted meanwhile")
+        var undone = facts
+        undone.rows["G1"] = JourneyFixtures.row("G1", .fixable("Balanced"))
+        let back = reading.applying(.refreshed(undone))
+        #expect(back.step == .tune && back.refusal == nil, "another page")
+        let taken = reading.applying(.ended(SetupRunner.Ending(work: .trustCertificate, outcome: .finished, facts: facts,
+                                                               slept: false, started: F.started)))
+        #expect(taken.refusal == nil, "pressed again and taken")
+        var refusedRead = state
+        refusedRead.refusal = SetupRunner.Refusal(wanted: .checkAgain(.certificate), inFlight: read)
+        #expect(refusedRead.applying(.refreshing(read)).applying(.refreshed(facts)).refusal == nil, "a read is answered by any read")
+    }
+
+    /// A read nobody pressed keeps pages as they are only while it runs. `refreshing` lasted until the
+    /// next `.started`, so a page kept its card through the next read somebody pressed, which is
+    /// the one that should put a stale card away. The control is a `.refreshed` that leaves it set.
+    @Test("A read nobody pressed is refreshing until its snapshot comes, and no longer")
+    func refreshingEndsWithItsRead() {
+        let flight = F.flight(.lookAgain(.lookAround, forgetting: .statuses))
+        let reading = F.installFailed.applying(.refreshing(flight))
+        #expect(reading.refreshing && reading.inFlight == flight)
+        let read = reading.applying(.refreshed(F.facts(utm: .missing, brew: F.brew)))
+        #expect(!read.refreshing)
+        #expect(read.inFlight == nil)
     }
 
     /// The refusal names the work in flight; once that work has ended it would be saying something
@@ -239,6 +289,24 @@ struct SetupWindowStateTests {
         // A read's progress ("Asking Windows…") isn't the install's output.
         let read = state.applying(.progressed(F.flight(.checkAgain(.lookAround), line: "Asking Windows…")))
         #expect(read.lines == state.lines)
+    }
+
+    /// A line said just before an install ended can arrive after its `.ended`: the runner sends it
+    /// after letting go of its lock. Taken, it put the install back in flight with nothing left to
+    /// clear it, and the page looked busy for good. The control is HEAD's `.progressed`, which took any
+    /// line: the late one leaves `inFlight` set.
+    @Test("A line that arrives after its work ended, or from another run, changes nothing")
+    func lateProgress() {
+        let running = F.state(facts: F.facts(utm: .missing, brew: F.brew)).applying(.started(F.flight(.installUTM)))
+            .applying(.progressed(F.flight(.installUTM, line: "==> Downloading UTM")))
+        let ended = running.applying(.ended(SetupRunner.Ending(work: .installUTM, outcome: .finished,
+                                                               facts: F.facts(utm: F.installed), slept: false,
+                                                               started: F.started, lines: ["==> Downloading UTM"])))
+        let late = ended.applying(.progressed(F.flight(.installUTM, line: "==> Pouring utm")))
+        #expect(late.inFlight == nil)
+        #expect(late.lines == ended.lines)
+        let other = SetupRunner.InFlight(work: .installUTM, started: F.started.addingTimeInterval(60), vm: nil, line: "x")
+        #expect(running.applying(.progressed(other)) == running)
     }
 
     /// Winbar's own download says how far it has got once a second (`DependencyCopy.downloadProgress`);
@@ -387,6 +455,128 @@ struct SetupWindowStateTests {
 
 // MARK: - Step 1's page
 
+@MainActor @Suite("A failure stands while it's still true, through a look, and goes once the Mac has moved past it")
+struct StandingFailureTests {
+    private func failed(_ state: SetupWindowState, _ work: SetupRunner.Work, _ problem: SetupRunner.Problem) -> SetupWindowState {
+        var state = state
+        state.lastEnding = SetupRunner.Ending(work: work, outcome: .failed(problem), facts: state.facts!, slept: false,
+                                              started: F.started)
+        return state
+    }
+
+    private let look = F.flight(.lookAgain(.savedPC, forgetting: .statuses))
+
+    /// The App Store hand-off failed, and Windows App was then installed some other way: a look nobody
+    /// pressed doesn't replace the ending, so without the rule the failure would sit over a step that
+    /// no longer offers the hand-off. The control is a rule that ignores whether the work still
+    /// applies: the card stays after the fix.
+    @Test("A failed App Store hand-off stands until Windows App is there")
+    func appStore() throws {
+        let problem = SetupRunner.Problem(title: "The App Store didn't open", detail: "It said the page isn't available.")
+        let state = failed(try JourneyPolishFixtures.screen("saved-needs-app"), .installWindowsApp, problem)
+        #expect(SetupJourneyView.problemCard(state) == problem)
+        var installed = try #require(state.facts)
+        installed.windowsApp = .installed(version: "11.4")
+        let after = state.applying(.refreshing(look)).applying(.refreshed(installed))
+        #expect(after.lastEnding == state.lastEnding, "a look isn't an ending")
+        #expect(SetupJourneyView.problemCard(after) == nil)
+    }
+
+    @Test("A failed Fix stands while its row still needs fixing, and goes once it doesn't")
+    func fix() throws {
+        let problem = SetupRunner.Problem(title: "The power plan didn't change", detail: "Windows said access is denied.")
+        var tune = SetupFixtures.state(.tune, facts: JourneyFixtures.facts)
+        tune.facts?.rows["G1"] = JourneyFixtures.row("G1", .fixable("Balanced"))
+        let state = failed(tune, .fix(checkID: "G1"), problem)
+        #expect(SetupJourneyView.problemCard(state) == problem)
+        let still = state.applying(.refreshed(try #require(state.facts)))
+        #expect(SetupJourneyView.problemCard(still) == problem, "still true after a read")
+        var fixed = try #require(state.facts)
+        fixed.rows["G1"] = JourneyFixtures.row("G1", .ok("High performance"))
+        #expect(SetupJourneyView.problemCard(state.applying(.refreshed(fixed))) == nil)
+    }
+
+    @Test("A failed start says so on the VM step while the VM is stopped, and not once it runs")
+    func start() throws {
+        let problem = SetupRunner.Problem(title: "UTM couldn't start “winlab02”", detail: "It said the VM is busy.")
+        var stopped = SetupFixtures.state(.vm, facts: SetupVMTests.facts())
+        stopped.facts?.vmRunning = false
+        stopped = failed(stopped, .startVM(SetupVMTests.new.name), problem)
+        #expect(stopped.standingFailure == problem)
+        #expect(Drawing.find("couldn't start", in: try Drawing.lines(try render(stopped, .light))) != nil)
+        var running = stopped
+        running.facts?.vmRunning = true
+        #expect(running.standingFailure == nil)
+        #expect(Drawing.find("couldn't start", in: try Drawing.lines(try render(running, .light))) == nil)
+    }
+
+    /// The finding that made the rule necessary: coming back to a failed UTM install turned its card,
+    /// with Homebrew's last words and Try Again, into the plain "install UTM" card, because the read on
+    /// return was a Check Again and its ending replaced the failure. A look keeps it. The control is
+    /// that old path, `.started` then `.ended` of a Check Again, in the same test.
+    @Test("A failed UTM install keeps its card, its lines and Try Again through a look")
+    func installFailedThroughALook() throws {
+        let before = LookAroundPage.page(F.installFailed)
+        guard case .installFailed(let problem, let lines, _) = before.card else {
+            Issue.record("not the failure card: \(before.card)")
+            return
+        }
+        let missing = F.facts(utm: .missing, brew: F.brew)
+        let after = F.installFailed.applying(.refreshing(F.flight(.lookAgain(.lookAround, forgetting: .statuses))))
+            .applying(.refreshed(missing))
+        let page = LookAroundPage.page(after)
+        #expect(page.card == .installFailed(problem, lines: lines, slept: false))
+        #expect(page.primary == .init(title: SetupCopy.bTryAgain, action: .run(.installUTM), enabled: true))
+
+        let read = F.installFailed.applying(.started(F.flight(.checkAgain(.lookAround))))
+            .applying(.ended(SetupRunner.Ending(work: .checkAgain(.lookAround), outcome: .finished, facts: missing,
+                                                slept: false, started: F.started)))
+        guard case .needsUTM = LookAroundPage.page(read).card else {
+            Issue.record("the control should lose the failure card: \(LookAroundPage.page(read).card)")
+            return
+        }
+    }
+}
+
+/// A refused press was said only on Look around, and there without the gate's reason: the VM step
+/// said nothing, and the journey's steps a bare line of grey text. The banner is on every step, first.
+@MainActor @Suite("A refused press is said at the top of every step, in the words that are true")
+struct RefusalDrawnTests {
+    /// The control is the VM step without its banner: nothing on the page says the press didn't start.
+    @Test("The VM step says a refused press, and why")
+    func vmStep() throws {
+        let read = F.flight(.checkAgain(.vm))
+        var state = F.state(.vm, facts: SetupVMTests.facts(), inFlight: read)
+        state.facts?.vmRunning = false
+        state.refusal = SetupRunner.Refusal(wanted: .startVM(SetupVMTests.new.name), inFlight: read)
+        let lines = try Drawing.lines(try render(state, .light))
+        #expect(Drawing.find("one thing at a time", in: lines) != nil, "\(lines)")
+    }
+
+    /// Turned down by the app's gate (the menu starting a VM), the words are the gate's: the work the
+    /// refusal carries is the press itself, not what was in the way. The control is HEAD's banner,
+    /// which ignored the reason and said "Winbar is still installing UTM".
+    @Test("Look around says the gate's own words, not the work it was going to do")
+    func gateWords() throws {
+        var state = F.state(facts: F.facts(utm: .missing))
+        state.refusal = SetupRunner.Refusal(wanted: .installUTM, inFlight: F.flight(.installUTM),
+                                            reason: "Winbar is still starting “atelier”. Wait for it to finish, then try again.")
+        let lines = try Drawing.lines(try render(state, .light))
+        #expect(Drawing.find("still starting", in: lines) != nil, "\(lines)")
+        // What `run` puts in a gate's refusal is the press itself; HEAD's banner said it was still going.
+        #expect(Drawing.find("still installing UTM", in: lines) == nil, "\(lines)")
+    }
+
+    /// The journey's steps drew the refusal as bare text in the page's grey; now the same banner.
+    @Test("The journey's steps say it in the banner, and after the work, that it didn't start")
+    func journey() throws {
+        var state = CertificateFixtures.state("initial")
+        state.refusal = SetupRunner.Refusal(wanted: .trustCertificate, inFlight: F.flight(.checkAgain(.certificate)))
+        let lines = try Drawing.lines(try render(state, .light))
+        #expect(Drawing.find("didn't start that", in: lines) != nil, "\(lines)")
+    }
+}
+
 @Suite("Step 1: the rows, the card and the buttons, for every state")
 struct LookAroundPageTests {
     private func page(_ name: String) throws -> LookAroundPage.Page {
@@ -403,21 +593,31 @@ struct LookAroundPageTests {
         }
     }
 
-    @Test("Before the first look comes back, the UTM row is running and nothing is offered")
+    /// The review found one spinner on an empty window. The page says what it's doing and how long.
+    @Test("Before the first look comes back, the UTM row is running, the page says it's checking, and nothing is offered")
     func reading() throws {
         let page = try page("reading")
         #expect(marks(page) == [.running, .pending, .pending])
         #expect(page.card == .none && page.primary == nil)
+        #expect(page.title == "Checking this Mac" && page.note == "This takes a few seconds.")
     }
 
-    @Test("No UTM: the row's mark, a card that says it once, the plan the window carries out, and the install button")
+    /// The review found the card for a missing UTM opening with the team ID, notarization and a GitHub
+    /// address before its button: one sentence naming the button now, the plan behind Show Details.
+    @Test("No UTM: the row's mark, the title that says it once, one sentence naming the button, the plan under Details")
     func needsUTM() throws {
         let download = try page("needs-utm-download")
         #expect(download.rows[0] == .init(mark: .attention, title: "UTM"))
+        #expect(download.title == "UTM isn't installed")
         let plan = try #require(Dependencies.windowPlan(for: .utm, state: .missing, brew: nil))
-        #expect(download.card == .needsUTM(heading: "UTM isn't installed", lead: Dependency.utm.what,
-                                           plan: DependencyCopy.plan(.utm, plan),
-                                           question: DependencyCopy.question(.utm, plan)))
+        guard case .needsUTM(let heading, let summary, let details) = download.card else {
+            Issue.record("not the dependency card: \(download.card)")
+            return
+        }
+        #expect(heading == download.title)
+        #expect(summary.contains("**Download and Install UTM**"))
+        #expect(details == DependencyCopy.plan(.utm, plan))
+        #expect(LookAroundPage.details(download.card) == details)
         #expect(download.primary == .init(title: "Download and Install UTM", action: .run(.installUTM)))
 
         #expect(try page("needs-utm-homebrew").primary?.title == "Ask Homebrew to Install UTM")
@@ -430,44 +630,50 @@ struct LookAroundPageTests {
     @Test("An update is Homebrew's only for a UTM Homebrew installed, and says what quitting UTM does")
     func update() throws {
         let update = try page("needs-utm-update")
-        guard case .needsUTM(let heading, let lead, let plan, let question) = update.card else {
+        guard case .needsUTM(let heading, let summary, let details) = update.card else {
             Issue.record("not the dependency card: \(update.card)")
             return
         }
-        #expect(heading == "UTM 4.5.4 is too old for Winbar" && lead == "Winbar needs UTM 4.6.0 or later.")
-        #expect(plan.first?.hasPrefix("Homebrew (\(F.brew)) installed this UTM") == true)
-        #expect(plan.last == SetupCopy.LookAround.updateMayAsk(host: "Winbar"))
-        #expect(plan.last?.contains("“Winbar” wants access to control “UTM”") == true)
-        #expect(question == "Ask Homebrew to update UTM now?")
+        #expect(heading == "UTM 4.5.4 is too old for Winbar" && summary.hasPrefix("Winbar needs UTM 4.6.0 or later."))
+        // What quitting UTM does is said before the button, not only under Details.
+        #expect(summary.contains("**Ask Homebrew to Update UTM**") && summary.contains("any VM in it stops"))
+        #expect(details.first?.hasPrefix("Homebrew (\(F.brew)) installed this UTM") == true)
+        #expect(details.last == SetupCopy.LookAround.updateMayAsk(host: "Winbar"))
+        #expect(details.last?.contains("“Winbar” wants access to control “UTM”") == true)
 
         let byHand = try page("needs-utm-update-by-hand")
-        #expect(byHand.card == .needsUTM(heading: "UTM 4.5.4 is too old for Winbar", lead: "Winbar needs UTM 4.6.0 or later.",
-                                         plan: SetupCopy.LookAround.plan(.manual(DependencyCopy.updateByHand(.utm)),
-                                                                         state: .tooOld(version: "4.5.4", minimum: "4.6.0")),
-                                         question: nil))
+        guard case .needsUTM(let byHandHeading, let byHandSummary, let byHandDetails) = byHand.card else {
+            Issue.record("not the dependency card: \(byHand.card)")
+            return
+        }
+        #expect(byHandHeading == "UTM 4.5.4 is too old for Winbar" && byHandDetails.isEmpty)
+        #expect(byHandSummary.contains("Check for Updates") && byHandSummary.hasSuffix(SetupCopy.LookAround.comeBack))
         // The window's words, not Terminal's: no brew command to type.
         #expect(!"\(String(describing: byHand.card))".contains("brew upgrade"))
         #expect(byHand.primary?.action == .run(.checkAgain(.lookAround)))
     }
 
-    /// Winbar won't replace someone else's app, so there's nothing to install: advice, and a re-read.
-    @Test("A UTM that isn't UTM is a failure with advice, and no install button")
+    /// Winbar won't replace someone else's app, so there's nothing to install. The review found the
+    /// fix only described ("Move that copy of UTM to the Trash"): the Finder is a button now, filled,
+    /// and Check Again is beside it for after.
+    @Test("A UTM that isn't UTM is a failure with Show in Finder, and no install button")
     func notUTM() throws {
         let page = try page("needs-utm-not-utm")
         #expect(page.rows[0].mark == .failed)
-        guard case .needsUTM(let heading, let lead, let plan, let question) = page.card else {
+        guard case .needsUTM(let heading, let summary, let details) = page.card else {
             Issue.record("not the dependency card: \(page.card)")
             return
         }
-        // Said once, in the card: the row is only its mark.
+        // Said once, as the title: the row is only its mark.
         #expect(page.rows[0].detail == nil)
-        #expect(heading == "This isn't the UTM Winbar expects" && lead?.contains("ABCDE12345") == true)
-        #expect(question == nil)
-        #expect(plan.joined().contains("Winbar won't replace an app that's already installed"))
-        #expect(page.primary?.action == .run(.checkAgain(.lookAround)))
+        #expect(heading == "This isn't the UTM Winbar expects" && page.title == heading)
+        #expect(details.joined().contains("ABCDE12345") && !summary.contains("ABCDE12345"))
+        #expect(summary.contains("Winbar won't replace an app it didn't install") && summary.contains("**Show in Finder**"))
+        #expect(page.primary == .init(title: "Show in Finder", action: .showUTMInFinder))
+        #expect(page.secondary?.action == .run(.checkAgain(.lookAround)))
     }
 
-    @Test("Installing: the row runs, the card shows the output as it came, and there's nothing to press")
+    @Test("Installing: the row runs, the card keeps the output as it came, and there's nothing to press")
     func installing() throws {
         let page = try page("installing")
         #expect(marks(page) == [.running, .pending, .done])
@@ -485,6 +691,7 @@ struct LookAroundPageTests {
     func installFailed() throws {
         let page = try page("install-failed")
         #expect(page.rows[0] == .init(mark: .failed, title: "UTM"))
+        #expect(page.title == "Homebrew couldn't install UTM")
         guard case .installFailed(let problem, let lines, false) = page.card else {
             Issue.record("not the failure card: \(page.card)")
             return
@@ -494,9 +701,11 @@ struct LookAroundPageTests {
         #expect(page.primary == .init(title: "Try Again", action: .run(.installUTM)))
     }
 
-    @Test("UTM installed and not asked yet: the prediction, then Open UTM and Ask")
+    /// The review found UTM 4.7.5 found and still drawn at the pending circle, over "UTM 4.7.5".
+    @Test("UTM installed and not asked yet: a tick with its version, the prediction, then Open UTM and Ask")
     func askUTM() throws {
         let page = try page("ask-utm")
+        #expect(page.rows[0] == .init(mark: .done, title: "UTM", detail: "Installed · 4.7.5"))
         #expect(page.card == .askUTM(quarantined: false))
         #expect(page.primary == .init(title: "Open UTM and Ask", action: .run(.settleUTM)))
         // A copy with Homebrew's mark: the same button, and the card knows to predict Gatekeeper's question.
@@ -523,42 +732,52 @@ struct LookAroundPageTests {
         let page = try page("utm-silent")
         #expect(page.rows[0] == .init(mark: .attention, title: "UTM", detail: "No answer in 60 seconds"))
         #expect(page.card == .silent(consent: .wouldPrompt, quarantined: true))
+        #expect(page.title == "UTM hasn't answered")
         #expect(page.primary == .init(title: "Try Again", action: .run(.settleUTM)))
         #expect(page.secondary == nil)
-        // An answer on file: no prompt is coming, so the switch in System Settings is the way on.
-        let decided = LookAroundPage.page(F.state(facts: F.facts(utm: F.installed, answers: .silent(seconds: 60),
-                                                                 consent: .decided)))
+        // An answer on file: no prompt is coming, so the switch in System Settings is the way on, as
+        // the filled button, and the page is titled for what's needed.
+        let decided = try self.page("utm-silent-decided")
         #expect(decided.card == .silent(consent: .decided, quarantined: false))
-        #expect(decided.secondary == .init(title: "Open Automation Settings…", action: .openAutomationSettings))
-        #expect(decided.primary?.action == .run(.settleUTM))
+        #expect(decided.title == "Winbar needs permission to control UTM")
+        #expect(decided.primary == .init(title: "Open Automation Settings…", action: .openAutomationSettings))
+        #expect(decided.secondary?.action == .run(.settleUTM))
     }
 
-    @Test("Automation refused: where to turn it on, the settings page, and Try Again")
+    /// Downgraded from a ship-blocker: Try Again was the filled button on a refusal nothing but the
+    /// switch in System Settings can change.
+    @Test("Automation refused: titled for the permission, the settings page filled, and Try Again beside it")
     func denied() throws {
         let page = try page("utm-denied")
-        let denied = Automation.deniedError(for: ("Winbar", "net.elusive.winbar"))
-        #expect(page.rows[0] == .init(mark: .attention, title: "UTM"))
-        #expect(page.card == .denied(heading: denied.title))
-        // The window's words, which end on its buttons rather than on a tccutil command.
+        #expect(page.rows[0] == .init(mark: .attention, title: "UTM", detail: "Installed · 4.7.5"))
+        #expect(page.card == .denied)
+        #expect(page.title == "Winbar needs permission to control UTM")
+        // The window's words, which end on what happens after rather than on a tccutil command.
         let text = String(SetupCopy.markdown(SetupCopy.LookAround.denied(host: "Winbar")).characters)
-        #expect(text.contains("Open Automation Settings…") && text.hasSuffix("press Try Again.") && !text.contains("tccutil"))
-        #expect(page.primary?.action == .run(.settleUTM))
-        #expect(page.secondary == .init(title: "Open Automation Settings…", action: .openAutomationSettings))
+        #expect(text.hasPrefix("Choose Open Automation Settings…") && !text.contains("tccutil"))
+        #expect(text.hasSuffix("Winbar checks again when you come back."))
+        #expect(page.primary == .init(title: "Open Automation Settings…", action: .openAutomationSettings))
+        #expect(page.secondary == .init(title: "Try Again", action: .run(.settleUTM)))
     }
 
-    @Test("utmctl's own error, and a VM list that failed, each say so and offer another go")
+    /// The review found "utmctl: … (error -600)" on the row and the fix described: UTM's error is under
+    /// Details now, and the button is the fix, Open UTM, which opens it and asks again (`settleUTM`).
+    @Test("utmctl's own error offers Open UTM with the error under Details; a VM list that failed offers another go")
     func failures() throws {
         let failed = try page("utm-failed")
         #expect(failed.rows[0].mark == .failed)
-        #expect(failed.rows[0].detail == "utmctl: UTM is not running (error -600)")
-        #expect(failed.primary?.action == .run(.settleUTM))
+        #expect(failed.rows[0].detail == "Installed · 4.7.5")
+        #expect(failed.title == "UTM isn't answering Winbar")
+        #expect(LookAroundPage.details(failed.card) == ["UTM said: UTM is not running (error -600)"])
+        #expect(!said(try #require(F.screens.first { $0.name == "utm-failed" }?.state)).contains("utmctl"))
+        #expect(failed.primary == .init(title: "Open UTM", action: .run(.settleUTM)))
 
         let list = try page("list-failed")
         #expect(marks(list) == [.done, .failed, .done])
         #expect(list.rows[1].detail == nil)
         #expect(list.card == .listFailed(heading: "UTM didn't answer in time",
                                          detail: "It may be busy or showing a dialog. Nothing came back within 30 seconds."))
-        #expect(failed.card == .utmFailed)
+        #expect(failed.card == .utmFailed(detail: "UTM is not running (error -600)"))
         #expect(list.primary?.action == .run(.checkAgain(.lookAround)))
         #expect(list.secondary == nil)
     }
@@ -587,14 +806,21 @@ struct LookAroundPageTests {
         #expect((oldRow.detail ?? "").lowercased().contains(heading.lowercased()))
     }
 
-    @Test("Done: three ticks, how many VMs, and Continue; Windows App missing is said and left for step 5")
+    /// The review asked for a headline on the finished page, and rows that don't say their name twice
+    /// ("UTM / UTM 4.7.5").
+    @Test("Done: the headline, three ticks with versions, how many VMs, and Continue; Windows App missing is left for step 5")
     func done() throws {
         let done = try page("done")
+        #expect(done.title == "Everything Winbar needs is here")
         #expect(marks(done) == [.done, .done, .done])
+        #expect(done.rows[0].detail == "Installed · 4.7.5" && done.rows[2].detail == "Installed · 11.4.1")
         #expect(done.rows[1].detail == "2 in UTM")
-        #expect(done.primary == .init(title: "Continue", action: .next))
+        // Named for the step it leads to, in the step bar's words, as every later step's Continue is.
+        #expect(done.primary == .init(title: "Continue to the VM", action: .next))
 
         let noApp = try page("done-no-windows-app")
+        // Not "everything": Windows App is still to come.
+        #expect(noApp.title == "Everything Winbar needs for now is here")
         #expect(noApp.rows[1].detail == "None in UTM yet")
         #expect(noApp.rows[2] == .init(mark: .pending, title: "Windows App",
                                        detail: SetupCopy.LookAround.windowsAppLater(lastBuilt: SetupWindowState.lastBuilt)))
@@ -612,13 +838,13 @@ struct LookAroundPageTests {
             let detail = try #require(noApp.rows[2].detail)
             #expect(detail == SetupCopy.LookAround.windowsAppLater(lastBuilt: lastBuilt))
             #expect(detail.contains("saved-PC step") == (lastBuilt >= .savedPC), "\(lastBuilt)")
-            #expect(detail.hasPrefix("Windows App isn't installed."), "\(lastBuilt)")
+            #expect(detail.hasPrefix("Not installed yet."), "\(lastBuilt)")
         }
         // This build: no step it doesn't have, and the way it's really done.
         let now = SetupCopy.LookAround.windowsAppLater(lastBuilt: SetupWindowState.lastBuilt)
-        #expect(now == "Windows App isn't installed. Winbar gets to that at the saved-PC step.")
+        #expect(now == "Not installed yet. Winbar gets to it at the saved-PC step.")
         #expect(SetupCopy.LookAround.windowsAppLater(lastBuilt: .finish)
-                == "Windows App isn't installed. Winbar gets to that at the saved-PC step.")
+                == "Not installed yet. Winbar gets to it at the saved-PC step.")
     }
 
     /// The control: the row as it was, one sentence for every build, names the saved-PC step in this one.
@@ -637,8 +863,10 @@ struct LookAroundPageTests {
             var busy = state
             busy.inFlight = F.flight(.checkAgain(.lookAround))
             let page = LookAroundPage.page(busy)
-            #expect(page.primary?.enabled != true, "\(name)")
-            #expect(page.secondary?.enabled != true || page.secondary?.action == .openAutomationSettings, "\(name)")
+            // Only the buttons that open another app's window stay: they touch nothing the read reads.
+            let elsewhere: [LookAroundPage.Action] = [.openAutomationSettings, .showUTMInFinder]
+            #expect(page.primary?.enabled != true || elsewhere.contains(page.primary!.action), "\(name)")
+            #expect(page.secondary?.enabled != true || elsewhere.contains(page.secondary!.action), "\(name)")
             let open = page.rows.prefix(2).contains { $0.mark != .done }
             #expect(!open || page.rows.contains { $0.mark == .running }, "\(name)")
             // Only the first row that can change, and never the Windows App row.
@@ -695,7 +923,8 @@ struct SetupArmieTests {
     func line() {
         let line = SetupCopy.Armie.line(.installingUTM)
         #expect(!line.contains("!") && !line.contains("?"))
-        #expect(line.hasPrefix("Installing UTM") && line.contains("checks it's the real one"))
+        // "Installing UTM" is the progress line above him; he says the one thing it doesn't.
+        #expect(!line.hasPrefix("Installing UTM") && line.contains("checks this is the real UTM"))
         #expect(SetupCopy.Armie.Moment.all.contains(.installingUTM))
         // No stage's verb, and neither route's name: Homebrew's install and Winbar's download both end in
         // the same check, and a line naming one would be untrue half the time.
@@ -856,7 +1085,7 @@ struct SetupWindowPromiseTests {
         #expect(shipped.contains("does the whole thing") && shipped.contains("You don't need Terminal"))
         let now = SetupCopy.Welcome.body(lastBuilt: .vm).map(plain).joined(separator: " ")
         #expect(!now.contains("does the whole thing") && !now.contains("You don't need Terminal"))
-        #expect(now.contains("makes or adopts a Windows VM") && now.contains("installs UTM if it's missing"))
+        #expect(now.contains("makes a Windows VM or uses one you already have") && now.contains("installs UTM if it's missing"))
         #expect(now.contains("then stops and says what does the rest."))
         #expect(!Self.promisesSetupDoesTheRest(now))
         // Automation on every route, and Gatekeeper's question for any copy with the mark that hasn't been
@@ -879,7 +1108,7 @@ struct SetupWindowPromiseTests {
     @Test("The spec's welcome, and the one that handed the rest to winbar setup, would fail that")
     func welcomeControl() {
         let whole = SetupCopy.Welcome.body(lastBuilt: .finish).map(plain).joined(separator: " ")
-        #expect(whole.contains("You don't need Terminal") && whole.contains("Winbar explains each request"))
+        #expect(whole.contains("You don't need Terminal") && whole.contains("Winbar tells you what each question is"))
         let before = plain("For now this window checks what's here and installs UTM if it's missing; **winbar setup** in "
                            + "Terminal does the rest.")
         #expect(Self.promisesSetupDoesTheRest(before))
@@ -951,10 +1180,12 @@ struct LookAroundCopyTests {
         for (name, state) in F.screens where state.step == .lookAround {
             #expect(said(state).contains("modify apps") == (name == "needs-utm-update"), "\(name)")
         }
-        // And the welcome's count leaves room for it.
+        // And the welcome leaves room for it: it neither counts macOS's questions nor lists them, and
+        // promises each is said before it appears.
         let welcome = SetupCopy.Welcome.body(lastBuilt: SetupWindowState.lastBuilt)
             .map { String(SetupCopy.markdown($0).characters) }.joined(separator: " ")
-        #expect(welcome.contains("opening or updating apps") && !welcome.contains("up to four"))
+        #expect(welcome.contains("macOS may ask your permission a few times") && welcome.contains("before it appears"))
+        #expect(!welcome.contains("up to four") && !welcome.contains("Accessibility"))
     }
 
     /// **Open UTM and Ask** opens UTM itself, so for a copy with the mark, macOS's open question can land
@@ -1157,7 +1388,7 @@ private final class MemorySettings {
 private func runner(_ machine: SetupMachine) -> SetupRunner {
     SetupRunner(machine: machine, environment: SetupRunner.Environment(
         queue: DispatchQueue(label: "winbar.test.setup-window"), callbacks: .main, clock: Date.init,
-        keepAwake: { _ in {} }, processes: { _ in ([], nil) }, workspace: NotificationCenter(), app: NotificationCenter()))
+        keepAwake: { _ in {} }, processes: { _ in ([], nil) }, workspace: NotificationCenter()))
 }
 
 @Suite("The window's controller keeps its promises")
@@ -1250,7 +1481,7 @@ struct SetupWindowControllerTests {
         #expect(LookAroundPage.page(controller.state).primary == .init(title: "Try Again", action: .run(.installUTM)))
     }
 
-    @Test("Make One embeds the existing create controller; it doesn't open a second window")
+    @Test("Install Windows… embeds the existing create controller; it doesn't open a second window")
     func placeholderButtons() {
         let memory = MemorySettings()
         let creator = FakeEmbeddedCreate()
@@ -1266,6 +1497,75 @@ struct SetupWindowControllerTests {
         #expect(creator.closes == 1 && !creator.isEmbedded && !controller.state.creating)
         controller.send(.closeForNow)
         #expect(memory.shown)
+    }
+
+    /// The person has moved on from a refused press once they press anything else, which says its own
+    /// refusal if it is refused too. Ticking a VM or hiding Armie answers nothing it said.
+    @Test("Pressing anything but a VM's row or Armie's ✕ puts the refusal away")
+    func pressClearsRefusal() {
+        var state = CertificateFixtures.state("initial")
+        state.refusal = SetupRunner.Refusal(wanted: .trustCertificate, inFlight: F.flight(.checkAgain(.certificate)))
+        let controller = SetupWindowController(state: state, art: nil, settings: MemorySettings().settings,
+                                               makeRunner: { runner(QuietMachine()) })
+        controller.send(.pickVM("5A1E0C3D-0000-4000-8000-00000000000D"))
+        controller.send(.hideArmie)
+        #expect(controller.state.refusal == state.refusal)
+        controller.send(.skip("H7"))
+        #expect(controller.state.refusal == nil)
+    }
+
+    /// Showing the New Windows VM form starts nothing, and its own Install takes the app's gate, which
+    /// names anything in its way. It was dropped without a word while a read ran. The control is HEAD's
+    /// guard (nothing in flight at all): the press does nothing.
+    @Test("Install Windows… shows the form while only a read runs")
+    func newVMDuringARead() {
+        let creator = FakeEmbeddedCreate()
+        var state = F.state(.vm, facts: F.facts(utm: F.installed, answers: .answered, vms: .listed([])))
+        state.inFlight = F.flight(.checkAgain(.vm))
+        let controller = SetupWindowController(state: state, art: nil, settings: MemorySettings().settings,
+                                               makeRunner: { runner(QuietMachine()) }, makeCreator: { creator })
+        controller.send(.newWindowsVM)
+        #expect(controller.state.creating && creator.isEmbedded)
+        controller.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+    }
+
+    /// A survey of Windows after a wake holds Tune for up to three minutes, and nobody pressed it:
+    /// Back and a row's Skip were greyed out the whole time. A read changes nothing a step decided,
+    /// so both work through one. The control is HEAD's rule (nothing while anything runs): the read
+    /// case greys Back and ignores both.
+    @Test("Back and Skip work while only a read runs")
+    func backDuringARead() {
+        var state = SetupFixtures.state(.tune, facts: JourneyFixtures.facts)
+        state.inFlight = F.flight(.checkAgain(.tune))
+        let back = SetupFooter.footer(state).leading.first { $0.press == .send(.back) }
+        #expect(back?.enabled == true, "\(SetupFooter.footer(state))")
+        let controller = SetupWindowController(state: state, art: nil, settings: MemorySettings().settings,
+                                               makeRunner: { runner(QuietMachine()) })
+        controller.send(.skip("G1"))
+        #expect(controller.state.answers.leftAlone.contains("G1"))
+        controller.send(.back)
+        #expect(controller.state.step == .vm)
+        var finish = FinishFixtures.choosing
+        finish.inFlight = F.flight(.lookAgain(.finish, forgetting: .statuses))
+        #expect(SetupFinishPage.footer(finish).leading.first?.enabled == true)
+    }
+
+    /// The control for the rule above: work that acts keeps Back until it ends, so going back can't
+    /// leave a page from under the install it's showing. A rule that let Back through any work fails.
+    @Test("Back waits for work that isn't a read")
+    func noBackDuringWork() {
+        var state = SetupFixtures.state(.tune, facts: JourneyFixtures.facts)
+        state.inFlight = F.flight(.fixEverything)
+        #expect(!SetupFooter.footer(state).leading.contains { $0.press == .send(.back) })
+        let controller = SetupWindowController(state: state, art: nil, settings: MemorySettings().settings,
+                                               makeRunner: { runner(QuietMachine()) })
+        controller.send(.back)
+        controller.send(.skip("G1"))
+        #expect(controller.state.step == .tune)
+        #expect(!controller.state.answers.leftAlone.contains("G1"))
+        var finish = FinishFixtures.choosing
+        finish.inFlight = F.flight(.applyChanges)
+        #expect(SetupFinishPage.footer(finish).leading.first?.enabled == false)
     }
 
     @Test("Back and Continue move between the welcome, step 1 and what follows")

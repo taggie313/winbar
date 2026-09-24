@@ -122,7 +122,7 @@ enum Recipe {
         Check(id: "H6", section: .host, title: "Backups and indexing",
               why: "The VM's disk image is tens of gigabytes and changes constantly; backing it up every hour and indexing it "
                   + "for Spotlight costs I/O for nothing. macOS protects UTM's folder, so Winbar can only check, not change, this.",
-              evaluate: { _ in
+              evaluate: { ctx in
                   let path = Tuning.utmDocuments.path
                   let how = "System Settings → General → Time Machine → Options… → + → add \(path) "
                       + "(⇧⌘. shows hidden folders). Do the same under Spotlight → Search Privacy. "
@@ -132,7 +132,8 @@ enum Recipe {
                   let result = Shell.run("/usr/bin/tmutil", ["isexcluded", path], timeout: 20)
                   if result.status == 0 && result.text.contains("[Excluded]") { return .ok("excluded from Time Machine") }
                   if result.status == 0 && result.text.contains("[Included]") {
-                      Config.backupExclusionConfirmed = false   // a real answer beats anyone's word
+                      // A real answer beats anyone's word; not remembered from a problem report.
+                      if !ctx.options.readOnly { Config.backupExclusionConfirmed = false }
                       return .manual("Time Machine backs up UTM's VMs", how: how)
                   }
                   // Without Full Disk Access tmutil can't look, which is the usual case; the person's
@@ -450,15 +451,9 @@ enum Recipe {
               }),
 
         Check(id: "G10", section: .guest, title: "Drivers and tools",
-              why: "For reference.",
-              evaluate: { ctx in
-                  guestStatus(ctx) { out in
-                      var parts = [out["G10_NET"].map { "network: \($0)" } ?? "no VirtIO network adapter"]
-                      if let tools = out["G10_TOOLS"] { parts.append("UTM Guest Tools \(tools)") }
-                      if let agent = out["G10_AGENT"] { parts.append("guest agent \(agent)") }
-                      return .info(parts.joined(separator: "; "))
-                  }
-              }),
+              why: "UTM Guest Tools carry Windows' driver for the VM's VirtIO network card (it has none of its own), "
+                  + "the SPICE agent, the shared folder's WebDAV service and the QEMU guest agent Winbar works through.",
+              evaluate: { ctx in guestStatus(ctx) { out in DriversAndTools(out).status } }),
 
         Check(id: "G11", section: .guest, title: "Shared folder",
               why: "A folder both sides can open, so files don't have to go through Remote Desktop's clipboard or a network "
@@ -503,27 +498,21 @@ enum Recipe {
               evaluate: { ctx in
                   guard let host = ctx.rdpHost else { return .info("needs the RDP host name (G0)") }
                   guard WindowsApp.appURL != nil else { return .info("needs Windows App (C1)") }
-                  switch ctx.savedPC(for: host) {
-                  case .success(let found?):
-                      Recipe.rememberSavedPC(found, host: host, for: ctx)
-                      return .ok(found.name.caseInsensitiveCompare(host) == .orderedSame ? host : "\(found.name) (\(host))")
-                  case .success(nil):
-                      // Windows App answered, and it hasn't got one. Winbar can write it, unless the
-                      // app is open — two writers on its database is the one risk not worth taking.
-                      guard WindowsAppBookmarks.appIsRunning else {
-                          return .fixable("none for \(host); setup can save it for you")
-                      }
-                      return .manual("none for \(host), and Windows App is open",
-                                     how: WindowsAppBookmarks.Copy.quitFirst + " Then run winbar setup again and it will "
-                                         + "offer to save it. Or do it yourself: "
-                                         + WindowsAppBookmarks.Copy.byHand(host: host, user: ctx.rdpUser))
+                  let user = ctx.rdpUser
+                  switch ctx.savedPC(for: host, user: user) {
+                  case .success(let lookup):
+                      Recipe.rememberSavedPC(lookup, host: host, for: ctx)
+                      // Windows App has answered, and has none of this VM's: a Connect that used one is
+                      // old news, and mustn't stand in for this answer the next time it can't be asked.
+                      if lookup.mine == nil { Recipe.forgetConnectedSavedPC(for: ctx) }
+                      return Recipe.savedPCStatus(lookup, host: host, user: user,
+                                                  windowsAppRunning: lookup.mine == nil && WindowsAppBookmarks.appIsRunning)
                   case .failure(let failure):
-                      // Windows App wouldn't say. Fall back to what 0.1.0 had: the person's word.
-                      if ctx.isConfiguredVM, Config.savedPCHost?.caseInsensitiveCompare(host) == .orderedSame {
-                          return .ok("\(Config.savedPCName ?? host) (your word; Windows App didn't answer)")
-                      }
-                      return .manual("couldn't ask Windows App whether there's one for \(host) (\(failure))",
-                                     how: WindowsAppBookmarks.Copy.byHand(host: host, user: ctx.rdpUser))
+                      // Windows App wouldn't say. Fall back to what Winbar has seen and been told.
+                      Recipe.rememberNoAnswer(host: host, for: ctx)
+                      return Recipe.unansweredSavedPCStatus(host: host, user: ctx.rdpUser, failure: "\(failure)",
+                                                            configuredVM: ctx.isConfiguredVM, memory: Config.savedPC,
+                                                            connectedHost: Config.savedPCConnectedHost)
                   }
               },
               guide: { _ in
@@ -533,7 +522,7 @@ enum Recipe {
                   guard let host = ctx.rdpHost else { return }
                   // Ask Windows App itself: it knows what the person called the PC, and the tile is
                   // matched on that name. Only when it won't say does Winbar fall back to asking.
-                  if let found = try? WindowsAppBookmarks.savedPC(for: host) {
+                  if let found = try? WindowsAppBookmarks.savedPC(for: host, user: ctx.rdpUser), found.mine != nil {
                       Recipe.rememberSavedPC(found, host: host, for: ctx)
                       return
                   }
@@ -545,7 +534,7 @@ enum Recipe {
                           Config.savedPCName = answer.caseInsensitiveCompare(host) == .orderedSame ? nil : answer
                       }
                   }
-                  Config.savedPCHost = host
+                  Recipe.rememberSavedByHand(host: host, for: ctx)
               }),
 
         Check(id: "C3", section: .client, title: "Accessibility",
@@ -801,10 +790,183 @@ enum Recipe {
 
     /// Nothing is written for a VM these settings don't describe: `doctor --vm` can be pointed at
     /// another VM, and the saved PC it finds is that VM's, not this one's.
-    static func rememberSavedPC(_ bookmark: WindowsAppBookmarks.Bookmark?, host: String, for ctx: Context) {
-        guard ctx.isConfiguredVM else { return }
-        let settings = savedPCSettings(bookmark, host: host)
-        Config.savedPCHost = settings.host
-        Config.savedPCName = settings.name
+    ///
+    /// The lookup goes in whole, from C2, from its fix and from `Setup.savePC` alike, so none of them
+    /// can drop the other account on the way (see `savedPCMemory(after:host:previous:)`).
+    static func rememberSavedPC(_ lookup: WindowsAppBookmarks.Lookup, host: String, for ctx: Context) {
+        updateSavedPC(for: ctx) { savedPCMemory(after: lookup, host: host, previous: $0) }
+    }
+
+    /// C2 couldn't ask Windows App. See `savedPCMemory(unanswered:host:)`.
+    static func rememberNoAnswer(host: String, for ctx: Context) {
+        updateSavedPC(for: ctx) { savedPCMemory(unanswered: $0, host: host) }
+    }
+
+    /// The person said they saved the PC themselves and Windows App wouldn't say. See
+    /// `savedPCMemory(savedByHand:host:)`.
+    static func rememberSavedByHand(host: String, for ctx: Context) {
+        updateSavedPC(for: ctx) { savedPCMemory(savedByHand: $0, host: host) }
+    }
+
+    /// Windows App answered with no saved PC of this VM's, so the Connect that used one (`connectedSavedPC`)
+    /// no longer describes it. Only for the VM these settings describe, and never from a problem report.
+    static func forgetConnectedSavedPC(for ctx: Context) {
+        guard ctx.isConfiguredVM, !ctx.options.readOnly else { return }
+        Config.savedPCConnectedHost = nil
+    }
+
+    /// C2's row when Windows App couldn't say which saved PCs it has: its command line didn't answer,
+    /// or refused. Pure.
+    ///
+    /// Two kinds of evidence stand in for its answer, each only for the VM Winbar looks after
+    /// (`configuredVM`) and only for this host. The stronger first: Set Up Winbar's Connect pressed the
+    /// saved PC's tile and the person saw the Windows desktop (`connectedHost`, `connectedSavedPC`),
+    /// which proves more than a list could. Then the word (`memory.host`): **I've Saved the PC**, or an
+    /// earlier answer from Windows App. With neither, what to do by hand.
+    ///
+    /// Live, the command line hung three times out of three, the person saved the PC by hand and
+    /// Connect opened it — and the step bar still flagged the saved PC, since nothing said it was there.
+    static func unansweredSavedPCStatus(host: String, user: String?, failure: String, configuredVM: Bool,
+                                        memory: SavedPCMemory, connectedHost: String?) -> Status {
+        let name = memory.name ?? host
+        if configuredVM, connectedHost?.caseInsensitiveCompare(host) == .orderedSame {
+            return .ok("\(name) (saved in Windows App; Connect used it)")
+        }
+        // "Saved earlier", not "your word": the memory is also Windows App's own earlier answer, a save
+        // Winbar made, or — on a Mac upgraded from 0.2.0 — a tile the old Connect found, and live it
+        // called that "your word" although nobody had said anything.
+        if configuredVM, memory.host?.caseInsensitiveCompare(host) == .orderedSame {
+            return .ok("\(name) (saved earlier; Windows App didn't answer)")
+        }
+        return .manual("couldn't ask Windows App whether there's one for \(host) (\(failure))",
+                       how: WindowsAppBookmarks.Copy.byHand(host: host, user: user))
+    }
+
+    /// What Set Up Winbar remembers (`Config.savedPCConnectedHost`) once the person answers "Did the
+    /// Windows desktop appear?": the host, when this Connect pressed that host's saved-PC tile
+    /// (`pressed`) and the answer is yes. Pure.
+    ///
+    /// Nothing else counts. A one-off connection (no Accessibility, or no tile found) says nothing about
+    /// a saved PC, and neither does another account's tile, which Connect never presses
+    /// (`WindowsApp.tileNames`): `pressed` is nil for both, and what was remembered for this host
+    /// stands. A tile pressed with no desktop to show for it takes that back, since it's the saved PC
+    /// Winbar would have counted that just didn't work. And what was remembered for another host name
+    /// goes: it describes a Windows that has been renamed since.
+    static func connectedSavedPC(desktopAppeared: Bool, pressed: String?, host: String?, previous: String?) -> String? {
+        guard let host else { return previous }
+        func same(_ one: String?) -> Bool { one?.caseInsensitiveCompare(host) == .orderedSame }
+        if same(pressed) { return desktopAppeared ? host : nil }
+        return same(previous) ? previous : nil
+    }
+
+    /// The one place a doctor or setup run writes the saved-PC settings: only for the VM they
+    /// describe, and never from a problem report (`Context.Options.readOnly`).
+    private static func updateSavedPC(for ctx: Context, _ update: (SavedPCMemory) -> SavedPCMemory) {
+        guard ctx.isConfiguredVM, !ctx.options.readOnly else { return }
+        Config.savedPC = update(Config.savedPC)
+    }
+
+    /// What to remember when Windows App wouldn't say which saved PCs it has. Pure.
+    ///
+    /// Everything stands, except the upgrade's mark (`VMSettings.migrateSavedPCAccounts`: another
+    /// account's host with no account, because nobody saw one). Where the lookup can't run, it never
+    /// would be settled, and Connect would open a one-off connection for good on a Mac whose saved
+    /// PC was fine. So the person's word, the only evidence there is here, stands as it did before
+    /// the mark. Another account's PC a lookup really saw keeps its mark.
+    static func savedPCMemory(unanswered previous: SavedPCMemory, host: String) -> SavedPCMemory {
+        guard previous.otherAccountUser == nil,
+              previous.otherAccountHost?.caseInsensitiveCompare(host) == .orderedSame else { return previous }
+        var memory = previous
+        memory.otherAccountHost = nil
+        memory.otherAccountName = nil
+        return memory
+    }
+
+    /// What to remember when the person says they saved the PC for `host` themselves (C2's **I've
+    /// Saved the PC**, `recordDone`) and Windows App wouldn't say. Pure.
+    ///
+    /// Their word is the host, and it settles another account's mark for that host, even one a
+    /// lookup really saw: the card they acted on (`SetupCopy.SavedPC.editInstead`) told them to edit
+    /// the PC Windows App already has for this name so it signs in as them, not to add another. Kept,
+    /// the mark left Connect pressing no tile at all (`WindowsApp.tileNames`) with the lookup unable
+    /// to settle it, so every connection asked for the password and none could count as the saved
+    /// PC's. If the lookup answers again and still sees another account's PC, it marks it again
+    /// (`savedPCMemory(after:host:previous:)`). That PC's own name is not taken as this VM's: had the
+    /// person added a PC beside it instead, pressing that name would sign in as the other account,
+    /// where a tile named after the host that isn't found only means a one-off connection.
+    static func savedPCMemory(savedByHand previous: SavedPCMemory, host: String) -> SavedPCMemory {
+        var memory = previous
+        memory.host = host
+        if previous.otherAccountHost?.caseInsensitiveCompare(host) == .orderedSame {
+            memory.otherAccountHost = nil
+            memory.otherAccountName = nil
+            memory.otherAccountUser = nil
+        }
+        return memory
+    }
+
+    /// What to remember once Windows App has said which saved PCs it has for `host`. Pure.
+    ///
+    /// This VM's own saved PC: its host, and its name when that isn't the host (`savedPCSettings`).
+    /// Another account's, when one was seen: remembered by host (`otherAccountHost`), so Connect
+    /// presses only this VM's own tile, by its own name, and never one named after the host, which
+    /// could be that other account's. Its name and account go with it, for a report to mask; kept
+    /// from before while the host is, and gone with it.
+    static func savedPCMemory(after lookup: WindowsAppBookmarks.Lookup, host: String,
+                              previous: SavedPCMemory) -> SavedPCMemory {
+        let settings = savedPCSettings(lookup.mine, host: host)
+        let otherHost = otherAccountHost(mine: lookup.mine, host: host, seen: lookup.otherAccount != nil,
+                                         previous: previous.otherAccountHost)
+        let other = lookup.otherAccount.map { (name: Optional($0.bookmark.name), user: Optional($0.user)) }
+            ?? (otherHost == nil ? (name: nil, user: nil) : (name: previous.otherAccountName, user: previous.otherAccountUser))
+        return SavedPCMemory(host: settings.host, name: settings.name, otherAccountHost: otherHost,
+                             otherAccountName: other.name, otherAccountUser: other.user)
+    }
+
+    /// Whether Connect has to keep away from tiles named after `host`, after a lookup. Pure.
+    ///
+    /// Seen: yes. Nothing of this VM's for the host: no — there is nothing to confuse. This VM's own
+    /// saved PC named after the host: no, since that name is the only way to press it; someone who
+    /// edits the other account's PC to sign in as theirs, as C2 suggests, lands here. This VM's own
+    /// saved PC with a name of its own and nothing else seen: what was known before stands, because
+    /// the lookup stops reading exports at the first PC that is this VM's, so another account's PC
+    /// listed after it isn't seen, yet is still there.
+    static func otherAccountHost(mine: WindowsAppBookmarks.Bookmark?, host: String, seen: Bool,
+                                 previous: String?) -> String? {
+        if seen { return host }
+        guard let mine, mine.name.caseInsensitiveCompare(host) != .orderedSame else { return nil }
+        return previous.flatMap { $0.caseInsensitiveCompare(host) == .orderedSame ? $0 : nil }
+    }
+
+    /// C2's row from what Windows App answered. `windowsAppRunning` only matters when there is no
+    /// saved PC of this VM's: then it is whether Winbar may write one. Pure.
+    ///
+    /// A saved PC for the host that signs in as another account is not this VM's, and saying "saved"
+    /// for it was the bug: the setup window moved on and Connect opened the stale entry. It is named,
+    /// with the account it uses, and the two ways out: edit it in Windows App to sign in as this
+    /// VM's account, or let Winbar save a new one beside it.
+    static func savedPCStatus(_ lookup: WindowsAppBookmarks.Lookup, host: String, user: String?,
+                              windowsAppRunning: Bool) -> Status {
+        if let mine = lookup.mine {
+            return .ok(mine.name.caseInsensitiveCompare(host) == .orderedSame ? host : "\(mine.name) (\(host))")
+        }
+        if let other = lookup.otherAccount {
+            let belongs = "a saved PC for \(host) belongs to another account (\(other.user))"
+            let edit = "edit “\(other.bookmark.name)” in Windows App so it signs in as \(user ?? "your Windows account")"
+            guard windowsAppRunning else {
+                return .fixable("\(belongs); setup can save a new one for you, or \(edit)")
+            }
+            return .manual("\(belongs), and Windows App is open",
+                           how: "Either \(edit), or " + WindowsAppBookmarks.Copy.quitFirst.prefix(1).lowercased()
+                               + WindowsAppBookmarks.Copy.quitFirst.dropFirst()
+                               + " Then run winbar setup again and it will offer to save a new one.")
+        }
+        // Windows App answered, and it hasn't got one. Winbar can write it, unless the app is open —
+        // two writers on its database is the one risk not worth taking.
+        guard windowsAppRunning else { return .fixable("none for \(host); setup can save it for you") }
+        return .manual("none for \(host), and Windows App is open",
+                       how: WindowsAppBookmarks.Copy.quitFirst + " Then run winbar setup again and it will "
+                           + "offer to save it. Or do it yourself: "
+                           + WindowsAppBookmarks.Copy.byHand(host: host, user: user))
     }
 }

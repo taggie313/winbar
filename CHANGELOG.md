@@ -7,6 +7,271 @@ as its GitHub release notes.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-24
+
+### Added
+
+- A **Help** menu while a Winbar window is open: **Winbar Help** (⌘?) opens the README,
+  **Troubleshooting** its troubleshooting section, and **Report a Problem…** is there too.
+- **About Winbar** shows the version once, the copyright, the MIT licence and a link to the
+  project, and the menu bar menu ends with Winbar's version, greyed out.
+- Opened straight from the disk image (or Downloads, or a copy macOS translocated), Winbar offers
+  once to move itself to Applications and reopen from there. It never turns on Launch at Login from
+  such a copy, which would be gone after the next restart. The disk image now opens with Winbar
+  beside the Applications folder.
+- Set Up Winbar's finished screen has **Open Winbar when I log in**, switched on for a fresh setup,
+  so the menu bar icon is still there after a restart. When macOS wants Launch at Login allowed in
+  System Settings, Winbar now says which switch before it opens the page.
+- **Also start Windows when Winbar opens**, under **Open Winbar when I log in** on Set Up Winbar's
+  finished screen, and **Start Windows with Winbar** in the menu: one switch, off unless you turn it
+  on. Winbar then starts the chosen VM as it opens, without connecting to it, the way the menu's
+  **Start** does, and so at login with Launch at Login on; not while it's already running, or while an
+  install, a setup step or another operation is under way. The screen names the VM and says that
+  Windows holds its share of your Mac's memory from then until you shut it down.
+- Set Up Winbar's finished screen introduces Winbar's icon in the menu bar: the first time it
+  appears on a Mac, and whenever you choose **Show Me**, a bubble points at the icon and says what
+  its menu does. Where macOS isn't showing the icon (too many icons beside the camera, a hidden menu
+  bar, or Winbar not allowed in the menu bar), the screen says where to look instead.
+- macOS's privacy prompts for the Desktop, Documents, Downloads, external drives and network
+  drives now say why Winbar is asking: the problem report you asked for, or the ISO or shared
+  folder you chose.
+
+### Changed
+
+- The New Windows VM form presents the disk size as what it is: the most the disk can grow to. Its
+  summary reads "a disk that grows as needed, up to 128 GB", and the size field says the disk takes
+  space on the Mac only as Windows fills it; "128 GB disk" read as 128 GB gone. `winbar create`'s
+  plan says "grows as used" too.
+- Set Up Winbar draws how things stand one way everywhere, the Windows install included: a green
+  check for done, an orange triangle for what needs you, a red cross for what failed and a hollow
+  circle for what's still to come, each with a name VoiceOver reads. The Windows install's notes and
+  warnings, and the banner that says a press has to wait, are one kind of tinted box. Problem,
+  caution and waiting text keeps its contrast on the window's light surfaces, in the New Windows VM
+  views inside it too.
+- Every filled button in Set Up Winbar is the same blue and the same size, a screen has at most one,
+  and Return presses it. In dark mode with Increase Contrast it is pale with a black title, as
+  Windows draws it, rather than the dimmest thing in the footer.
+- Armie speaks in a speech bubble, with his name in grey rather than link blue, and a ✕ in its
+  corner to hide him.
+- Set Up Winbar's step bar and step count share one slim row, and each page has one title, which
+  VoiceOver treats as a heading. The bar fills all eight steps when setup finishes and marks a step
+  that was skipped or couldn't be confirmed. No text in the window is smaller than 12 pt, and the
+  cards on the Look around step keep their lines to a readable width.
+- VoiceOver says when Windows finishes installing, when the certificate is verified, when the PC is
+  saved and when a press has to wait for something already running.
+- Set Up Winbar's welcome opens with "Welcome to Winbar" and no step bar, and says in one line that
+  macOS may ask your permission a few times. On the Look around step, each page's title says where
+  things stand ("Winbar needs permission to control UTM", "Everything Winbar needs is here"), the
+  rows read "Installed · 4.7.5", and each card opens with one sentence naming its button, with the
+  particulars under **Show Details**. While UTM installs, one line says what's happening and
+  Homebrew's output waits under **Show Details**, open by itself if the install fails. A check you
+  started no longer shows the last check's card beside its spinner.
+- When macOS has refused Winbar control of UTM, **Open Automation Settings…** is the main button and
+  Set Up Winbar checks again when you come back from System Settings, rather than only when you
+  press **Try Again**. A copy of UTM that Winbar won't replace has **Show in Finder**, and a UTM that
+  isn't answering has **Open UTM**.
+- On Set Up Winbar's VM step, the main action (**Install Windows…**, **Use**, **Start It**,
+  **Continue**) is at the bottom right, where every other step keeps it, and the other choices share
+  one row in the card. UTM's VMs are listed as rows with each one's name, system and state, the only Windows VM
+  already ticked. A page that can't go on without UTM's list has a **Go Back to Look Around**
+  button rather than a sentence saying to press Back.
+- Starting a stopped VM from Set Up Winbar can be stopped: **Stop Waiting** ends Winbar's wait of
+  up to three minutes and leaves Windows to finish starting, and the card says in plain words what
+  it is waiting for.
+- When a Windows install from Set Up Winbar can't delete its setup disk, which holds the Windows
+  password scrambled, the VM step says so in plain words with **Show in Finder** and **Move to
+  Trash** beside it, rather than a path and "delete the folder yourself". Only a folder Winbar's
+  own install made is ever moved.
+- The Windows install's page counts in stages ("Stage 6 of 10 · Copying files") so it doesn't read
+  as a second step counter, and says what its times are ("14 min so far · usually 10–15 min"). A
+  stalled install says so above the stages, and **Show VM Window** is then the filled button in the
+  corner, which Return presses. Armie sits under the
+  stages; the install's quieter notes fold behind a disclosure, while the warnings about the
+  password stay in view. **Hide** is now **Close Window**, and the page says the window comes back
+  when Windows is ready. Inside Set Up Winbar the install's buttons sit in the window's own footer,
+  which no longer jumps when an install starts.
+- Set Up Winbar's Tune step is one list in the style of System Settings. Its first line says
+  whether Windows is tuned or how many settings need you. Those settings come first, with buttons
+  named for where they go (**Open Time Machine Settings…**, **I've Added the Folder**), and the
+  settings already right fold into one line. A setting Windows didn't answer for offers **Check
+  Again**, and VoiceOver names the setting on each row's buttons.
+- From Tune to Connect, each step's main action (**Fix Everything**, **Approve Certificate…**,
+  **Save It**, **Connect** and the rest) is the button at the bottom right. **Check Again** goes away
+  once a step is done or its card has a retry of its own, and coming back to the window after
+  changing something in System Settings, in Windows or in the App Store checks again by itself.
+  These steps' cards keep their lines to a readable width.
+- The certificate step names one next action for each problem, and **What am I approving?** opens
+  while macOS's dialog is waiting, with a chevron you can see. Connect leads with one sentence and
+  folds the Local Network explanation under **Details**; when macOS blocked Winbar's check, it offers
+  **Open Local Network Settings…**. The saved PC step offers **Show Windows' Screen** when Windows
+  has to be signed in to first.
+- Set Up Winbar's last step asks "How should Windows run?" with two choices side by side, **Run in
+  the Background** (recommended; the window no longer says "headless") and **Keep Windows' Screen**,
+  and one button that does what was chosen: **Restart and Finish** or **Finish**. The restart is
+  said in plain words, **Finish Without Restarting** now finishes, and the note about stopping safely
+  appears only once a restart has actually stopped.
+- When setup is done, Set Up Winbar says so in the middle of the page — "Windows is ready", with
+  **Open Windows**, which opens it as the menu's Connect does and puts the window away — or "Almost
+  done" with **Try Connecting Again** when the desktop never appeared, **Go Back to Saved PC** (and
+  **Connect** beside it) when Windows App was installed after being skipped, and **Open the App
+  Store** (and **Check Again** beside it) when Windows App is still missing. There is no Back once
+  it's finished.
+- The New Windows VM form is three pages, in Set Up Winbar and in its own window: a large drop target
+  for the Windows download, with **Get Windows 11 from Microsoft** and a line on what an ISO is; the
+  Windows account's name and password; then "Ready to install", a summary of what will be installed,
+  with processor cores, memory, disk and the extras behind **Customize…**, set to what Winbar
+  recommends. Its rows say what they do rather than Rufus's names for them, and its last button is
+  **Install Windows**.
+- Set Up Winbar, its New Windows VM form, the menu and the README call each thing by one name. Each
+  **Continue** names the step it leads to as the step bar does ("Continue to Saved PC", "Continue to
+  Connect"; they said "Continue to Windows App" and "Continue to Connection Test"). The certificate is
+  "the certificate", never the connection, RDP or Remote Desktop certificate; the saved PC is never
+  "the connection"; and the VM step's **Make One** and **Make a New One** are **Install Windows…** and
+  **Install Windows in a New VM…**, after the form's last button.
+- The words for Winbar's machinery are gone from Set Up Winbar, the New Windows VM form's tooltips and
+  VoiceOver hints, and the menu: guest agent, vCPUs, the Remote Desktop port and 3389, Network Level
+  Authentication, Rufus, headless, and check codes (the quit prompt said "fixing G1 (Power plan)").
+  The Tune step names its rows in plain words (**Processor cores**, **Memory**, **Certificate**), says
+  why each matters in a sentence of its own, and tells you to choose a row's button where it said to
+  "run this again". `winbar setup`, `winbar create` and their flags say what they always said.
+- The menu's **Go Headless…** and **Show Console Window…** are **Run in the Background…** and **Bring
+  Back Windows' Screen…**, in Set Up Winbar's words, and their confirmations say what each costs the
+  way the window does. The way back isn't called **Show Windows' Screen…**, which on the Saved PC step
+  only brings UTM's window forward.
+- Every instruction in Set Up Winbar says "choose", with the button's name in bold, a failed UTM
+  install's **Try Again** included.
+- In Set Up Winbar, every page whose words name a button has that button filled in the bottom-right
+  corner, and Return presses it: **Go Back to Tune** when Windows has no certificate yet, the first
+  step of a Tune setting only you can change (such as **Open Time Machine Settings…**), and a failed
+  Connect's **Open Local Network Settings…**, **Try Again** or **Check Again**, with **Continue
+  Without Connecting** moved beside Back. On the VM step, ticking a VM that isn't marked Windows puts
+  **Install Windows in a New VM…** in the corner, and the card no longer names another VM's button.
+- While Set Up Winbar waits on something, its footer shows no greyed-out buttons, and **Stop
+  Waiting** sits in the card with what stopping does ("macOS's dialog stays open if you stop
+  waiting"). A button that can't be pressed yet says why beside it ("Pick a VM in the list first").
+- After **Quit Windows App**, the Saved PC step checks again by itself once Windows App has quit.
+- The Windows install inside Set Up Winbar has a page title like every other page ("Installing
+  Windows", "Windows didn't finish installing", "Windows is installed"), which VoiceOver reads as a
+  heading, and marks how it ended with the same check, cross or triangle as the rest of the window.
+  Its failures say what to do with the window's buttons and menu, such as **Delete VM…** or **Start**
+  in Winbar's menu, rather than a `winbar` command, and so do its notes.
+- On Connect, a check that fails or times out says so once, and the line about Winbar asking whether
+  the desktop appeared shows only while Connect itself is running.
+- The New Windows VM form's dashed drop target is drawn dark enough to be seen as a boundary in light
+  mode.
+- Armie says one dry thing at a time, and not what the page beside him already says: "Windows is
+  waking up. It takes its time. I'll wait." while a VM starts, where he used to repeat the wait's
+  status with "guest agent" in it, and no Rosetta joke on the empty VM step.
+
+- Clicking Winbar's Dock icon, or opening it again from Finder or Spotlight, brings back the window
+  you were using — the New Windows VM form, say, even minimised — and opens **Set Up Winbar** only
+  when no Winbar window is open.
+- Alerts and the folder chooser opened from the menu bar put Winbar in the Dock and ⌘-Tab while
+  they're up, and bounce its icon if macOS keeps them behind another app, so an error at the end of
+  a long Start or Connect can't hide with no way back to it.
+- **Open UTM** on a Mac without UTM says UTM isn't installed and offers **Set Up Winbar…**, which
+  installs it, instead of doing nothing.
+- **Report a Problem…** works during an install or a setup step (it writes nothing but the
+  report), writes the anonymised report unless you untick its box, and opens a new issue with a
+  short template instead of the list of issues. It's also in the new Help menu.
+- Everything Winbar says about the end of an install now says it **detaches the install disks from
+  UTM**, never that it removes them or takes them out: the Set Up window's install line, the New
+  VM form's password note, the failure headings, the "stopped watching" note, the install log and
+  AppleScript's own error. The manual recovery step adds that Windows and its disk stay as they
+  are. "Disk" is spelled one way throughout.
+
+### Fixed
+
+- Coming back to Set Up Winbar no longer starts its check over. A page that waits on something you
+  do in another app (UTM's install, a switch in System Settings, a sign-in on Windows' screen,
+  Windows App from the App Store, another VM stopped in UTM) checks just that thing, a moment after
+  the window comes forward, so a click that brought it forward goes ahead first: **Approve
+  Certificate…** opens macOS's dialog instead of being refused. Every other page keeps its answer:
+  Tune's settings stay "already right", with **Check Again** and each setting's own button to check
+  again.
+- While Set Up Winbar checks something by itself, the page stays as it was under a small "Checking
+  again…": the Saved PC step keeps its password field and what you typed in it, Connect keeps its
+  advice, and **Quit Windows App**, **Show Windows' Screen** and **Open Local Network Settings…**
+  can still be pressed.
+- **Back** works while Set Up Winbar is only reading, such as the check of Windows after the Mac
+  wakes, which can take three minutes; it waits only for work that changes something.
+- A failure Set Up Winbar shows stays while it is still true, however often you come back to the
+  window, and goes once it isn't: Windows App installed another way after the App Store didn't
+  open, a setting changed in Windows after its fix failed, the VM started in UTM after **Start It**
+  failed. A failed UTM install keeps its card, Homebrew's last words and **Try Again**.
+- When Set Up Winbar can't start what you chose because something else is running, it says so at
+  the top of every step (the VM step said nothing, and later steps a line of grey text) and keeps
+  saying it until it's no longer true: that yours didn't start, and to choose it again once the
+  other thing is done. When the menu is what's in the way, it says what the menu is doing, and once
+  the menu has finished, that Winbar was busy at the time. It no longer says "This can go ahead once that's done", which read as a promise that it would.
+  **Install Windows…** works while Set Up Winbar is only reading.
+- A press Set Up Winbar can't start changes nothing: **Try Again** after a failed Connect keeps the
+  advice you were reading rather than turning to "Ready to test", **Save It** keeps the password you
+  typed, and choosing another VM keeps the answers you gave this one. The Saved PC step's **Try
+  Again** says why it can't start instead of doing nothing, and Connect's **Report a Problem…**
+  works while something else runs.
+- What Set Up Winbar checks by itself is never turned down with a note about something you didn't
+  choose, and never lost: a step you continue to while a check is running is checked once that one
+  ends, and so is Windows App quitting after **Quit Windows App**, which was missed if a check was
+  running, leaving the Saved PC step saying Windows App was open. Checking whether Windows App has
+  quit no longer asks Windows App for its saved PCs again.
+- A page of Set Up Winbar no longer looks busy for good after an install ends: a last line of
+  Homebrew's output that arrived after the end put the install back on screen.
+- A finished Set Up Winbar stays finished. Stopping the VM afterwards no longer takes the window back
+  to the VM step as if setup had come undone: **Open Windows** starts the VM as the menu's Connect
+  does, and **Try Connecting Again** starts it before it connects. Choosing **Set Up Winbar…** after
+  a setup that ended with Windows' desktop on screen runs the window again from Look around, as its
+  last page says, rather than bringing back that page until Winbar was restarted.
+- Connect's wait for Windows, and the wait for Windows after the finishing restart, have **Stop
+  Waiting**, with what stopping does beside it. A Connect you stop is ready to try again rather than
+  counted as not working, and the restart finishes either way. A restart that failed while the Mac
+  slept says so.
+- A saved PC in Windows App counts as the VM's only when it is for the VM's host **and** signs in as
+  the VM's Windows account. A leftover saved PC from a deleted VM with the same name used to make
+  Winbar say the PC was saved and Connect open the stale entry; now Winbar says the saved PC belongs
+  to another account (naming it), offers to save a new one beside it or to edit that one, and
+  Connect never presses it. **After updating, open Set Up Winbar once** (or run `winbar doctor`)
+  so Winbar can check which saved PC is your VM's. Until it has, Connect uses a saved PC only when
+  it has a name of its own, and otherwise opens a connection that asks for your password. Where
+  Windows App's command line has stopped answering, editing that saved PC as the step suggests and
+  choosing **I've Saved the PC** lets Connect use it again.
+- Connect no longer gets stuck behind a hung copy of Windows App. `Windows App --script …` runs as a
+  full copy of the app and, on Windows App 11.4.2, can hang at start-up; Winbar took such a copy for
+  the running app, sent the connection to it, and nothing appeared. It now ignores command-line
+  copies, and asks one that has hung for more than 45 seconds to quit before it connects.
+- A skipped step in Set Up Winbar is no longer a dead end. "Saved PC skipped" has **Try Saving
+  Again**, which asks Windows App once more (and installs it first if Windows App was skipped), and
+  a skipped certificate with nothing to approve at that moment has **Check the Certificate Again**.
+  Taking a skip back works while Set Up Winbar is only checking, and the step is checked once that
+  check ends. With Windows App skipped, the page checks again when you come back, so installing it
+  from the App Store yourself doesn't leave it saying Windows App isn't on this Mac.
+- When Windows App's command line doesn't answer (Windows App 11.4.2 can hang before it does), the
+  Saved PC step says so plainly: it's a problem in Windows App, and Winbar can't save the PC or see
+  whether one is saved. It shows how to save the PC yourself, with **Open Windows App**, **I've Saved
+  the PC** and **Try Again**, and **Continue to Connect** as the way on. Opening Windows App no longer
+  turns the card into "quit Windows App first".
+- When Windows App can't say which PCs it has saved, a saved PC that Set Up Winbar's Connect opened,
+  and that you then said showed the Windows desktop, counts as saved: the step bar no longer flags
+  the saved PC after you saved it by hand and connected through it. A one-off connection, a desktop
+  you didn't confirm, or a PC for a Windows name that has since changed doesn't count. Merely finding
+  a tile named after the PC doesn't either any more: the saved-PC check used to take it as your word.
+- Pointing at a segment of Set Up Winbar's step bar says the step and how it stands, and a step
+  marked ⚠ says what happened and why, from what Winbar read: "The saved PC: skipped — Windows App's
+  command line didn't respond, so Winbar couldn't save it". VoiceOver still hears the bar as one
+  sentence.
+- Set Up Winbar's finished page lists what was skipped or not confirmed under its result, each with
+  the step bar's warning mark, what happened and why, and **Go Back to Certificate** or **Go Back to
+  Saved PC** to go and do it. Where the corner is already the way back (**Try Connecting Again** for
+  Connect, or **Go Back to Saved PC** once Windows App is installed after being skipped), the list
+  doesn't offer it a second time.
+- Set Up Winbar's last step names the way back by the menu item's name, **Bring Back Windows'
+  Screen…**, where it said only "Winbar's menu can switch it back later", and the finished page of a
+  VM running in the background says the same.
+- **Open Winbar when I log in** on Set Up Winbar's finished page says under it what logging in
+  opens: only Winbar's icon in the menu bar, with Windows staying off until you connect to it or
+  start it (unless you also turn on starting Windows with Winbar). The menu's **Launch at Login**
+  says the same when you point at it.
+
 ## [0.2.0] - 2026-09-23
 
 ### Added
@@ -363,6 +628,7 @@ generalised so it works on any Apple silicon Mac and any Windows 11 VM in UTM.
   the pinned UTM Guest Tools installer `create` downloads at run time and never redistributes, and
   the CLDR-derived time zone table.
 
+[0.3.0]: https://github.com/taggie313/winbar/releases/tag/v0.3.0
 [0.2.0]: https://github.com/taggie313/winbar/releases/tag/v0.2.0
 [0.1.1]: https://github.com/taggie313/winbar/releases/tag/v0.1.1
 [0.1.0]: https://github.com/taggie313/winbar/releases/tag/v0.1.0

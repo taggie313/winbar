@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 /// shows the form, then the install's progress, then how it ended — always in the same window, so
 /// closing it never loses the job.
 ///
-/// The same views are also the Set Up Winbar window's step 2 (gui-wizard.md §2.3, §3.5): **Make One**
+/// The same views are also the Set Up Winbar window's step 2 (gui-wizard.md §2.3, §3.5): **Install Windows…**
 /// shows them there (`embed(_:)`) instead of in a window of their own. There is still one controller
 /// and one job, and while they're embedded nothing opens this window: **New Windows VM…**, **Show
 /// Install Progress…** and an install ending all bring the wizard forward instead (`bringForward()`),
@@ -16,7 +16,8 @@ import UniformTypeIdentifiers
 /// UTM is already running or Create is pressed. Reading the ISO and asking UTM for its VM names both
 /// block, so both run off the main thread and report back on it.
 final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate {
-    static let shared = CreateWindowController()
+    /// The app's, and the only one whose news reaches VoiceOver (`SetupAnnouncer`).
+    static let shared = CreateWindowController(environment: Environment(announce: .live))
 
     enum Phase: Equatable { case form, job }
 
@@ -47,12 +48,23 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
     struct Environment {
         var currentJob: () -> CreateJobState? = CreateJob.current
         var refreshForm: (CreateWindowController) -> Void = { $0.refreshForm() }
-        var show: (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+        var show: (NSWindow) -> Void = {
+            $0.makeKeyAndOrderFront(nil)
+            $0.orderFrontRegardless()   // asked for from the menu of an app that isn't the active one
+            MainActor.assumeIsolated { AppPresence.update() }
+            NSApp.activate()
+        }
         var workGate: AppWorkGate = .shared
         /// Whether this process drives the install, as the views read it (`readOnly`). The app's is the
         /// process-wide `ownsJob`. A render passes its own answer so it can draw the page of an install
         /// the app started without claiming that flag, which every other drawing reads at the same time.
         var ownsJob: () -> Bool = { CreateWindowController.ownsJob }
+        /// Where the install's ending is said to VoiceOver (`CreateJobView.announcement`): nowhere
+        /// unless it is the app's `shared`, so a controller a test builds stays silent.
+        var announce: SetupAnnouncer = .silent
+        /// Where the install's button presses go instead of doing what they do: nil in the app. A
+        /// test's controller records them (`perform`).
+        var pressed: ((CreateJobView.Action.Press) -> Void)? = nil
     }
     private let environment: Environment
     @Published private(set) var busyMessage: String?
@@ -146,6 +158,7 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
     /// already ended is let go instead of being kept on screen, so the next **New Windows VM…**
     /// opens a form rather than the last install's ending.
     func windowWillClose(_ notification: Notification) {
+        MainActor.assumeIsolated { AppPresence.update(closing: notification.object as? NSWindow) }
         form.forgetPassword()
         stopClock()
         if !CreateWindowController.keepsJob(onClose: job) { forgetJob() }
@@ -423,7 +436,10 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
         DispatchQueue.main.async {
             guard CreateWindowController.adopts(state, dismissed: self.dismissedJobID) else { return }
             let reopen = self.reopenWhenJobEnds
+            let before = self.job
             self.adopt(state)
+            // Ten minutes in, the person is rarely looking at this window: its ending has to be said.
+            if let line = CreateJobView.announcement(from: before, to: state) { self.environment.announce.say(line) }
             if state.isFinished, reopen {
                 // The window comes back by itself when the job it was showing ends — the wizard, when
                 // it was showing it there.
@@ -490,6 +506,21 @@ final class CreateWindowController: NSObject, ObservableObject, NSWindowDelegate
     // MARK: - Buttons on the progress and ending views
 
     func showVMWindow() { UTM.open() }
+
+    /// A press on the install's buttons (`CreateJobView.Action`). A controller a test builds records
+    /// them instead (`Environment.pressed`), so pressing Try Again in a test never resumes an install
+    /// and Show VM Window never opens UTM.
+    func perform(_ press: CreateJobView.Action.Press) {
+        if let pressed = environment.pressed { pressed(press); return }
+        switch press {
+        case .showVM: showVMWindow()
+        case .showLog: showLog()
+        case .deleteVM, .cancelInstall: cancelInstall()
+        case .close: close()
+        case .done: dismissJob()
+        case .tryAgain: tryAgain()
+        }
+    }
 
     func showLog() {
         guard let path = job?.logPath else { return }
@@ -622,39 +653,63 @@ struct CreateRootView: View {
     }
 }
 
-/// The form: Rufus's layout, Winbar's words.
+/// The form, as an assistant's three pages (`CreateFormModel.Page`): the Windows download, the
+/// account, then a summary of what will be installed with everything else behind **Customize…**. The
+/// same view in the New Windows VM window of its own and as the Set Up Winbar window's step 2.
 struct CreateFormView: View {
     @ObservedObject var controller: CreateWindowController
     @ObservedObject var model: CreateFormModel
     @State private var dropping = false
     @State private var showingPasswordNote = false
+    @State private var showingAlwaysNote = false
     @FocusState private var confirmationFocused: Bool
+    /// The quieter, problem and caution colours: the system's in the window of its own, the wizard's
+    /// palette inside it (`setupHosted`), where the system's measured under 4.5:1 on its backdrop.
+    @Environment(\.quietText) private var quiet
+    @Environment(\.errorText) private var errorText
+    @Environment(\.cautionText) private var caution
+    @Environment(\.setupHosted) private var hosted
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    imageSection
-                    vmSection
-                    experienceSection
-                    winbarSection
+                VStack(alignment: .leading, spacing: 16) {
+                    SetupPageTitle(model.page.title)
+                    switch model.page {
+                    case .windows: windowsPage
+                    case .account: accountPage
+                    case .ready: readyPage
+                    }
                 }
-                .padding(20)
+                .frame(maxWidth: SetupStyle.contentWidth, alignment: .leading)
+                .padding(.horizontal, SetupStyle.pagePadding)
+                .padding(.top, hosted ? 2 : SetupStyle.pagePadding)
+                .padding(.bottom, SetupStyle.pagePadding)
+                .frame(maxWidth: .infinity)
             }
             footer
         }
-        // The whole window takes a dropped .iso, not just the box.
-        .onDrop(of: [.fileURL], isTargeted: $dropping) { providers in handleDrop(providers) }
+        // The whole page takes a dropped .iso, not just the box, while the page is the download's.
+        .onDrop(of: [.fileURL], isTargeted: $dropping) { providers in
+            model.page == .windows && handleDrop(providers)
+        }
     }
 
-    // MARK: Windows image
+    // MARK: Page 1: the Windows download
 
-    private var imageSection: some View {
-        FormSection(CreateCopy.hImage) {
-            isoBox
-            Text(CreateCopy.nISOKeep).font(.callout).foregroundStyle(.secondary)
-            ForEach(model.isoWarnings, id: \.self) { warning in
-                Text(warning).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    @ViewBuilder private var windowsPage: some View {
+        isoBox
+        if model.iso.facts != nil {
+            ForEach([CreateCopy.nISOKeep] + model.isoWarnings, id: \.self) { note in
+                Text(note).font(.callout).foregroundStyle(quiet).setupProse()
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(CreateCopy.isoMissing).font(.headline)
+                Text(CreateCopy.isoWhat).setupProse()
+                Button(CreateCopy.isoGet + " ↗") { openURL(URL(string: CreateCopy.isoGetURL)!) }
+                    .help(CreateCopy.isoGetURL)
             }
         }
     }
@@ -662,54 +717,75 @@ struct CreateFormView: View {
     @ViewBuilder private var isoBox: some View {
         switch model.iso {
         case .none:
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text(CreateCopy.isoDrop)
-                    Button(CreateCopy.isoChoose) { controller.chooseISOFile() }
+            withSetupAppearance { look in
+                VStack(spacing: 12) {
+                    Image(systemName: "arrow.down.doc")
+                        .font(.system(size: 34, weight: .light))
+                        .foregroundStyle(look.accentText)
+                        .accessibilityHidden(true)
+                    Text(CreateCopy.isoDrop).font(.system(size: 15, weight: .semibold))
+                    HStack(spacing: 8) {
+                        Text(CreateCopy.isoOr).foregroundStyle(quiet)
+                        Button(CreateCopy.isoChoose) { controller.chooseISOFile() }
+                    }
                 }
-                Link(CreateCopy.isoGet, destination: URL(string: CreateCopy.isoGetURL)!)
-                    .font(.callout)
+                .frame(maxWidth: .infinity, minHeight: 190)
+                .background {
+                    RoundedRectangle(cornerRadius: SetupStyle.cardRadius, style: .continuous)
+                        .fill(look.accentText.opacity(dropping ? 0.1 : 0.04))
+                }
+                .overlay {
+                    // The muted grey at full strength: at 60% the dashes measured 2.5:1 on the light
+                    // backdrop, under the 3:1 a boundary needs to be seen as one.
+                    RoundedRectangle(cornerRadius: SetupStyle.cardRadius, style: .continuous)
+                        .strokeBorder(dropping ? look.accentText : look.mutedText,
+                                      style: StrokeStyle(lineWidth: dropping ? 2 : 1.5, dash: [6, 5]))
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel(CreateCopy.isoDrop)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            .overlay(RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(dropping ? Color.accentColor : Color.secondary.opacity(0.5),
-                              style: StrokeStyle(lineWidth: dropping ? 2 : 1, dash: [5, 4])))
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel(CreateCopy.isoDrop)
         case .reading(let file):
             chosenBox(file: file) {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    Text(CreateCopy.isoReading).foregroundStyle(.secondary)
+                    Text(CreateCopy.isoReading).foregroundStyle(quiet)
                 }
             }
         case .failed(let file, let message):
             chosenBox(file: file, bad: true) {
-                Text(message).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    StatusMark(.failed)
+                    Text(message).foregroundStyle(errorText).fixedSize(horizontal: false, vertical: true)
+                }
             }
         case .read(let facts):
             chosenBox(file: facts.file) {
-                Text("✓ " + CreateCopy.isoSummary(build: facts.info.build, language: facts.info.language))
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    StatusMark(.done)
+                    Text(CreateCopy.isoSummary(build: facts.info.build, language: facts.info.language))
+                }
             }
         }
     }
 
     private func chosenBox<Detail: View>(file: String, bad: Bool = false,
                                          @ViewBuilder detail: () -> Detail) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(file).fontWeight(.medium).lineLimit(1).truncationMode(.middle)
-                Spacer()
-                Button(CreateCopy.isoChange) { controller.chooseISOFile() }
+        SetupCard {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    Image(systemName: "opticaldisc").font(.system(size: 22)).foregroundStyle(quiet).accessibilityHidden(true)
+                    Text(file).fontWeight(.medium).lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Button(CreateCopy.isoChange) { controller.chooseISOFile() }
+                }
+                detail().font(.callout)
             }
-            detail().font(.callout)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .overlay(RoundedRectangle(cornerRadius: 8)
-            .strokeBorder(bad ? Color.red : (dropping ? Color.accentColor : Color.secondary.opacity(0.4)),
-                          lineWidth: dropping ? 2 : 1))
+        .overlay {
+            if bad {
+                RoundedRectangle(cornerRadius: SetupStyle.cardRadius, style: .continuous).strokeBorder(errorText, lineWidth: 1.5)
+            }
+        }
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
@@ -721,170 +797,229 @@ struct CreateFormView: View {
         return true
     }
 
-    // MARK: Virtual machine
+    // MARK: Page 2: the account
+
+    @ViewBuilder private var accountPage: some View {
+        Text(CreateCopy.accountLead).setupProse()
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 10) {
+            GridRow {
+                label(CreateCopy.lUserName)
+                TextField("", text: $model.userName)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 240)
+                    .accessibilityLabel(CreateCopy.lUserName)
+                    .accessibilityHint(CreateCopy.windowTooltip(.localAccount))
+            }
+            if let error = model.userNameError { GridRow { Color.clear.gridCellUnsizedAxes([.horizontal, .vertical]); caption(error, bad: true) } }
+            GridRow {
+                label(CreateCopy.lPassword)
+                SecureField("", text: $model.password)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 240)
+                    .help(CreateCopy.passwordTooltip)
+                    .accessibilityLabel(CreateCopy.lPassword)
+                    .accessibilityHint(CreateCopy.passwordTooltip)
+            }
+            GridRow {
+                label(CreateCopy.lConfirmPassword)
+                SecureField("", text: $model.confirmation)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 240)
+                    .focused($confirmationFocused)
+                    .onChange(of: confirmationFocused) { _, focused in
+                        if !focused { model.confirmationBlurred = true }
+                    }
+                    .accessibilityLabel(CreateCopy.lConfirmPassword)
+            }
+            if let error = model.passwordError ?? model.confirmationError {
+                GridRow { Color.clear.gridCellUnsizedAxes([.horizontal, .vertical]); caption(error, bad: true) }
+            }
+        }
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(CreateCopy.nPWShort).font(.callout).foregroundStyle(quiet).fixedSize(horizontal: false, vertical: true)
+            Button(CreateCopy.lMore) { showingPasswordNote = true }
+                .buttonStyle(.link).font(.callout)
+                .popover(isPresented: $showingPasswordNote) { note(CreateCopy.nPWLong) }
+        }
+        .setupProse()
+        caption(model.passwordFileVaultNote)
+    }
+
+    private func label(_ text: String) -> some View {
+        Text(text).gridColumnAlignment(.trailing)
+    }
+
+    // MARK: Page 3: ready to install
+
+    @ViewBuilder private var readyPage: some View {
+        Text(CreateCopy.readyLead).setupProse()
+        SetupCard {
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 14, verticalSpacing: 8) {
+                ForEach(Array(model.summary.enumerated()), id: \.offset) { _, row in
+                    GridRow {
+                        Text(row.label).foregroundStyle(quiet).gridColumnAlignment(.trailing)
+                        Text(verbatim: row.value).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+        ForEach(model.generalWarnings, id: \.self) { caption($0) }
+        // Once open it stays open: the fields are the settings, and a button to hide them again would
+        // only raise the question of whether hiding them undoes what was changed.
+        if !model.showsCustomize {
+            Button(CreateCopy.bCustomize) { model.customizing = true }
+        } else {
+            vmSection
+            extrasSection
+        }
+        Text(.init(CreateCopy.fLicence))
+            .font(.callout).foregroundStyle(quiet)
+            .setupProse()
+    }
 
     private var vmSection: some View {
         FormSection(CreateCopy.hVM) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(CreateCopy.lName).frame(width: 70, alignment: .leading)
-                TextField("", text: $model.vmName)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 300)
-                    .help(CreateCopy.vmNameTooltip)
-                    .accessibilityLabel(CreateCopy.lName)
-                    .accessibilityHint(CreateCopy.vmNameTooltip)
-                Spacer()
-            }
-            caption(model.vmNameError, bad: true, indent: 70)
-            HStack(spacing: 22) {
-                number(CreateCopy.lCores, value: $model.cores, range: CreateChoices.coresRange(model.facts.mac),
-                       unit: nil, help: CreateCopy.coresTooltip(topTier: model.facts.mac.topTierCores))
-                number(CreateCopy.lMemory, value: $model.memoryGB,
-                       range: CreateChoices.memoryRangeGB(model.facts.mac), unit: "GB",
-                       help: CreateCopy.memoryTooltip(suggested: CreateChoices.suggestedMemoryGB(model.facts.mac)))
-                number(CreateCopy.lDisk, value: $model.diskGB, range: CreateChoices.diskRangeGB, unit: "GB",
-                       help: CreateCopy.diskTooltip)
-                Spacer()
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 10) {
+                GridRow {
+                    label(CreateCopy.lName)
+                    TextField("", text: $model.vmName)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 260)
+                        .help(CreateCopy.vmNameTooltip)
+                        .accessibilityLabel(CreateCopy.lName)
+                        .accessibilityHint(CreateCopy.vmNameTooltip)
+                }
+                if let error = model.vmNameError { GridRow { Color.clear.gridCellUnsizedAxes([.horizontal, .vertical]); caption(error, bad: true) } }
+                GridRow {
+                    label(CreateCopy.lProcessorCores)
+                    number(CreateCopy.lProcessorCores, value: $model.cores, range: CreateChoices.coresRange(model.facts.mac),
+                           unit: nil, help: CreateCopy.windowCoresTooltip(topTier: model.facts.mac.topTierCores))
+                }
+                GridRow {
+                    label(CreateCopy.lMemory)
+                    number(CreateCopy.lMemory, value: $model.memoryGB, range: CreateChoices.memoryRangeGB(model.facts.mac),
+                           unit: "GB", help: CreateCopy.memoryTooltip(suggested: CreateChoices.suggestedMemoryGB(model.facts.mac)))
+                }
+                GridRow {
+                    label(CreateCopy.lDisk)
+                    VStack(alignment: .leading, spacing: 4) {
+                        number(CreateCopy.lDisk, value: $model.diskGB, range: CreateChoices.diskRangeGB, unit: "GB",
+                               help: CreateCopy.diskTooltip)
+                        caption(CreateCopy.diskCaption)
+                    }
+                }
+                GridRow {
+                    label(CreateCopy.lComputer)
+                    VStack(alignment: .leading, spacing: 4) {
+                        TextField("", text: $model.computerName)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 200)
+                            .help(CreateCopy.windowComputerTooltip(host: CreateChoices.hostName(computerName: model.computerName)))
+                            .accessibilityLabel(CreateCopy.lComputer)
+                            .accessibilityHint(CreateCopy.windowComputerTooltip(
+                                host: CreateChoices.hostName(computerName: model.computerName)))
+                        caption(CreateCopy.lComputerHost(CreateChoices.hostName(computerName: model.computerName)))
+                        caption(model.computerNameError, bad: true)
+                    }
+                }
+                GridRow {
+                    label(CreateCopy.lEdition)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Picker("", selection: editionSelection) {
+                            ForEach(model.iso.facts?.info.editions ?? [], id: \.index) { edition in
+                                Text(edition.displayName).tag(edition.index)
+                            }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                        .accessibilityLabel(CreateCopy.lEdition)
+                        .accessibilityHint(CreateCopy.windowInstallTooltip)
+                        if let warning = model.homeWarning { caption(warning, orange: true) }
+                    }
+                }
+                GridRow {
+                    label(CreateCopy.lProductKey)
+                    VStack(alignment: .leading, spacing: 4) {
+                        productKeyField
+                        caption(model.productKeyError, bad: true)
+                        caption(CreateCopy.nProductKeyShort)
+                    }
+                }
             }
             caption(model.coresWarning)
             ForEach(model.memoryWarnings, id: \.self) { caption($0) }
+            if model.facts.menuVMName != nil {
+                if controller.isEmbedded {
+                    caption("Winbar will look after this VM from now on—setup, Connect and the menu bar item—instead of “\(model.facts.menuVMName ?? "the current VM")”.")
+                } else {
+                    Toggle(CreateCopy.lSelect, isOn: $model.select)
+                }
+            }
         }
+    }
+
+    /// A plain TextField, not a SecureField: unlike the password, the key ends up in the answer file as
+    /// plain text anyway, and hiding it on screen would suggest Winbar protects it somewhere it doesn't.
+    /// The caption under it says exactly where it goes. Under the edition, because a key is for an
+    /// edition: Windows Setup refuses one that isn't for the edition being installed.
+    private var productKeyField: some View {
+        TextField(CreateCopy.lProductKeyPlaceholder, text: $model.productKey)
+            .textFieldStyle(.roundedBorder)
+            .frame(maxWidth: 260)
+            .help(CreateCopy.productKeyTooltip)
+            .accessibilityLabel(CreateCopy.lProductKey)
+            .accessibilityHint(CreateCopy.productKeyTooltip)
     }
 
     private func number(_ label: String, value: Binding<Int>, range: ClosedRange<Int>, unit: String?,
                         help: String) -> some View {
         HStack(spacing: 4) {
-            Text(label)
             TextField("", value: value, format: .number)
                 .textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.trailing)
-                .frame(width: 54)
+                .frame(width: 60)
                 .accessibilityLabel(label)
                 .accessibilityHint(help)
-            if let unit { Text(unit).foregroundStyle(.secondary) }
+            if let unit { Text(unit).foregroundStyle(quiet) }
             Stepper("", value: value, in: range).labelsHidden().accessibilityHidden(true)
         }
         .help(help)
     }
 
-    // MARK: Windows User Experience
-
-    private var experienceSection: some View {
-        FormSection(CreateCopy.hWUE) {
-            Text(CreateCopy.hWUESub).font(.callout).foregroundStyle(.secondary)
-            check(.bypassRequirements)
-            check(.noOnlineAccount)
-            accountRow
-            check(.regionalFromMac)
-            if let detail = model.regionalDetail { caption(detail, indent: 22) }
-            ForEach(model.regionalNotes, id: \.self) { caption($0, indent: 22) }
-            check(.skipPrivacy)
-            installRow
-            if let warning = model.homeWarning { caption(warning, bad: false, orange: true, indent: 22) }
-            productKeyRow
-            check(.noBitLocker)
-            if let note = model.bitLockerNote { caption(note, indent: 22) }
-            check(.qol)
-            omissions
-        }
-    }
-
-    private var accountRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-                lockedBox(label: CreateCopy.label(.localAccount), tooltip: CreateCopy.tooltip(.localAccount))
-                TextField("", text: $model.userName)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 130)
-                    .accessibilityLabel("User name")
-                    .accessibilityHint(CreateCopy.tooltip(.localAccount))
-                Spacer()
-                alwaysOn
-            }
-            caption(model.userNameError, bad: true, indent: 22)
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(CreateCopy.lPassword)
-                SecureField("", text: $model.password)
-                    .frame(width: 150)
-                    .help(CreateCopy.passwordTooltip)
-                    .accessibilityLabel(CreateCopy.lPassword)
-                    .accessibilityHint(CreateCopy.passwordTooltip)
-                Text(CreateCopy.lConfirm)
-                SecureField("", text: $model.confirmation)
-                    .frame(width: 150)
-                    .focused($confirmationFocused)
-                    .onChange(of: confirmationFocused) { _, focused in
-                        if !focused { model.confirmationBlurred = true }
-                    }
-                    .accessibilityLabel(CreateCopy.lConfirm)
-                Spacer()
-            }
-            .padding(.leading, 22)
-            caption(model.passwordError ?? model.confirmationError, bad: true, indent: 22)
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(CreateCopy.nPWShort).font(.callout).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button(CreateCopy.lMore) { showingPasswordNote = true }
-                    .buttonStyle(.link).font(.callout)
-                    .popover(isPresented: $showingPasswordNote) {
-                        Text(CreateCopy.nPWLong)
-                            .font(.callout)
-                            .frame(width: 380)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(16)
-                    }
-            }
-            .padding(.leading, 22)
-            caption(model.passwordFileVaultNote, indent: 22)
-        }
-    }
-
-    private var installRow: some View {
-        HStack(alignment: .firstTextBaseline) {
-            lockedBox(label: CreateCopy.installLabel, tooltip: CreateCopy.installTooltip)
-            Picker("", selection: editionSelection) {
-                ForEach(model.iso.facts?.info.editions ?? [], id: \.index) { edition in
-                    Text(edition.displayName).tag(edition.index)
-                }
-            }
-            .labelsHidden()
-            .frame(maxWidth: 220)
-            .disabled(model.iso.facts == nil)
-            .accessibilityLabel("Edition")
-            .accessibilityHint(CreateCopy.installTooltip)
-            Spacer()
-            alwaysOn
-        }
-    }
-
-    /// Under the edition, because a key is for an edition: Windows Setup refuses one that isn't for the
-    /// edition being installed, and Winbar can't tell which edition a key is for. Empty by default, which
-    /// is what Winbar has always done, so the field asks for nothing by being there.
-    ///
-    /// A plain TextField, not a SecureField: unlike the password, the key ends up in the answer file as
-    /// plain text anyway, and hiding it on screen would suggest Winbar protects it somewhere it doesn't.
-    /// The caption under it says exactly where it goes.
-    private var productKeyRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(CreateCopy.lProductKey)
-                TextField(CreateCopy.lProductKeyPlaceholder, text: $model.productKey)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 230)
-                    .help(CreateCopy.productKeyTooltip)
-                    .accessibilityLabel(CreateCopy.lProductKey)
-                    .accessibilityHint(CreateCopy.productKeyTooltip)
-                Spacer()
-            }
-            .padding(.leading, 22)
-            caption(model.productKeyError, bad: true, indent: 22)
-            caption(CreateCopy.nProductKeyShort, indent: 22)
-        }
-    }
-
     private var editionSelection: Binding<Int> {
         Binding(get: { model.edition?.index ?? -1 },
                 set: { index in model.edition = model.iso.facts?.info.editions.first { $0.index == index } })
+    }
+
+    // MARK: Extras
+
+    private var extrasSection: some View {
+        FormSection(CreateCopy.hWinbar) {
+            check(.remoteDesktop, trailing: model.isHomeEdition ? CreateCopy.lNotOnHome : nil)
+            check(.autologon)
+            check(.winbarTuning)
+            check(.regionalFromMac)
+            if let detail = model.regionalDetail { caption(detail, indent: 24) }
+            ForEach(model.regionalNotes, id: \.self) { caption($0, indent: 24) }
+            check(.skipPrivacy)
+            check(.noBitLocker)
+            if let note = model.bitLockerNote { caption(note, indent: 24) }
+            check(.qol)
+            check(.noOnlineAccount)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(CreateCopy.alwaysDone).font(.callout).foregroundStyle(quiet).fixedSize(horizontal: false, vertical: true)
+                Button(CreateCopy.lWhy) { showingAlwaysNote = true }
+                    .buttonStyle(.link).font(.callout)
+                    .popover(isPresented: $showingAlwaysNote) {
+                        note(([CreateOption.bypassRequirements, .localAccount, .guestTools].map(CreateCopy.windowTooltip)
+                              + [CreateCopy.windowInstallTooltip]).joined(separator: "\n\n"))
+                    }
+            }
+            .padding(.top, 4)
+            // Rufus's rows Winbar leaves out mean something to someone comparing the two, which is who
+            // opens this window from the menu; inside Set Up Winbar nobody is (review, 0.2.1).
+            if !hosted { omissions }
+        }
     }
 
     private var omissions: some View {
@@ -898,74 +1033,20 @@ struct CreateFormView: View {
             .padding(.top, 4)
         }
         .font(.callout)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(quiet)
     }
-
-    // MARK: Winbar
-
-    private var winbarSection: some View {
-        FormSection(CreateCopy.hWinbar) {
-            check(.autologon)
-            check(.remoteDesktop, trailing: model.isHomeEdition ? CreateCopy.lNotOnHome : nil)
-            check(.guestTools)
-            check(.winbarTuning)
-            HStack(alignment: .firstTextBaseline) {
-                Text(CreateCopy.lComputer)
-                TextField("", text: $model.computerName)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 150)
-                    .help(CreateCopy.computerTooltip(host: CreateChoices.hostName(computerName: model.computerName)))
-                    .accessibilityLabel(CreateCopy.lComputer)
-                    .accessibilityHint(CreateCopy.computerTooltip(
-                        host: CreateChoices.hostName(computerName: model.computerName)))
-                Text(CreateCopy.lComputerHost(CreateChoices.hostName(computerName: model.computerName)))
-                    .font(.callout).foregroundStyle(.secondary)
-                Spacer()
-            }
-            caption(model.computerNameError, bad: true)
-            if model.facts.menuVMName != nil {
-                if controller.isEmbedded {
-                    Text("Winbar will look after this VM from now on—setup, Connect and the menu bar item—instead of “\(model.facts.menuVMName ?? "the current VM")”.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Toggle(CreateCopy.lSelect, isOn: $model.select)
-                }
-            }
-        }
-    }
-
-    // MARK: Checklist rows
 
     private func check(_ option: CreateOption, trailing: String? = nil) -> some View {
-        let tooltip = CreateCopy.tooltip(option)
-        let locked = option.isLocked
+        let tooltip = CreateCopy.windowTooltip(option)
         return HStack(alignment: .firstTextBaseline) {
-            Toggle(CreateCopy.label(option), isOn: binding(option))
+            Toggle(CreateCopy.windowLabel(option), isOn: binding(option))
                 .disabled(!model.isEnabled(option))
                 .help(tooltip)
-                .accessibilityLabel(CreateCopy.label(option) + (locked ? ", \(CreateCopy.lAlwaysOn)" : ""))
+                .accessibilityLabel(CreateCopy.windowLabel(option))
                 .accessibilityHint(tooltip)
             Spacer()
-            if let trailing {
-                Text(trailing).font(.callout).foregroundStyle(.secondary)
-            } else if locked {
-                alwaysOn
-            }
+            if let trailing { Text(trailing).font(.callout).foregroundStyle(quiet) }
         }
-    }
-
-    /// A locked row's box: on, not clickable, with its label beside it so a field can follow.
-    private func lockedBox(label: String, tooltip: String) -> some View {
-        Toggle(label, isOn: .constant(true))
-            .disabled(true)
-            .help(tooltip)
-            .accessibilityLabel(label + ", " + CreateCopy.lAlwaysOn)
-            .accessibilityHint(tooltip)
-            .fixedSize()
-    }
-
-    private var alwaysOn: some View {
-        Text(CreateCopy.lAlwaysOn).font(.callout).foregroundStyle(.secondary)
     }
 
     private func binding(_ option: CreateOption) -> Binding<Bool> {
@@ -975,12 +1056,20 @@ struct CreateFormView: View {
                 })
     }
 
+    private func note(_ text: String) -> some View {
+        Text(text)
+            .font(.callout)
+            .frame(width: 380)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(16)
+    }
+
     @ViewBuilder
     private func caption(_ text: String?, bad: Bool = false, orange: Bool = false, indent: CGFloat = 0) -> some View {
         if let text, !text.isEmpty {
             Text(text)
                 .font(.callout)
-                .foregroundStyle(bad ? Color.red : (orange ? Color.orange : Color.secondary))
+                .foregroundStyle(bad ? errorText : (orange ? caution : quiet))
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, indent)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -989,38 +1078,59 @@ struct CreateFormView: View {
 
     // MARK: Footer
 
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Divider()
-            ForEach(model.generalWarnings, id: \.self) { warning in
-                Text(warning).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    /// Back, the reason the way on is greyed out, Cancel, and the way on: Continue, then **Install
+    /// Windows**. Inside Set Up Winbar it is drawn in that window's own footer band (`SetupFooterBand`),
+    /// the one the install after it draws too, so the two can't drift apart and the buttons stay put
+    /// when **Install Windows** is pressed.
+    @ViewBuilder private var footer: some View {
+        if hosted {
+            SetupFooterBand { footerRow }
+        } else {
+            footerRow
+                .frame(maxWidth: SetupStyle.contentWidth)
+                .padding(.horizontal, SetupStyle.pagePadding)
+                .padding(.vertical, 14)
+                .frame(maxWidth: .infinity)
+                .background { VStack { Divider(); Spacer() } }
+        }
+    }
+
+    private var footerRow: some View {
+        let status = model.status(of: model.page)
+        return HStack(alignment: .center, spacing: 10) {
+            if model.page != .windows {
+                Button(CreateCopy.bBack) { model.goBack() }
             }
-            Text(model.status.text)
-                .fontWeight(model.statusIsProblem ? .medium : .regular)
-                .foregroundStyle(model.canCreate ? Color.primary : model.statusIsProblem ? Color.red : Color.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                // A live region, so VoiceOver reads the reason Create is off as it changes.
-                .accessibilityAddTraits(.updatesFrequently)
-                .accessibilityLabel(model.status.text)
-            Text(.init(CreateCopy.fLicence))
-                .font(.callout).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Spacer()
-                Button(CreateCopy.bCancel) { controller.close() }
-                    .keyboardShortcut(.cancelAction)
-                Button(CreateCopy.bCreate) { controller.create() }
-                    .keyboardShortcut(.defaultAction)
+            if case .blocked(let reason) = status {
+                let problem = model.isProblem(status)
+                Text(reason)
+                    .font(.system(size: SetupStyle.smallestText, weight: problem ? .medium : .regular))
+                    .foregroundStyle(problem ? errorText : quiet)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    // A live region, so VoiceOver reads why the way on is off as it changes.
+                    .accessibilityAddTraits(.updatesFrequently)
+                    .accessibilityLabel(reason)
+            }
+            Spacer(minLength: 8)
+            Button(CreateCopy.bCancel) { controller.close() }
+                .keyboardShortcut(.cancelAction)
+            if model.page == .ready {
+                Button(CreateCopy.bInstall) { controller.create() }
+                    .windowDefaultButton()
                     .disabled(!model.canCreate)
+            } else {
+                Button(CreateCopy.bContinue) { model.goForward() }
+                    .windowDefaultButton()
+                    .disabled(!model.canContinue(from: model.page))
             }
         }
-        .padding(20)
     }
 }
 
-/// A bold heading with a hairline rule, as Rufus's dialog has.
-private struct FormSection<Content: View>: View {
+/// A heading for what **Customize…** reveals, with a hairline rule. Internal rather than private so
+/// the accessibility tests can read that its title is a heading.
+struct FormSection<Content: View>: View {
     let title: String
     @ViewBuilder let content: () -> Content
 
@@ -1030,14 +1140,15 @@ private struct FormSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Text(title).fontWeight(.semibold)
+                Text(title).font(.headline)
                 VStack { Divider() }
             }
             .accessibilityAddTraits(.isHeader)
             content()
         }
+        .padding(.top, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -1062,7 +1173,9 @@ extension CreateWindowController: EmbeddableCreate {
     enum EmbeddedEnd: Equatable {
         /// The install ended well. The wizard reads the Mac again — a new VM exists now, and the job
         /// chose it — and moves on to step 3 once that read says step 2 is done (§2.3).
-        case installed(id: String, name: String, messages: [CreateMessage])
+        /// `setupDisk` is the setup disk's folder when the job couldn't delete it (W_MEDIA_LEFT), so
+        /// the wizard can offer to show it and move it to the Trash rather than only saying it's there.
+        case installed(id: String, name: String, messages: [CreateMessage], setupDisk: String? = nil)
         /// The form's **Cancel**, or **Close** or **Done** on an ending: back to step 2.
         case handedBack
     }
@@ -1074,7 +1187,11 @@ extension CreateWindowController: EmbeddableCreate {
         // A CLI-owned --no-select install can be watched here, but watching isn't permission to
         // change the selected VM. Leave its ending visible and let the person choose explicitly.
         guard embedded, state.outcome == .done, state.plan.select, let id = state.vmID else { return nil }
-        return .installed(id: id, name: state.plan.vmName, messages: state.messages)
+        // Only the folder the job said it couldn't delete: a folder named in the state for any other
+        // reason is not the person's to clear up.
+        let left = state.messages.contains { $0.code == SetupDiskActions.leftCode }
+        return .installed(id: id, name: state.plan.vmName, messages: state.messages,
+                          setupDisk: left ? state.mediaDir : nil)
     }
 
     /// What embedding does to this window and the job it holds.
@@ -1082,7 +1199,7 @@ extension CreateWindowController: EmbeddableCreate {
         /// This window is open: close it, and its content moves into the wizard. Its job is kept
         /// (closing keeps a running one), so the wizard shows the same install, never a second.
         var closesOwnWindow: Bool
-        /// The job on screen has ended: let it go, so **Make One** is a fresh form and **Show Install
+        /// The job on screen has ended: let it go, so **Install Windows…** is a fresh form and **Show Install
         /// Progress** the install that's running, not an old ending.
         var letsEndedJobGo: Bool
     }
@@ -1099,7 +1216,7 @@ extension CreateWindowController: EmbeddableCreate {
         return environment.currentJob().map { !$0.isFinished } ?? false
     }
 
-    /// The wizard's **Make One**, **Make a New One** and **Show Install Progress**: from here until
+    /// The wizard's **Install Windows…**, **Install Windows in a New VM…** and **Show Install Progress**: from here until
     /// `unembed()` these views are its step 2. The running install, if there is one, is what they show.
     func embed(_ host: EmbedHost) {
         let plan = CreateWindowController.embedding(ownWindowOpen: window != nil, job: job)

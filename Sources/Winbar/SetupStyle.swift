@@ -24,6 +24,15 @@ enum SetupStyle {
     /// wide one ran lines to 150 characters and spread the step bar thin; past this, it centres.
     /// 600 − 2 × 20: exactly the content of the window at its narrowest.
     static let contentWidth: CGFloat = 560
+    /// The widest a run of prose gets, inside the content: about 75 characters of 13 pt text. At the
+    /// full 560 pt a card's lines ran to 95 characters, which the review found read as walls.
+    static let textWidth: CGFloat = 470
+    /// The smallest text that says something the person needs. macOS's `.caption` (10 pt) and
+    /// `.subheadline` (11 pt) are under it, and a step-bar label that could shrink to 9.35 pt was too;
+    /// `.callout` is exactly this.
+    static let smallestText: CGFloat = 12
+    /// A `.large` push button's height on macOS: the footer band keeps it with nothing in it.
+    static let largeButtonHeight: CGFloat = 28
 
     /// An sRGB colour as numbers, so the palette's contrast can be checked by a test rather than by
     /// eye (`contrast(_:_:)`).
@@ -57,9 +66,14 @@ enum SetupStyle {
     /// secondary text, the window background under the backdrop).
     struct Palette: Equatable {
         /// What a filled accent shape is painted with: the default button, the window's one filled
-        /// shape. White text goes on it. Nothing else takes it: in dark mode it is too deep to be
+        /// shape. `onAccentFill` goes on it. Nothing else takes it: in dark mode it is too deep to be
         /// seen as a line or a word on a dark surface.
         var accentFill: RGB
+        /// The title on the filled button: white, except under Increase Contrast in dark mode, where
+        /// the fill is Windows' pale accent and the title black (Windows' own high-contrast pairing).
+        /// The deep fill it replaces measured 1.8:1 against the dark footer: the default button was
+        /// the dimmest thing in it, the reverse of what Increase Contrast asks for.
+        var onAccentFill: RGB
         /// The accent where it is a line or a word on a surface: the step bar's lines and the current
         /// step's name, Winbar's mark, the install's progress bar, the icons and the plain buttons.
         var accentText: RGB
@@ -79,41 +93,62 @@ enum SetupStyle {
         /// backdrop and on a light card; this keeps 4.5:1 on both ends of the backdrop, on a card and
         /// on the output box's shade of it (7:1 under Increase Contrast).
         var mutedText: RGB
-        /// A row's `!`, waiting on the person. The system orange measured 2.2:1 on a light card, under
-        /// the 3:1 a status mark needs; this is 4.5:1 on the card (7:1 under Increase Contrast).
+        /// Waiting on the person: a row's mark, a callout's symbol and tint. The system orange measured
+        /// 2.2:1 on a light card, and the orange before this one 4.3:1 on the card as it is drawn
+        /// (translucent, over the tinted backdrop, which comes out a shade under white); this keeps
+        /// 4.5:1 there (7:1 under Increase Contrast).
         var attention: RGB
+        /// Something failed: a failed mark, an error callout, a problem sentence. The system red measured
+        /// 3.2:1 on a light card, which is under what text needs.
+        var error: RGB
+        /// Something is done and checked: the done mark. Windows' success green; the system green is
+        /// 2.2:1 on white, too faint for a mark whose shape is its only other cue.
+        var success: RGB
+        /// The step bar's line for steps still to come. The translucent grey it replaces was 1.25:1 on
+        /// the backdrop: the steps ahead weren't there at all. 3:1 on the backdrop's top end, where the
+        /// bar is drawn, except light mode's, which is 2.98:1 there (`SetupStatusDesignTests`).
+        var track: RGB
     }
 
     /// The palette for an appearance. Pure.
     ///
     /// The blues are Windows 11's own family, picked for contrast rather than copied: the light
     /// accent is the one Windows puts behind white text; dark mode's fill is a step deeper than
-    /// Windows' so that white text on the native button keeps 4.5:1 (Windows puts black text on a
-    /// pale blue there, which a tinted macOS button can't do); dark mode's words and lines use
+    /// Windows' so that white text on the native button keeps 4.5:1; dark mode's words and lines use
     /// Windows' pale dark-mode accent, which reads on a dark card. Increase Contrast darkens (or, in
-    /// dark mode, lightens) each of them to 7:1 and drops the tint.
+    /// dark mode, lightens) each of them to 7:1 and drops the tint — and in dark mode the fill turns
+    /// pale with a black title, as Windows draws it: the native button picks its title's colour from
+    /// the tint's lightness, so a pale tint gets the black title by itself.
+    ///
+    /// The status colours are Windows 11's too (its caution orange, critical red and success green,
+    /// with the dark-mode foregrounds it pairs with them), each at 4.5:1 on a card, 7:1 with
+    /// Increase Contrast.
     static func palette(dark: Bool, increasedContrast: Bool) -> Palette {
         switch (dark, increasedContrast) {
         case (false, false):
-            return Palette(accentFill: RGB(0x005FB8), accentText: RGB(0x005FB8),
+            return Palette(accentFill: RGB(0x005FB8), onAccentFill: RGB(0xFFFFFF), accentText: RGB(0x005FB8),
                            backdropTop: RGB(0xE6EEF8), backdropBottom: RGB(0xF3F3F3),
                            card: RGB(0xFFFFFF), cardOpacity: 0.72, strokeOpacity: 0.07, strokeIsLight: false,
-                           mutedText: RGB(0x5C5C5C), attention: RGB(0xB85C00))
+                           mutedText: RGB(0x5C5C5C), attention: RGB(0xA35200), error: RGB(0xC4001A),
+                           success: RGB(0x0F7B0F), track: RGB(0x848A91))
         case (false, true):
-            return Palette(accentFill: RGB(0x003E92), accentText: RGB(0x003E92),
+            return Palette(accentFill: RGB(0x003E92), onAccentFill: RGB(0xFFFFFF), accentText: RGB(0x003E92),
                            backdropTop: RGB(0xF3F3F3), backdropBottom: RGB(0xF3F3F3),
                            card: RGB(0xFFFFFF), cardOpacity: 1, strokeOpacity: 0.55, strokeIsLight: false,
-                           mutedText: RGB(0x3B3B3B), attention: RGB(0x8A4200))
+                           mutedText: RGB(0x3B3B3B), attention: RGB(0x8A4200), error: RGB(0x9E0014),
+                           success: RGB(0x0A5C0A), track: RGB(0x5F646B))
         case (true, false):
-            return Palette(accentFill: RGB(0x0067C0), accentText: RGB(0x60CDFF),
+            return Palette(accentFill: RGB(0x0067C0), onAccentFill: RGB(0xFFFFFF), accentText: RGB(0x60CDFF),
                            backdropTop: RGB(0x1B2330), backdropBottom: RGB(0x202020),
                            card: RGB(0x2B2B2B), cardOpacity: 0.7, strokeOpacity: 0.09, strokeIsLight: true,
-                           mutedText: RGB(0xABABAB), attention: RGB(0xFF9F0A))
+                           mutedText: RGB(0xABABAB), attention: RGB(0xFF9F0A), error: RGB(0xFF99A4),
+                           success: RGB(0x6CCB5F), track: RGB(0x6E747C))
         case (true, true):
-            return Palette(accentFill: RGB(0x004E8C), accentText: RGB(0x99EBFF),
+            return Palette(accentFill: RGB(0x99EBFF), onAccentFill: RGB(0x000000), accentText: RGB(0x99EBFF),
                            backdropTop: RGB(0x202020), backdropBottom: RGB(0x202020),
                            card: RGB(0x2B2B2B), cardOpacity: 1, strokeOpacity: 0.6, strokeIsLight: true,
-                           mutedText: RGB(0xD0D0D0), attention: RGB(0xFFB340))
+                           mutedText: RGB(0xD0D0D0), attention: RGB(0xFFB340), error: RGB(0xFFC2C9),
+                           success: RGB(0x9BE08F), track: RGB(0xA0A6AD))
         }
     }
 }
@@ -129,10 +164,16 @@ struct SetupAppearance {
     var accentFill: Color { palette.accentFill.color }
     var accentText: Color { palette.accentText.color }
     var mutedText: Color { palette.mutedText.color }
+    var attention: Color { palette.attention.color }
+    var error: Color { palette.error.color }
+    var success: Color { palette.success.color }
     var stroke: Color { (palette.strokeIsLight ? Color.white : Color.black).opacity(palette.strokeOpacity) }
 }
 
-private struct SetupAppearanceReader<Content: View>: View {
+/// Internal rather than private: the accessibility tests hand it an appearance and read what it draws,
+/// since the names and traits a view sets inside `withSetupAppearance` are otherwise out of reach of
+/// the dump they read (SetupAccessibilityTests).
+struct SetupAppearanceReader<Content: View>: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency

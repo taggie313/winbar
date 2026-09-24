@@ -41,6 +41,9 @@ printf 'APPL????' >"$APP/Contents/PkgInfo"
 mkdir -p "$APP/Contents/Resources"
 cp Resources/Armie/armie-working.mov Resources/Armie/armie-done.mov Resources/Armie/armie-rest.png \
   "$APP/Contents/Resources/"
+# The app's icon: Armie on the blue plate (sources and the script that composes it are in
+# docs/internal/armie/icon). Info.plist names it (CFBundleIconFile); sealed with the rest.
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # A real identity matters for more than distribution: macOS keys privacy grants (Accessibility,
 # Automation, Local Network) to the signature's designated requirement. Ad-hoc signatures change on

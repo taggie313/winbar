@@ -58,7 +58,7 @@ struct SetupConnectRecoveryTests {
     private func rig(_ machine: PortMachine) -> SetupWindowController {
         let runner = SetupRunner(machine: machine, environment: .init(
             queue: DispatchQueue(label: "winbar.test.connect-recovery"), callbacks: .main, clock: Date.init,
-            keepAwake: { _ in {} }, processes: { _ in ([300], 301) }, workspace: NotificationCenter(), app: NotificationCenter()))
+            keepAwake: { _ in {} }, processes: { _ in ([300], 301) }, workspace: NotificationCenter()))
         let controller = SetupWindowController(state: SetupFixtures.state(.connect, facts: JourneyFixtures.facts), art: nil,
             settings: .init(wizardShown: { false }, markShown: {}, armieHidden: { true }, hideArmie: {}),
             makeRunner: { runner }, makeCreator: { FakeEmbeddedCreate() })
@@ -94,7 +94,7 @@ struct SetupConnectRecoveryTests {
         #expect(controller.state.answers.connected == false)
         #expect(diagnosis(controller)?.readiness == .notReady)
         let card = SetupCopy.Connecting.recovery(diagnosis(controller)!)
-        #expect(card.heading == "Windows isn't answering Remote Desktop yet")
+        #expect(card.heading == "Windows isn't answering yet")
         controller.windowWillClose(Notification(name: NSWindow.willCloseNotification))
     }
 
@@ -116,13 +116,15 @@ struct SetupConnectRecoveryTests {
         let card = SetupCopy.Connecting.recovery(found!)
         let text = card.steps.map { String(SetupCopy.markdown($0).characters) }.joined(separator: " ")
         #expect(!text.contains(SetupCopy.Connecting.recoverOnScreen))
-        #expect(text.contains("If the VM has no screen") && text.contains("Show Console Window…"))
+        #expect(text.contains("If it runs in the background") && text.contains(MenuCopy.bringBackScreen))
         #expect(card.offersConsole)
         controller.windowWillClose(Notification(name: NSWindow.willCloseNotification))
     }
 
     /// The port's answer when Windows App opened can be minutes old by the time someone says No: the
-    /// live run's credentials prompt timed out, and Windows can restart for an update meanwhile.
+    /// live run's credentials prompt timed out, and Windows can restart for an update meanwhile. A look,
+    /// not a Check Again (changed on purpose: it waited for one): the port is read on every snapshot
+    /// once Connect was pressed, and the look is owed rather than refused if something runs.
     @Test("No reads the port again, and the card says what it says now")
     func noReadsThePortAgain() async {
         let machine = PortMachine()
@@ -135,7 +137,10 @@ struct SetupConnectRecoveryTests {
         let before = machine.probes
         machine.port = .notReady
         controller.send(.connected(false))
-        await wait(controller, for: .checkAgain(.connect))
+        for _ in 0..<3000 where diagnosis(controller)?.readiness != .notReady || controller.state.inFlight != nil {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(controller.state.lastEnding?.work == .connect && controller.state.refusal == nil)
         #expect(machine.probes == before + 1)
         #expect(diagnosis(controller)?.readiness == .notReady)
         controller.windowWillClose(Notification(name: NSWindow.willCloseNotification))
@@ -154,6 +159,31 @@ struct SetupConnectRecoveryTests {
         #expect(controller.state.lastEnding?.work == .connect && machine.probes == probes)
         #expect(SetupFlow.connect(controller.state.facts!) == .worked)
         controller.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+    }
+}
+
+/// Stop Waiting on Connect: nothing was tried, so the step is ready to try again, not the "it didn't
+/// work" card. The control is HEAD's mapping, which counted a cancel as a No.
+@Suite("A Connect stopped while it waited is ready again, and one that failed isn't")
+struct ConnectStoppedTests {
+    private func ended(_ outcome: SetupRunner.Outcome) -> SetupWindowState {
+        let state = JourneyPolishFixtures.state(.connect) { $0.answers.connectPressed = true }
+        return state.applying(.ended(SetupRunner.Ending(work: .connect, outcome: outcome, facts: state.facts!, slept: false,
+                                                        started: SetupFixtures.started)))
+    }
+
+    @Test("Stopped: not answered, not opened, and Connect is offered again")
+    func stopped() throws {
+        let stopped = ended(.cancelled)
+        #expect(stopped.answers.connected == nil && !stopped.answers.connectionOpened)
+        #expect(SetupFlow.connect(try #require(stopped.facts)) == .ready(host: "winlab02.local", savedPC: true))
+        #expect(SetupFooter.footer(stopped).corner?.press == .send(.perform(.run(.connect))))
+        let failed = ended(.failed(.init(title: "Windows isn't accepting Remote Desktop yet")))
+        #expect(failed.answers.connected == false)
+        guard case .didNotWork = SetupFlow.connect(try #require(failed.facts)) else {
+            Issue.record("a failed Connect isn't the recovery card")
+            return
+        }
     }
 }
 
@@ -179,17 +209,19 @@ struct SetupConnectRecoveryCopyTests {
         #expect(text.contains("still starting, restarting or installing updates"))
         #expect(text.contains("then choose Try Again"))
         #expect(text.contains("The VM's window in UTM shows what Windows is doing."))
-        #expect(!text.contains("Show Console Window…"))
+        #expect(!text.contains(MenuCopy.bringBackScreen))
         #expect(!text.contains("Local Network") && !text.contains("PIN") && !card.offersConsole)
-        // A VM with no console can only be watched through the menu's Show Console Window….
+        // A VM in the background can only be watched once the menu's Bring Back Windows' Screen… has
+        // given it one, after the card's own Close Setup, which comes with this advice.
         let headless = SetupCopy.Connecting.recovery(.notReady, savedPC: true, console: .headless)
-        #expect(words(headless).contains("Show Console Window…") && headless.offersConsole)
+        #expect(words(headless).contains("choose Close Setup, then Bring Back Windows' Screen… in Winbar's menu")
+                && headless.offersConsole)
         #expect(!words(headless).contains("The VM's window in UTM"))
         // Unread: both, as conditions, and never the UTM window as a fact.
         let unknown = SetupCopy.Connecting.recovery(.notReady, savedPC: true, console: .unknown)
         #expect(!words(unknown).contains("The VM's window in UTM shows what Windows is doing."))
         #expect(words(unknown).contains("If the VM has a window in UTM, it shows what Windows is doing."))
-        #expect(words(unknown).contains("If the VM has no screen, close this window and choose Show Console Window…"))
+        #expect(words(unknown).contains("If it runs in the background, choose Close Setup, then Bring Back Windows' Screen…"))
         #expect(unknown.offersConsole)
         #expect(Set([card, headless, unknown].map(\.steps)).count == 3)
     }
@@ -219,7 +251,7 @@ struct SetupConnectRecoveryCopyTests {
     @Test("Answering: the problem is Windows App or the sign-in, with the password, not a PIN")
     func answering() {
         let saved = words(SetupCopy.Connecting.recovery(.ready, savedPC: true, console: .headless))
-        #expect(saved.contains("Windows answered on the VM's Remote Desktop port, so the problem is in Windows App or the sign-in."))
+        #expect(saved.contains("Windows answered Winbar's check, so the problem is in Windows App or the sign-in."))
         #expect(saved.contains("finish signing in there") && saved.contains("choose Try Again for a new one"))
         #expect(saved.contains("password, not its PIN"))
         #expect(saved.contains("store the credentials with the saved PC, so later connections don't ask"))
@@ -236,7 +268,7 @@ struct SetupConnectRecoveryCopyTests {
     @Test("Not read: says so and how to read it, and claims nothing about Windows or the network")
     func unread() {
         let text = words(SetupCopy.Connecting.recovery(nil, savedPC: true, console: .onScreen))
-        #expect(text.contains("hasn't looked at the VM's Remote Desktop port") && text.contains("Choose Check Again"))
+        #expect(text.contains("hasn't checked whether Windows is answering") && text.contains("Choose Check Again"))
         #expect(!text.contains("Local Network") && !text.contains("PIN") && !text.contains("starting"))
     }
 
@@ -312,7 +344,7 @@ struct SetupRestartWindowTests {
         let pids = LockedPIDs([100])
         let runner = SetupRunner(machine: machine, environment: .init(
             queue: DispatchQueue(label: "winbar.test.restart-window"), callbacks: .main, clock: Date.init,
-            keepAwake: { _ in {} }, processes: { _ in (pids.value, 101) }, workspace: NotificationCenter(), app: NotificationCenter()))
+            keepAwake: { _ in {} }, processes: { _ in (pids.value, 101) }, workspace: NotificationCenter()))
         var state = SetupFixtures.state(.finish, facts: JourneyFixtures.facts)
         state.answers.connectionOpened = true
         state.answers.connected = true
@@ -350,5 +382,228 @@ private final class LockedPIDs: @unchecked Sendable {
     var value: Set<Int32> {
         get { lock.lock(); defer { lock.unlock() }; return pids }
         set { lock.lock(); pids = newValue; lock.unlock() }
+    }
+}
+
+// MARK: - A read nobody pressed keeps the page
+
+/// Josh, coming back to the window on the saved PC and Connect steps: the card went, and the password
+/// field with it, for a spinner, every time. A read nobody pressed (`.refreshing`) now leaves the card,
+/// the field and its text as they were, draws one quiet line, and leaves live the buttons that aren't
+/// the runner's work. A read somebody pressed still says what it is doing, instead of the card.
+@MainActor @Suite("A read nobody pressed keeps the page's card, its field and its words")
+struct QuietReadPageTests {
+    private static let look = SetupFixtures.flight(.lookAgain(.savedPC, forgetting: .statuses))
+
+    private static var save: SetupWindowState {
+        var state = SetupFixtures.state(.savedPC, facts: JourneyFixtures.facts)
+        state.facts?.rows["C2"] = JourneyFixtures.row("C2", .fixable("No saved PC"))
+        return state
+    }
+
+    /// The control is HEAD's card, which is the busy line whenever anything runs: the field is gone.
+    @Test("The saved PC's password field stays, typed text and all, and Return saves nothing until it ends")
+    func passwordFieldStays() throws {
+        let quiet = Self.save.applying(.refreshing(Self.look))
+        #expect(quiet.refreshing)
+        #expect(SetupJourneyView.savedPCWaiting(quiet) == nil)
+        #expect(SetupJourneyView.showsQuietRead(quiet))
+
+        let sent = Sent()
+        let typed = SetupCredentials()
+        typed.password = "synthetic-test-secret"
+        let window = Pressing(SetupScreen(state: quiet, art: nil, credentials: typed, savePassword: sent.save, send: sent.send))
+        let field = try #require(window.secureField, "the password field went")
+        #expect(field.isEnabled)
+        #expect(field.stringValue == "synthetic-test-secret")
+        // Return in the field while the read runs: nothing is handed over, and nothing is lost.
+        #expect(window.submitSecureField())
+        #expect(sent.saved.isEmpty && typed.password == "synthetic-test-secret")
+
+        // A read somebody pressed still says so, in the card's own words.
+        let pressed = Self.save.applying(.started(SetupFixtures.flight(.checkAgain(.savedPC))))
+        #expect(SetupJourneyView.savedPCWaiting(pressed) == SetupCopy.SavedPC.busy(SetupFixtures.flight(.checkAgain(.savedPC))))
+        #expect(Pressing(SetupScreen(state: pressed, art: nil, credentials: typed, send: { _ in })).secureField == nil)
+    }
+
+    /// The buttons that quit another app or take Ben to one aren't the runner's work, so no read can
+    /// collide with them. The control is HEAD's corner, greyed (and so not drawn) while anything runs.
+    @Test("Quit Windows App, Show Windows' Screen and Open Local Network Settings stay live through a read")
+    func windowButtonsStayLive() throws {
+        let reading = SetupFixtures.flight(.lookAgain(.savedPC, forgetting: .statuses))
+        let open = try JourneyPolishFixtures.screen("saved-app-open").applying(.refreshing(reading))
+        #expect(SetupFooter.footer(open).corner == .init(SetupCopy.SavedPC.bQuitWindowsApp, .quitWindowsApp, kind: .primary))
+        let noUser = try JourneyPolishFixtures.screen("saved-no-user").applying(.refreshing(reading))
+        #expect(SetupFooter.footer(noUser).corner?.press == .send(.open(.windowsScreen)))
+        let blocked = try JourneyPolishFixtures.screen("connect-failed")
+            .applying(.refreshing(SetupFixtures.flight(.lookAgain(.connect, forgetting: .statuses))))
+        #expect(SetupFooter.footer(blocked).corner?.press == .send(.open(.localNetworkSettings)))
+        #expect(SetupFooter.footer(blocked).corner?.enabled == true)
+        // Runner work stays greyed: Save It isn't drawn while the read runs.
+        #expect(SetupFooter.footer(Self.save.applying(.refreshing(Self.look))).corner == nil)
+    }
+
+    /// The control is the Connect card's HEAD branch, the busy line whenever anything runs.
+    @Test("Connect's recovery card stays drawn under one quiet line")
+    func recoveryCardStays() throws {
+        let failed = try JourneyPolishFixtures.screen("connect-failed")
+        let diagnosis: SetupFlow.Diagnosis = try {
+            guard case .didNotWork(let diagnosis) = SetupFlow.connect(try #require(failed.facts)) else {
+                throw CancellationError()
+            }
+            return diagnosis
+        }()
+        let heading = SetupCopy.Connecting.recovery(diagnosis).heading
+        let quiet = failed.applying(.refreshing(SetupFixtures.flight(.lookAgain(.connect, forgetting: .statuses))))
+        let lines = try Drawing.lines(try render(quiet, .light))
+        #expect(Drawing.find(String(heading.prefix(24)), in: lines) != nil, "\(lines)")
+        #expect(Drawing.find("Checking again", in: lines) != nil, "\(lines)")
+
+        let pressed = failed.applying(.started(SetupFixtures.flight(.checkAgain(.connect))))
+        let busy = try Drawing.lines(try render(pressed, .light))
+        #expect(Drawing.find(String(heading.prefix(24)), in: busy) == nil, "\(busy)")
+    }
+}
+
+// MARK: - A refused press changes nothing
+
+/// A Mac with the journey's steps read as ready, noting each piece of work the runner carries out and
+/// the password handed with it. Nothing here reaches Windows App.
+private final class PressMachine: SetupMachine {
+    private let lock = NSLock()
+    private var _performed: [SetupRunner.Work] = []
+    private var _passwords: [String] = []
+    var performed: [SetupRunner.Work] { lock.lock(); defer { lock.unlock() }; return _performed }
+    var passwords: [String] { lock.lock(); defer { lock.unlock() }; return _passwords }
+
+    func readings(through step: WizardStep, answers: SetupFlow.Answers, after work: SetupRunner.Work?,
+                  job: SetupRunner.Job?) -> SetupRunner.Readings {
+        var read = SetupRunner.Readings()
+        read.utm = SetupFixtures.installed
+        read.utmAnswers = .answered
+        read.windowsApp = .installed(version: "11.4")
+        read.vms = .success([SetupVMTests.old, SetupVMTests.new])
+        read.chosenVM = SetupVMTests.new.name
+        read.guestAnswers = true
+        read.rdpHost = "winlab02.local"
+        read.rdpUser = "Bruno"
+        read.otherVMs = .success([])
+        for id in WizardStep.allCases.filter({ $0 <= step }).flatMap(SetupFlow.checks(in:)) { read.statuses[id] = .ok("Ready") }
+        read.statuses["C2"] = .fixable("No saved PC")
+        return read
+    }
+
+    func perform(_ work: SetupRunner.Work, password: String?, facts: SetupFlow.Facts, job: SetupRunner.Job) throws {
+        lock.lock()
+        _performed.append(work)
+        if let password { _passwords.append(password) }
+        lock.unlock()
+    }
+}
+
+/// Josh's refused presses left the page changed as if they had started: Try Again on a failed Connect
+/// cleared "didn't work" before the runner said no, so the recovery card became "Ready to test" over a
+/// press that never ran; a refused Save It had already emptied the field. The answers a press gives,
+/// and the field it hands over, now change only once the runner takes it. Each press here is turned
+/// down by the app's gate, as when the menu is starting a VM; the controls are HEAD's order (answers
+/// and the field first, then the runner), which fails every first half.
+@MainActor @Suite("A press the runner turns down changes no answer, and keeps what was typed")
+struct RefusedPressTests {
+    private func rig(_ machine: PressMachine, _ state: SetupWindowState, gate: AppWorkGate) -> SetupWindowController {
+        let runner = SetupRunner(machine: machine, environment: .init(
+            queue: DispatchQueue(label: "winbar.test.refused-press"), callbacks: .main, clock: Date.init,
+            keepAwake: { _ in {} }, processes: { _ in ([300], 301) }, workspace: NotificationCenter(), workGate: gate))
+        let controller = SetupWindowController(state: state, art: nil,
+            settings: .init(wizardShown: { false }, markShown: {}, armieHidden: { true }, hideArmie: {}),
+            makeRunner: { runner }, makeCreator: { FakeEmbeddedCreate() })
+        controller.attach()
+        return controller
+    }
+
+    /// The menu starting another VM holds the app's gate, so the window's work is refused.
+    private func menuBusy(_ gate: AppWorkGate) throws -> AppWorkGate.Lease {
+        try gate.begin(.menu, label: "starting “atelier”", vm: "atelier").get()
+    }
+
+    private func settle(_ controller: SetupWindowController, until done: () -> Bool) async {
+        for _ in 0..<3000 where !done() { try? await Task.sleep(for: .milliseconds(10)) }
+    }
+
+    @Test("Try Again on a failed Connect, turned down, leaves \"didn't work\" and its card; taken, it connects")
+    func retryConnection() async throws {
+        let failed = JourneyPolishFixtures.state(.connect) {
+            $0.answers.connectPressed = true
+            $0.answers.connected = false
+            $0.facts?.readiness = .notReady
+        }
+        let gate = AppWorkGate()
+        let menu = try menuBusy(gate)
+        let machine = PressMachine()
+        let controller = rig(machine, failed, gate: gate)
+        controller.send(.retryConnection)
+        #expect(controller.state.refusal?.wanted == .connect)
+        #expect(controller.state.answers.connected == false)
+        #expect(!controller.state.connectionRequested)
+        guard case .didNotWork? = controller.state.facts.map(SetupFlow.connect) else {
+            Issue.record("the recovery card went: \(String(describing: controller.state.facts.map(SetupFlow.connect)))")
+            return
+        }
+
+        menu.finish()
+        controller.send(.retryConnection)
+        #expect(controller.state.refusal == nil)
+        #expect(controller.state.answers.connected == nil && controller.state.connectionRequested)
+        await settle(controller) { controller.state.lastEnding?.work == .connect && controller.state.inFlight == nil }
+        #expect(machine.performed == [.connect])
+        controller.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+    }
+
+    @Test("Another VM, turned down, keeps this VM's answers; a Discard, turned down, leaves nothing left alone")
+    func answersStand() throws {
+        let gate = AppWorkGate()
+        let menu = try menuBusy(gate)
+        let machine = PressMachine()
+        var vm = SetupFixtures.state(.vm, facts: SetupVMTests.facts())
+        vm.answers.leftAlone = ["G1"]
+        vm.choosingAnotherVM = true
+        vm.facts?.answers = vm.answers
+        let choosing = rig(machine, vm, gate: gate)
+        choosing.send(.useVM(name: SetupVMTests.old.name, id: SetupVMTests.old.id))
+        #expect(choosing.state.refusal?.wanted == .chooseVM(SetupVMTests.old.name, id: SetupVMTests.old.id))
+        #expect(choosing.state.answers.leftAlone == ["G1"] && choosing.state.choosingAnotherVM)
+        choosing.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+
+        let tune = JourneyPolishFixtures.state(.tune) { $0.facts?.pending.cpuCores = 6 }
+        let discarding = rig(machine, tune, gate: gate)
+        discarding.send(.discardChanges("H3"))
+        #expect(discarding.state.refusal?.wanted == .discardChanges(checkID: "H3"))
+        #expect(!discarding.state.answers.leftAlone.contains("H3"))
+        #expect(discarding.state.refusal?.answers?.leftAlone.contains("H3") == true)
+        discarding.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+        #expect(machine.performed.isEmpty)
+        menu.finish()
+    }
+
+    @Test("Save It, turned down, keeps the typed password in its field and nowhere else; taken, it's forgotten")
+    func saveKeepsTheField() async throws {
+        let save = JourneyPolishFixtures.state(.savedPC) { $0.facts?.rows["C2"] = JourneyFixtures.row("C2", .fixable("No saved PC")) }
+        let gate = AppWorkGate()
+        let menu = try menuBusy(gate)
+        let machine = PressMachine()
+        let controller = rig(machine, save, gate: gate)
+        controller.credentials.password = "invented-pw"
+        controller.savePC(password: controller.credentials.password)
+        #expect(controller.state.refusal?.wanted == .savePC)
+        #expect(controller.credentials.password == "invented-pw")
+        #expect(!String(describing: controller.state).contains("invented-pw"))
+
+        menu.finish()
+        controller.savePC(password: controller.credentials.password)
+        #expect(controller.state.refusal == nil)
+        #expect(controller.credentials.password.isEmpty)
+        await settle(controller) { controller.state.lastEnding?.work == .savePC && controller.state.inFlight == nil }
+        #expect(machine.passwords == ["invented-pw"])
+        #expect(!String(describing: controller.state).contains("invented-pw"))
+        controller.windowWillClose(Notification(name: NSWindow.willCloseNotification))
     }
 }

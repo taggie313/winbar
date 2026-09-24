@@ -75,6 +75,21 @@ final class Context {
         /// diagnose report the answer; the setup window leaves the port alone
         /// (`SetupRunner.contextOptions`).
         var selfTestProbesPort = true
+        /// A problem report's run (`Diagnose.doctorOptions`): it asks everything doctor asks and
+        /// writes nothing doctor writes. Report a Problem… is allowed beside a set-up step or an
+        /// install (`AppWorkGate.Owner.report`), and doctor writes what it learns into the very
+        /// settings a step writes from what it has just done — the saved PC (C2), BitLocker's state
+        /// and the password probe's result (the survey), the folder UTM shares, Time Machine's answer
+        /// (H6). A report that read Windows App's list a moment before the wizard saved a PC would
+        /// write that stale answer back over the new one, and Connect would open a one-off
+        /// connection instead. For the same reason the survey keeps out of the files a step uses
+        /// (`surveyTraces`).
+        var readOnly = false
+        /// Told of every saved-PC lookup (C2), on the thread running the checks. A problem report
+        /// keeps them (`Diagnose.Sightings`) to mask the names C2's row prints: its own run writes
+        /// no setting, and when the table misses its deadline this Context is still busy on another
+        /// thread and nobody's to read.
+        var sawSavedPCs: ((WindowsAppBookmarks.Lookup) -> Void)?
     }
 
     enum GuestState {
@@ -196,7 +211,7 @@ final class Context {
         if let cachedSharedFolder { return cachedSharedFolder }
         guard let vmName, vm != nil else { return .success(nil) }
         let result = SharedFolder.current(vm: vmName).map { path -> String? in
-            Config.rememberSharedFolder(path, for: vmName)
+            if !options.readOnly { Config.rememberSharedFolder(path, for: vmName) }
             return path
         }
         cachedSharedFolder = result
@@ -219,30 +234,41 @@ final class Context {
         return nil
     }
 
+    /// The files a survey leaves while it runs: the shared folder's marker, by this name, and — when
+    /// `asksSession` — the helper that asks the person's own session about their drive letter, which
+    /// has one fixed path in Windows. A read-only run (a problem report) uses a marker of its own and
+    /// doesn't ask, so it can't delete a set-up step's files from under it or have its token read as
+    /// the step's; its G11 row then leaves the drive letter unchecked. Pure.
+    static func surveyTraces(readOnly: Bool) -> (marker: String, asksSession: Bool) {
+        readOnly ? (SharedFolder.reportMarkerName, false) : (SharedFolder.markerName, true)
+    }
+
     private func surveyGuest() -> GuestState {
         guard let vmName, vm != nil else { return .notConfigured }
         guard process != nil else { return .stopped }
         guard UTM.guestAgentAnswers(vmName) else { return .noAgent }
         progress(SetupCopy.Tune.askingWindows)
+        let traces = Context.surveyTraces(readOnly: options.readOnly)
         // A marker in the shared folder, for as long as the survey takes: UTM gives Windows the folder
         // its registry held at the previous start, so without it the survey can't tell "Windows has
         // this folder" from "Windows still has the one before" (see SharedFolder).
         var markerFolder: String?
         if case .success(let folder?) = sharedFolder, SharedFolder.inspect(folder) == .folder {
-            sharedFolderMarker = SharedFolder.writeMarker(in: folder)
+            sharedFolderMarker = SharedFolder.writeMarker(in: folder, named: traces.marker)
             if sharedFolderMarker != nil { markerFolder = folder }
         }
-        defer { if let markerFolder { SharedFolder.removeMarker(in: markerFolder) } }
+        defer { if let markerFolder { SharedFolder.removeMarker(in: markerFolder, named: traces.marker) } }
         // The piece that asks the person's own session about their drive letter is a file of its own.
-        if markerFolder != nil {
+        let asksSession = markerFolder != nil && traces.asksSession
+        if asksSession {
             GuestAgent.push(vm: vmName, path: GuestScripts.userDrivePath, text: GuestScripts.userDriveChild)
         }
-        defer { if markerFolder != nil { GuestAgent.remove(vm: vmName, path: GuestScripts.userDrivePath) } }
+        defer { if asksSession { GuestAgent.remove(vm: vmName, path: GuestScripts.userDrivePath) } }
         // The password cache is keyed by the guest's own COMPUTER\user, so it applies whichever VM this is.
         let script = GuestScripts.survey(user: isConfiguredVM ? Config.rdpUser : nil,
                                          passwordChecked: Config.passwordCheckedFor,
-                                         marker: sharedFolderMarker == nil ? "" : SharedFolder.markerName,
-                                         userDrive: markerFolder != nil)
+                                         marker: sharedFolderMarker == nil ? "" : traces.marker,
+                                         userDrive: asksSession)
         switch GuestAgent.run(vm: vmName, script, timeout: 180) {
         case .failure(let error):
             return .failed(error)
@@ -271,8 +297,12 @@ final class Context {
     /// acts on the default.
     var configuredUser: String? { isConfiguredVM ? Config.rdpUser : nil }
 
-    /// Caches worth keeping between runs, taken from a fresh survey.
+    /// Caches worth keeping between runs, taken from a fresh survey. None from a problem report's
+    /// (`Options.readOnly`). Its password probe, when it makes one, then isn't remembered, so the next
+    /// doctor may probe once more — but the survey never probes while a failed sign-in still counts
+    /// (G5 "deferred"), so that can't add up towards Windows' lockout.
     private func remember(_ output: GuestOutput) {
+        guard !options.readOnly else { return }
         // Every probe that found a password is remembered, for any VM: each one was a failed logon.
         if let computer = output["COMPUTERNAME"], let user = output["USER"], !user.isEmpty {
             let key = computer + "\\" + user
@@ -303,20 +333,27 @@ final class Context {
 
     // MARK: Windows App's saved PCs
 
-    private var cachedSavedPC: Result<WindowsAppBookmarks.Bookmark?, WindowsAppBookmarks.Failure>?
+    private var cachedSavedPC: Result<WindowsAppBookmarks.Lookup, WindowsAppBookmarks.Failure>?
 
-    /// The saved PC Windows App has for `host`, asked of Windows App itself — the one way past the
-    /// TCC wall around its container, since the app reads its own data out for us. Cached like every
-    /// other fact here: the lookup runs Windows App's binary once for the list and once per saved PC
-    /// it has to read the host of.
-    func savedPC(for host: String) -> Result<WindowsAppBookmarks.Bookmark?, WindowsAppBookmarks.Failure> {
+    /// The saved PCs Windows App has for `host`, sorted into this VM's (signing in as `user`) and
+    /// another account's, asked of Windows App itself — the one way past the TCC wall around its
+    /// container, since the app reads its own data out for us. Cached like every other fact here:
+    /// the lookup runs Windows App's binary once for the list and once per saved PC it has to read.
+    func savedPC(for host: String, user: String?) -> Result<WindowsAppBookmarks.Lookup, WindowsAppBookmarks.Failure> {
         if let cachedSavedPC { return cachedSavedPC }
-        let result = Result { try WindowsAppBookmarks.savedPC(for: host) }
+        return note(savedPCs: Result { try WindowsAppBookmarks.savedPC(for: host, user: user) }
             .mapError { error in
                 error as? WindowsAppBookmarks.Failure
                     ?? .failed(what: "list its saved PCs", output: "\(error)")
-            }
+            })
+    }
+
+    /// Keeps a lookup's answer for the rest of the run, and tells `Options.sawSavedPCs` about it.
+    @discardableResult
+    func note(savedPCs result: Result<WindowsAppBookmarks.Lookup, WindowsAppBookmarks.Failure>)
+        -> Result<WindowsAppBookmarks.Lookup, WindowsAppBookmarks.Failure> {
         cachedSavedPC = result
+        if case .success(let lookup) = result { options.sawSavedPCs?(lookup) }
         return result
     }
 
@@ -373,6 +410,22 @@ final class Context {
 
     func refreshGuest() {
         cachedGuest = nil
+        statuses.removeAll()
+    }
+
+    /// Forgets what utmctl said and UTM's VM list, and nothing else: the setup window's look after an
+    /// Automation switch was turned on, or a VM was made in UTM (`SetupRunner.Forget.utm`).
+    func forgetUTM() {
+        cachedCtl = nil
+        cachedVMs = nil
+        statuses.removeAll()
+    }
+
+    /// Forgets the self-test behind C3 and C4, and nothing else: the setup window's look after
+    /// Accessibility was turned on for Winbar (`SetupRunner.Forget.selfTest`). Not `refresh(after:)`
+    /// for C3, which drops every client fact and so Windows App's saved-PC lookup with it.
+    func forgetSelfTest() {
+        cachedSelfTest = nil
         statuses.removeAll()
     }
 

@@ -509,7 +509,10 @@ struct CreateSeamTests {
             #expect(terminal.contains(stage.runningTitle), "\(stage.rawValue) in Terminal")
             #expect(running.detail == job.detail)
             #expect(terminal.contains(job.detail ?? ""), "the detail in Terminal")
-            #expect(window.step == "step \(stage.number) of 10")
+            // The window's count is a "Stage", so it isn't read as a second "Step" under the set-up window's;
+            // Terminal, with no other count on screen, keeps "step". The same number and stage in both.
+            #expect(window.step.hasPrefix("Stage \(stage.number) of 10 · "))
+            #expect(window.step.lowercased().hasSuffix(stage.shortTitle.lowercased()))
             #expect(terminal.contains("step \(stage.number) of 10"))
             // Every stage before this one is done, in the done title's words, in both.
             for earlier in CreateStage.allCases where earlier.number < stage.number {
@@ -541,7 +544,7 @@ struct CreateSeamTests {
                                          detail: "", nextStep: nil)
         let sentence = CreateCopy.installedWithProblems(edition: problems.plan.edition.displayName,
                                                         name: problems.plan.vmName)
-        #expect(CreateJobView.failureHeader(problems) == "! " + sentence)
+        #expect(CreateJobView.failureHeader(problems) == sentence && CreateJobView.failureMark(problems) == .attention)
         let milder = CreateCLI.failureLines(CreateJobError(failure: problems.failure!, exit: 1), state: problems,
                                             logPath: nil, vmName: problems.plan.vmName, width: 100)
             .joined(separator: "\n")

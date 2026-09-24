@@ -454,7 +454,7 @@ struct DryRunTests {
     func layout() {
         let output = text()
         #expect(output.hasPrefix("The plan\n"))
-        #expect(output.contains("  VM          “Windows 11” in UTM 4.7.5: 6 vCPUs, 16 GB memory, 128 GB disk (NVMe)"))
+        #expect(output.contains("  VM          “Windows 11” in UTM 4.7.5: 6 vCPUs, 16 GB memory, 128 GB disk (NVMe; grows as used)"))
         #expect(output.contains("  Windows     Windows 11 Pro (image 3 of 3), build 26200.8037"))
         #expect(output.contains("  Account     alex, local administrator; password asked for when you run it for real"))
         #expect(output.contains("  Computer    Windows-11, reached from your Mac as windows-11.local"))
@@ -509,8 +509,10 @@ struct DryRunTests {
     func console() {
         var plan = testPlan()
         plan.keepConsole = true
-        #expect(text(plan: plan).contains("and afterwards (--console)"))
-        #expect(text().contains("then Winbar takes it headless"))
+        // Wrapped to the terminal's width, so compare as one line: where the break falls isn't the point.
+        func flat(_ t: String) -> String { t.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression) }
+        #expect(flat(text(plan: plan)).contains("and afterwards (--console)"))
+        #expect(flat(text()).contains("then Winbar takes it headless"))
     }
 
     @Test("--no-select says Winbar won't take the new VM over")
@@ -660,7 +662,7 @@ struct CreateCancelLinesTests {
             $0.removedInstallDisks = true
             $0.deletedSetupDisk = true
         }
-        #expect(CreateCLI.cancelLines(kept, name: "Windows 11").contains("✓ Removed the install disks from the VM"))
+        #expect(CreateCLI.cancelLines(kept, name: "Windows 11").contains("✓ Detached the install disks from UTM"))
 
         // A job that had already lost both: it is closed, and silence would read as nothing having run.
         #expect(CreateCLI.cancelLines(result { _ in }, name: "Windows 11")

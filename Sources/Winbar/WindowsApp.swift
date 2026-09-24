@@ -35,17 +35,37 @@ enum WindowsApp {
     /// The names a saved PC's tile may carry: its friendly name when the user gave it one (the tile's
     /// accessibility description is then that name, not the host), else the host itself.
     static func tileNames(host: String) -> [String] {
-        var names = [host]
-        if let saved = Config.savedPCName, saved != host { names.insert(saved, at: 0) }
-        return names
+        tileNames(host: host, savedName: Config.savedPCName, otherAccountHost: Config.savedPCOtherAccountHost)
+    }
+
+    /// The same, from the settings passed in. Pure.
+    ///
+    /// When Windows App has a saved PC for this host that signs in as another account
+    /// (`otherAccountHost`), a tile named after the host may be that one, and pressing it signs in
+    /// as someone else — live, it opened a leftover from a deleted VM. Then only this VM's own saved
+    /// PC is pressed, by its own name; with none, nothing is, and Connect falls back to a one-off
+    /// connection that asks for the password.
+    static func tileNames(host: String, savedName: String?, otherAccountHost: String?) -> [String] {
+        let name = savedName.flatMap { $0 != host ? $0 : nil }
+        if let otherAccountHost, otherAccountHost.caseInsensitiveCompare(host) == .orderedSame {
+            return name.map { [$0] } ?? []
+        }
+        return (name.map { [$0] } ?? []) + [host]
     }
 
     /// Blocking; call off the main thread in the app. False means the tile couldn't be found or pressed.
     static func openSavedPC(host: String) -> Bool {
         let names = tileNames(host: host)
+        guard !names.isEmpty else {
+            NSLog("Winbar: the saved PC for \(host) signs in as another account; not pressing it")
+            return false
+        }
         guard accessibilityTrusted, let appURL else { return false }
 
-        var running = NSRunningApplication.runningApplications(withBundleIdentifier: Config.windowsAppBundleID).first
+        // A stuck `--script` copy shares the app's bundle id; it is neither the app to search nor one
+        // to hand the connection to (WindowsAppProcesses).
+        WindowsAppProcesses.stopStuckScriptCopies()
+        var running = WindowsAppProcesses.apps().first
         if running == nil {
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = false
@@ -72,7 +92,9 @@ enum WindowsApp {
             NSLog("Winbar: saved PC \(names.joined(separator: " / ")) not found in Windows App")
             return false
         }
-        Config.savedPCHost = host
+        // Finding the tile no longer writes `Config.savedPCHost`. A tile is only a name, and may be a
+        // stale PC that signs in as nobody; C2 then called it "your word" when nobody had said a thing.
+        // A press counts once the person has seen the desktop it opened (`Recipe.connectedSavedPC`).
 
         AXUIElementSetAttributeValue(target.window, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
         onMain { _ = app.hide() }
@@ -137,5 +159,32 @@ enum WindowsApp {
         var names: CFArray?
         guard AXUIElementCopyActionNames(element, &names) == .success else { return [] }
         return (names as? [String]) ?? []
+    }
+}
+
+/// Quits Windows App politely and says when it has gone: **Quit Windows App** on the saved PC step
+/// asks every running copy to terminate (never force: it may hold someone's session) and watches
+/// NSWorkspace for the last one to end, so the step reads again by itself. A quit Windows App turns
+/// down (a session it asks about) leaves the watch in place until it does quit; the next press
+/// replaces it.
+final class WindowsAppQuitter {
+    static let shared = WindowsAppQuitter()
+
+    private let center = NSWorkspace.shared.notificationCenter
+    private var watch: NSObjectProtocol?
+
+    func quit(then done: @escaping () -> Void) {
+        if let watch { center.removeObserver(watch) }
+        watch = nil
+        let running = { WindowsAppProcesses.apps() }   // the app, not a stuck --script copy
+        guard !running().isEmpty else { done(); return }
+        watch = center.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil,
+                                   queue: .main) { [weak self] note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            guard app?.bundleIdentifier == Config.windowsAppBundleID, running().allSatisfy(\.isTerminated) else { return }
+            if let self, let watch = self.watch { self.center.removeObserver(watch); self.watch = nil }
+            done()
+        }
+        running().forEach { _ = $0.terminate() }
     }
 }

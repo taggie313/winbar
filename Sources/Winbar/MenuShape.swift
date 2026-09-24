@@ -77,7 +77,7 @@ enum MenuAction: Equatable {
     case toggleConsole, sharedFolder
     case openUTM, newWindowsVM, showInstallProgress, setUpWinbar
     case reportProblem, showUpdate
-    case launchAtLogin, quit
+    case launchAtLogin, startWindowsAtLaunch, quit
     /// One VM in the Choose VM submenu. The whole VM as UTM listed it, for its id: settings are filed
     /// under that, so a VM renamed in UTM keeps what Winbar knows about it.
     case chooseVM(VMInfo)
@@ -145,12 +145,17 @@ struct MenuState: Equatable {
     /// A newer release, once `UpdateCheck` has found one.
     var update: MenuUpdate?
     var launchAtLogin = false
+    /// **Start Windows with Winbar** is on (`StartWindowsAtLaunch`).
+    var startsWindows = false
     /// Whether the menu offers **Set Up Winbar…**: `offersSetUp(available:coordinating:wizardShown:)`.
     /// Carried here rather than read inside `items`, so the tests can draw the menu both ways.
     var offersSetUp = SetupWindow.availableToEveryone
     /// The wizard owns VM selection and operations while open or working. The existing install
     /// owner remains separate: Show Install Progress still brings its one controller forward.
     var setupBusy = false
+    /// The version the menu's last line names. From the bundle by default, so the live menu can't
+    /// be built without it; "dev" under `swift test`, which has no bundle.
+    var version = AppBundle.version
 
     /// The live menu's answer, which `AppDelegate.menuNeedsUpdate` takes from here: offered while
     /// the window is available to everyone (on since 0.2.0), or while a window opened some other way
@@ -253,7 +258,7 @@ enum MenuShape {
                 items.append(.action("Start", .start, enabled: idle))
             }
             items.append(.separator)
-            items.append(.action(state.consoleEnabled ? "Go Headless…" : "Show Console Window…", .toggleConsole,
+            items.append(.action(MenuCopy.displayToggle(screenOn: state.consoleEnabled), .toggleConsole,
                                  enabled: idle))
             items.append(.action(state.hasSharedFolder ? "Open Shared Folder" : "Share a Folder…", .sharedFolder,
                                  enabled: idle))
@@ -283,8 +288,20 @@ enum MenuShape {
                                  .showUpdate))
         }
         items.append(.separator)
-        items.append(.item(MenuItem(title: "Launch at Login", action: .launchAtLogin, checked: state.launchAtLogin)))
+        // What logging in opens, on hover, in the finished screen's words for its own switch
+        // (`LaunchAtLogin.Copy.menuHelp`): only this icon, not Windows.
+        items.append(.item(MenuItem(title: "Launch at Login", action: .launchAtLogin, checked: state.launchAtLogin,
+                                    toolTip: LaunchAtLogin.Copy.menuHelp)))
+        // Under it, as the finished screen has its switch under Open Winbar when I log in: the other
+        // half of what opening Winbar does. A setting, so never greyed out: it starts nothing now.
+        items.append(.item(MenuItem(title: StartWindowsAtLaunch.Copy.menuItem, action: .startWindowsAtLaunch,
+                                    checked: state.startsWindows,
+                                    toolTip: StartWindowsAtLaunch.Copy.menuHelp(vm: status.vmName))))
         items.append(.item(MenuItem(title: "Quit Winbar", action: .quit, key: "q")))
+        // Last and greyed, where menu bar apps put it: someone asked "which version do you have?"
+        // could otherwise only answer from Finder's Get Info or Terminal.
+        items.append(.separator)
+        items.append(.note(versionLine(state.version)))
         guard state.setupBusy else { return items }
         return items.map { spec in
             guard case .item(var item) = spec else { return spec }
@@ -298,6 +315,9 @@ enum MenuShape {
         }
     }
 
+    /// The menu's last line.
+    static func versionLine(_ version: String) -> String { "Winbar \(version)" }
+
     /// The Choose VM submenu: QEMU VMs, Windows ones first, then by name.
     ///
     /// `vms` is the last list UTM gave, kept until a fresh one arrives, so a listing that fails after
@@ -305,7 +325,7 @@ enum MenuShape {
     /// has never been a list. `utmInstalled` false means there is nothing to ask, and osascript would
     /// only fail, so the listing isn't attempted and this says why.
     static func chooser(utmInstalled: Bool, vms: [VMInfo]?, error: WinbarError?) -> [MenuItemSpec] {
-        guard utmInstalled else { return [.note("UTM isn't installed")] }
+        guard utmInstalled else { return [.note(MenuCopy.utmMissingTitle)] }
         guard let vms else {
             let title = error.map { "Couldn't ask UTM: \($0.title)" } ?? "Asking UTM…"
             var items: [MenuItemSpec] = [.item(MenuItem(title: title, enabled: false, toolTip: error?.detail))]
@@ -320,4 +340,65 @@ enum MenuShape {
         guard !offered.isEmpty else { return [.note("UTM has no QEMU VMs")] }
         return offered.map { .action($0.name, .chooseVM($0)) }
     }
+}
+
+/// The menu's words for switching Windows' screen off and on, and the alerts around it. The owner's
+/// call for 0.2.1: the app says in plain words what the CLI calls headless (`--headless`, `winbar
+/// display` keep theirs), in the Set Up Winbar window's words, so the menu and the window name one
+/// thing one way. Finish offers **Run in the Background** and **Keep Windows' Screen**, and its
+/// restart line says "Windows' screen back on".
+///
+/// The way back is **Bring Back Windows' Screen…**, not **Show Windows' Screen…**: the Saved PC
+/// step already has a **Show Windows' Screen** that brings UTM's window forward, and this one
+/// restarts the VM and UTM to give a VM its screen at all. One name for two actions would be worse
+/// than the jargon it replaced.
+enum MenuCopy {
+    static let runInBackground = "Run in the Background…"
+    static let bringBackScreen = "Bring Back Windows' Screen…"
+
+    /// The toggle's title for a VM that has its screen (`consoleEnabled`) or doesn't.
+    static func displayToggle(screenOn: Bool) -> String { screenOn ? runInBackground : bringBackScreen }
+
+    /// The question before the restart, what it costs, and its button. Both ways restart the VM and UTM.
+    /// "Far less power" became Finish's "a little less": both are a small fraction of one core
+    /// (README, measured), and the window and the menu say the same thing about it.
+    static func confirmTitle(vm: String, screenOn: Bool) -> String {
+        screenOn ? "Run \(vm) in the background?" : "Bring back \(vm)'s screen?"
+    }
+    static func confirmBody(vm: String, screenOn: Bool) -> String {
+        "This restarts \(vm) and UTM. " + (screenOn
+            ? "Afterwards Windows has no window of its own: you open it with Windows App, and it uses a little less "
+                + "of your Mac's power."
+            : "UTM then shows Windows' screen in a window, which helps with boot menus or when Remote Desktop won't "
+                + "connect. It uses a little more of your Mac's power.")
+    }
+    static let bRestart = "Restart"
+    /// The menu's progress line while the change runs.
+    static func working(screenOn: Bool) -> String {
+        screenOn ? "Moving Windows to the background…" : "Bringing back Windows' screen…"
+    }
+    /// When UTM already had the display the menu thought it had to change.
+    static func already(vm: String, screenOn: Bool) -> String {
+        screenOn ? "\(vm) already runs in the background" : "\(vm) already shows Windows' screen"
+    }
+
+    /// Connect couldn't learn Windows' name. "Windows' guest agent didn't answer" named the machinery.
+    static func noHostTitle(vm: String) -> String { "Winbar doesn't know \(vm)'s address yet" }
+    static let noHostDetail = "Windows didn't answer, so Winbar couldn't ask for its name. Try again once Windows has "
+        + "started, or set it with “winbar config --host <name>” in Terminal."
+    /// A running VM whose Windows didn't answer in time; "port 3389" was the machinery again.
+    static func notReadyTitle(vm: String) -> String { "\(vm) isn't answering yet" }
+    static func notReady(vm: String) -> String {
+        "\(vm) is running, but Windows didn't answer within two minutes. It may still be starting or installing "
+            + "updates; try again in a minute."
+    }
+    /// Start and Connect, when Windows never answered after the start.
+    static func startedNotReadyTitle(vm: String) -> String { "\(vm) started, but Windows isn't answering yet" }
+    static let startedNotReady = "Windows didn't answer within three minutes. It may still be starting or installing "
+        + "updates; try again in a minute."
+
+    /// Open UTM with no UTM on the Mac. The same words the Choose VM submenu uses for it.
+    static let utmMissingTitle = "UTM isn't installed"
+    static let utmMissingDetail = "Winbar runs Windows in UTM. \(SetupCopy.menuItem) can install UTM for you, then "
+        + "walks you through the rest."
 }

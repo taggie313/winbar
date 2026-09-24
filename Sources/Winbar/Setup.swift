@@ -193,12 +193,16 @@ enum Setup {
     /// Up to three minutes for the guest agent, then up to 90 s more for autologon's desktop: the agent
     /// can answer first, and a survey before explorer.exe starts finds nobody signed in. `note` is
     /// where the two lines go: the terminal's dim note, or the setup window's step 2.
-    static func waitForWindows(_ vm: String, note: (String) -> Void = { Term.note($0) }) {
+    /// `cancelled` is the set-up window's **Stop Waiting**: the wait ends there, saying nothing more,
+    /// and Windows carries on starting. Terminal passes none.
+    static func waitForWindows(_ vm: String, note: (String) -> Void = { Term.note($0) },
+                               cancelled: (() -> Bool)? = nil) {
         note(SetupCopy.waitingForWindows)
-        guard UTM.waitForGuestAgent(vm, timeout: 180) else {
-            note(SetupCopy.agentNotYet)
+        guard UTM.waitForGuestAgent(vm, timeout: 180, cancelled: cancelled) else {
+            if cancelled?() != true { note(SetupCopy.agentNotYet) }
             return
         }
+        if cancelled?() == true { return }
         _ = GuestAgent.run(vm: vm, GuestScripts.waitForAutologon(seconds: 90), timeout: 120)
     }
 
@@ -352,6 +356,9 @@ enum Setup {
             switch try savePC(ctx, host: host, user: user, password: password) {
             case .created(let pc):
                 print("   " + Term.paint("✓", .green) + " saved in Windows App as “\(pc.name)”")
+            case .createdBeside(let pc, let other):
+                print("   " + Term.paint("✓", .green) + " saved in Windows App as “\(pc.name)”, beside “\(other.bookmark.name)”, "
+                      + "which signs in as \(other.user) and was left alone")
             case .alreadyThere(let pc):
                 print("   " + Term.paint("✓", .green) + " Windows App already had one (“\(pc.name)”); left alone")
             }
@@ -371,9 +378,7 @@ enum Setup {
     static func savePC(_ ctx: Context, host: String, user: String, password: String) throws -> WindowsAppBookmarks.Saved {
         let saved = try WindowsAppBookmarks.save(host: host, user: user, password: password,
                                                  friendlyName: ctx.vmName, passwordVerified: false)
-        switch saved {
-        case .created(let pc), .alreadyThere(let pc): Recipe.rememberSavedPC(pc, host: host, for: ctx)
-        }
+        Recipe.rememberSavedPC(saved.lookup, host: host, for: ctx)
         return saved
     }
 

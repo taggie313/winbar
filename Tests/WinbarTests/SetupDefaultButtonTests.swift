@@ -43,7 +43,9 @@ struct ConnectFailureDefaultTests {
             }
             let sent = Sent()
             #expect(drawn(state, sent).press(.return), "\(name): nothing took Return")
-            let expected: SetupCommand = diagnosis.readiness == nil ? .perform(.run(.checkAgain(.connect))) : .retryConnection
+            // Where macOS refused the check, the setting comes first: a retry would only be refused.
+            let expected: SetupCommand = diagnosis.readiness == nil ? .perform(.run(.checkAgain(.connect)))
+                : diagnosis.readiness == .blocked ? .open(.localNetworkSettings) : .retryConnection
             #expect(sent.commands == [expected], "\(name)")
         }
     }
@@ -62,17 +64,24 @@ struct ConnectFailureDefaultTests {
         #expect(SetupCopy.Connecting.recovery(.notReady, savedPC: true, console: .unknown).retry == .tryAgain)
     }
 
-    /// The one filled shape is the card's button, not the footer's Continue Without Connecting: the
-    /// accent's fill is painted exactly, so where its pixels are is where the filled button is.
-    @Test("The filled button is in the card, and the footer has none", arguments: [Snapshot.Appearance.light, .dark])
-    func filledInTheCard(appearance: Snapshot.Appearance) throws {
+    /// The one filled shape is the diagnosis' own action in the footer's corner, where every other
+    /// step keeps its action: the corner held a plain Continue Without Connecting and the action sat
+    /// in the card. The accent's fill is painted exactly, so where its pixels are is where the filled
+    /// button is; and Continue Without Connecting, plain, is on the left beside Back.
+    @Test("The filled button is the footer's corner, and moving on without the test is beside Back",
+          arguments: [Snapshot.Appearance.light, .dark])
+    func filledInTheCorner(appearance: Snapshot.Appearance) throws {
         let fill = SetupStyle.palette(dark: appearance.isDark, increasedContrast: false).accentFill
         for (name, state) in failures {
             let png = try #require(Snapshot.png(SetupScreen(state: state, art: nil, send: { _ in }),
                                                 size: CGSize(width: 600, height: 620), appearance: appearance))
             let filled = Drawing.filled(fill, in: png)
             #expect(filled.count == 1, "\(name): \(filled)")
-            #expect(filled.allSatisfy { $0.maxY < 620 - footerBand }, "\(name): a filled button in the footer, \(filled)")
+            #expect(filled.allSatisfy { $0.minY > 620 - footerBand && $0.midX > 300 }, "\(name): not the corner, \(filled)")
+            let footer = SetupFooter.footer(state)
+            #expect(footer.leading.map(\.title) == [SetupCopy.bBack, SetupCopy.journeyNext(.connect, facts: state.facts)],
+                    "\(name)")
+            #expect(footer.leading.allSatisfy { $0.kind == .plain } && footer.trailing.count == 1, "\(name)")
         }
     }
 
@@ -116,7 +125,9 @@ struct SavedPCReturnTests {
         #expect(window.press(.return))
         #expect(sent.saved == ["synthetic-test-secret"])
         #expect(sent.commands.isEmpty)
-        #expect(credentials.password.isEmpty)
+        // Forgotten by the controller once the runner takes it, not by the page: a refused Save It
+        // keeps what was typed (`SetupWindowController.savePC(password:)`).
+        #expect(credentials.password == "synthetic-test-secret")
     }
 
     /// Typed into the field itself, as a keystroke rather than a key equivalent: the field's own
@@ -146,8 +157,10 @@ struct SavedPCReturnTests {
 @MainActor @Suite("The footer's Continue is the default only while it can be pressed")
 struct FooterDefaultTests {
     /// A step whose Continue is enabled takes Return; the same step with it greyed out gives Return
-    /// to nothing in the footer, so an in-card default (Save It, a failed Connect's retry) gets it.
-    @Test("An enabled Continue takes Return; a greyed-out one doesn't hold it")
+    /// to nothing in the footer, so the page's own main button (Save It, a failed Connect's retry,
+    /// Approve Certificate…) gets it — filled, as the one filled button on the screen
+    /// (`stepPrimaryButton`). Before the button system, a greyed-out Continue left Return to nothing.
+    @Test("An enabled Continue takes Return; a greyed-out one leaves it to the page's own button")
     func onlyWhileEnabled() throws {
         var verified = SetupFixtures.state(.certificate, facts: JourneyFixtures.facts)
         verified.facts?.rows["H7"] = JourneyFixtures.row("H7", .ok("Trusted"))
@@ -158,8 +171,88 @@ struct FooterDefaultTests {
         var needs = SetupFixtures.state(.certificate, facts: JourneyFixtures.facts)
         needs.facts?.rows["H7"] = JourneyFixtures.row("H7", .fixable("Not trusted"))
         #expect(!SetupFlow.isSatisfied(.certificate, try #require(needs.facts)))
+        #expect(SetupCertificatePage.page(needs, facts: try #require(needs.facts)).canApprove)
+        let card = Sent()
+        #expect(drawn(needs, card).press(.return))
+        #expect(card.commands == [.perform(.run(.trustCertificate))])
+
+        // With nothing to approve, the step's one action is to look again, and Return does that: the
+        // greyed-out Continue never holds it.
+        needs.facts?.vmRunning = false
+        #expect(!SetupCertificatePage.page(needs, facts: try #require(needs.facts)).canApprove)
+        #expect(SetupFooter.footer(needs).corner?.title == SetupCopy.bCheckAgain)
         let none = Sent()
-        #expect(!drawn(needs, none).press(.return))
-        #expect(none.commands.isEmpty)
+        #expect(drawn(needs, none).press(.return))
+        #expect(none.commands == [.perform(.run(.checkAgain(.certificate)))])
+    }
+}
+
+@MainActor @Suite("A step's own main button takes Return while the footer's Continue can't")
+struct StepDefaultButtonTests {
+    /// Return on a drawn screen, and the one filled button on it: in the card (`stepPrimaryButton`,
+    /// where a plain button would leave Return to nothing), or in the footer's corner for a step that
+    /// hands its action there (`SetupJourneyActions.footerAction`).
+    private func returnPresses(_ state: SetupWindowState, _ name: String, inFooter: Bool = false) throws -> [SetupCommand] {
+        let sent = Sent()
+        #expect(drawn(state, sent).press(.return), "\(name): nothing took Return")
+        let png = try #require(Snapshot.png(SetupScreen(state: state, art: nil, send: { _ in }),
+                                            size: CGSize(width: 600, height: 620), appearance: .light))
+        let filled = Drawing.filled(SetupStyle.palette(dark: false, increasedContrast: false).accentFill, in: png)
+        #expect(filled.count == 1, "\(name): \(filled)")
+        #expect(filled.allSatisfy { inFooter ? $0.minY > 620 - footerBand : $0.maxY < 620 - footerBand }, "\(name): \(filled)")
+        return sent.commands
+    }
+
+    @Test("Ready to test: Return presses Connect, in the footer's corner")
+    func connect() throws {
+        let state = try #require(SetupRecoveryFixtures.screens.first { $0.0 == "connect-ready" }?.1)
+        guard case .ready = SetupFlow.connect(try #require(state.facts)) else {
+            Issue.record("not the Connect card")
+            return
+        }
+        #expect(try returnPresses(state, "connect-ready", inFooter: true) == [.perform(.run(.connect))])
+    }
+
+    @Test("Did the desktop appear: Return answers Yes")
+    func yes() throws {
+        let state = JourneyFixtures.didItWork
+        guard case .didItWork = SetupFlow.connect(try #require(state.facts)) else {
+            Issue.record("not the did-it-work card")
+            return
+        }
+        #expect(try returnPresses(state, "did-it-work") == [.connected(true)])
+    }
+
+    /// The card says to go back to Tune; the footer had nothing filled, so Return did nothing.
+    @Test("No certificate yet: Return presses Go Back to Tune, in the footer's corner")
+    func certificateGoBack() throws {
+        let state = try #require(SetupRecoveryFixtures.screens.first { $0.0 == "certificate-needs" }?.1)
+        #expect(SetupCertificatePage.page(state, facts: try #require(state.facts)).next == .goBack)
+        #expect(try returnPresses(state, "certificate-needs", inFooter: true) == [.back])
+    }
+
+    /// The headline says to follow the row's steps; the corner held a greyed-out Continue and the first
+    /// step was a plain button in the row, so nothing on the page was filled. The row's button is the
+    /// corner's now, and drawn once.
+    @Test("A setting only Ben can change: Return presses the row's first step, in the footer's corner, drawn once")
+    func tuneManual() throws {
+        let state = try #require(SetupRecoveryFixtures.screens.first { $0.0 == "tune-mixed" }?.1)
+        let facts = try #require(state.facts)
+        #expect(SetupFlow.tune(facts).fixEverything.isEmpty)
+        let h6 = try #require(facts.rows["H6"])
+        let first = try #require(SetupTuneRowActions.of(h6, facts: facts).first)
+        #expect(try returnPresses(state, "tune-mixed", inFooter: true) == [first.command])
+        let png = try #require(Snapshot.png(SetupScreen(state: state, art: nil, send: { _ in }),
+                                            size: CGSize(width: 600, height: 620), appearance: .light))
+        let lines = try Drawing.lines(png)
+        #expect(lines.filter { $0.text.replacingOccurrences(of: "...", with: "…") == first.title }.count == 1, "\(lines)")
+    }
+
+    @Test("Settings Winbar can fix: Return presses Fix Everything, in the footer's corner")
+    func fixEverything() throws {
+        var state = SetupFixtures.state(.tune, facts: JourneyFixtures.facts)
+        state.facts?.rows["G1"] = JourneyFixtures.row("G1", .fixable("Power plan"))
+        #expect(!SetupFlow.tune(try #require(state.facts)).fixEverything.isEmpty)
+        #expect(try returnPresses(state, "tune-fixable", inFooter: true) == [.perform(.run(.fixEverything))])
     }
 }

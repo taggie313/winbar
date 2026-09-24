@@ -18,12 +18,12 @@ the `winbar doctor` table, the versions involved, Winbar's settings, the tail of
 so you don't have to collect it yourself. It works even when nothing else does.
 
 Never opened Terminal? Choose **Report a Problem…** from the Winbar menu instead. It writes the same
-file, shows it to you in the Finder and opens this page, so you can drag it in.
+file, shows it to you in the Finder and opens a shorter new issue of its own, so you can drag it in.
 
 Read it first. It names this Mac, your Mac user name and full name, your Windows user name and the
 Windows PC name, and each of your VMs — by name, by the id UTM gave it and by its MAC address.
-`winbar diagnose --anonymise` — or the checkbox in **Report a Problem…** — writes the same report
-with every one of those replaced by a placeholder (`<mac>`, `<user>`, `<user-full-name>`,
+`winbar diagnose --anonymise` — or **Report a Problem…**, unless you untick its box — writes the
+same report with every one of those replaced by a placeholder (`<mac>`, `<user>`, `<user-full-name>`,
 `<windows-user-1>`, `<windows-pc-1>`, `<vm-1>`, `<vm-1-id>`, `<vm-1-mac>`), and any other id- or
 MAC-shaped string as `<id-1>` or `<mac-address-1>`. `--no-logs` leaves the create logs out. Neither
 ever contains a password.

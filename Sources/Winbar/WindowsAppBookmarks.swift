@@ -44,10 +44,54 @@ enum WindowsAppBookmarks {
     /// What `save` did. Never "wrote over what was there".
     enum Saved: Equatable, Sendable {
         case created(Bookmark)
-        /// Windows App already had a saved PC for this host, so Winbar left it exactly as it is: it
-        /// may carry a password the person typed, and `bookmark write` on an existing id replaces
-        /// the host, user name and password without asking.
+        /// A new saved PC, written beside one for the same host that signs in as another account,
+        /// which was left alone. This one has a name of its own, so Connect can tell the two apart.
+        case createdBeside(Bookmark, otherAccount: OtherAccount)
+        /// Windows App already had a saved PC for this host and account, so Winbar left it exactly as
+        /// it is: it may carry a password the person typed, and `bookmark write` on an existing id
+        /// replaces the host, user name and password without asking.
         case alreadyThere(Bookmark)
+
+        /// The saved PC Connect should press, whichever case it is.
+        var bookmark: Bookmark {
+            switch self {
+            case .created(let bookmark), .createdBeside(let bookmark, _), .alreadyThere(let bookmark): return bookmark
+            }
+        }
+
+        /// The other account's saved PC for the same host, when one was seen.
+        var otherAccount: OtherAccount? {
+            if case .createdBeside(_, let other) = self { return other }
+            return nil
+        }
+
+        /// What `save` found and made, as the lookup Winbar remembers (`Recipe.rememberSavedPC`), so
+        /// saving beside another account's PC is remembered exactly as C2 seeing it would be.
+        var lookup: Lookup { Lookup(mine: bookmark, otherAccount: otherAccount) }
+    }
+
+    /// What `export` says about a saved PC, as far as deciding whose it is: the host it connects to
+    /// (`full address:s:`) and the Windows account it signs in as (`username:s:`). Either may be
+    /// missing — a PC saved without credentials has no user name.
+    struct Target: Equatable, Sendable {
+        var address: String?
+        var user: String?
+    }
+
+    /// A saved PC for the VM's host that signs in as a different Windows account: a leftover from a
+    /// deleted VM that had the same name, typically. Pressing it would sign in as someone else.
+    struct OtherAccount: Equatable, Sendable {
+        var bookmark: Bookmark
+        var user: String
+    }
+
+    /// Whose saved PCs for one host Windows App has.
+    struct Lookup: Equatable, Sendable {
+        /// The one for this host and this account — or whose account couldn't be read, which can't be
+        /// told apart and so is taken as it always was.
+        var mine: Bookmark?
+        /// One for this host that signs in as another account, when one was seen.
+        var otherAccount: OtherAccount?
     }
 
     enum Failure: Error, CustomStringConvertible, Equatable {
@@ -79,6 +123,16 @@ enum WindowsAppBookmarks {
 
     enum Copy {
         static let readsPaused = "Windows App's automatic setup command stopped responding. Winbar won't keep retrying it in the background. You can still sign in through Windows App."
+        /// A read that ran out of time: the one before `readsPaused` is said.
+        static let didNotAnswer = "Windows App didn't answer in time"
+
+        /// Whether `text` says Windows App's command line didn't answer: this read ran out of time, or
+        /// an earlier one did and reads are paused (`ReadGate`). Recognised by the two sentences above
+        /// themselves, so the setup window's card (`SetupFlow.commandLineSilent`) can't drift from what
+        /// the failure says. Pure.
+        static func saysNoAnswer(_ text: String) -> Bool {
+            text.contains(readsPaused) || text.contains(didNotAnswer)
+        }
 
         /// The refusal, in the voice the rest of Winbar uses: what to do, then why.
         static let quitFirst =
@@ -169,7 +223,7 @@ enum WindowsAppBookmarks {
     /// Whether a copy of Windows App is open, which is what `save` and `delete` refuse on. The same
     /// question `WindowsApp.openSavedPC` already asks.
     static var appIsRunning: Bool {
-        !NSRunningApplication.runningApplications(withBundleIdentifier: Config.windowsAppBundleID).isEmpty
+        !WindowsAppProcesses.apps().isEmpty   // the app, not a command-line copy of it
     }
 
     /// Why a write can't go ahead, or nil when it can. Only `save` and `delete` ask: `list` and
@@ -193,7 +247,7 @@ enum WindowsAppBookmarks {
                                       what: what, timeout: timeout) { limit in
             Shell.run(executable.path, ["--script", "bookmark"] + arguments, timeout: limit)
         }
-        guard !result.timedOut else { throw Failure.failed(what: what, output: "Windows App didn't answer in time") }
+        guard !result.timedOut else { throw Failure.failed(what: what, output: Copy.didNotAnswer) }
         let output = redact(result.output, secret: secret)
         guard result.status == 0 else { throw Failure.failed(what: what, output: output) }
         // The handler terminates the app itself, so a refusal can still exit 0 and only say so on
@@ -269,6 +323,52 @@ enum WindowsAppBookmarks {
 
     // MARK: - Deciding whether there is one already
 
+    /// Every saved PC that stands for `host`, address matches first. See `match`. Pure.
+    static func candidates(host: String, in bookmarks: [Bookmark], addresses: [String: String]) -> [Bookmark] {
+        let byAddress = bookmarks.filter { addresses[$0.id].map { same($0, host) } == true }
+        let byName = bookmarks.filter { addresses[$0.id] == nil && same($0.name, host) }
+        return byAddress + byName
+    }
+
+    private static func same(_ one: String, _ other: String) -> Bool { one.caseInsensitiveCompare(other) == .orderedSame }
+
+    /// Whether two ways of writing a Windows account are the same account: case aside, and with the
+    /// machine or domain in front taken off, since Windows App may hold `WINLAB01\alex` or `.\alex`
+    /// for the account Winbar knows as `alex`. A Microsoft account keeps its whole address. Pure.
+    static func sameAccount(_ one: String, _ other: String) -> Bool {
+        func bare(_ account: String) -> String {
+            let trimmed = account.trimmingCharacters(in: .whitespaces)
+            return (trimmed.split(separator: "\\").last.map(String.init) ?? trimmed).lowercased()
+        }
+        return bare(one) == bare(other)
+    }
+
+    /// Which saved PC for `host` is the VM's, and whether another account has one for the same host.
+    ///
+    /// Host alone isn't enough. Live, a saved PC left over from a deleted VM with the same name (and
+    /// so the same host name) but a different Windows account made Winbar say the PC was saved, and
+    /// Connect opened that stale entry. So a candidate is the VM's only when its account is `user`,
+    /// or when its account can't be read (as before). One whose account is known and differs is
+    /// reported as `otherAccount`, never as the VM's. With no `user` to compare, the host decides, as
+    /// it always did. Pure.
+    static func lookup(host: String, user: String?, in bookmarks: [Bookmark], targets: [String: Target]) -> Lookup {
+        let found = candidates(host: host, in: bookmarks, addresses: targets.compactMapValues(\.address))
+        guard let user, !user.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return Lookup(mine: found.first, otherAccount: nil)
+        }
+        var sameUser: Bookmark?
+        var unknownUser: Bookmark?
+        var other: OtherAccount?
+        for bookmark in found {
+            switch targets[bookmark.id]?.user {
+            case let theirs? where sameAccount(theirs, user): sameUser = sameUser ?? bookmark
+            case let theirs?: other = other ?? OtherAccount(bookmark: bookmark, user: theirs)
+            case nil: unknownUser = unknownUser ?? bookmark
+            }
+        }
+        return Lookup(mine: sameUser ?? unknownUser, otherAccount: other)
+    }
+
     /// Which saved PC, if any, already stands for `host` — the question that decides whether Winbar
     /// writes one at all.
     ///
@@ -278,29 +378,42 @@ enum WindowsAppBookmarks {
     /// nobody gave the PC a friendly name — which is exactly what Winbar's own 0.1.0 instructions
     /// told people to do. Pure, so the decision can be checked without Windows App.
     static func match(host: String, in bookmarks: [Bookmark], addresses: [String: String]) -> Bookmark? {
-        func same(_ one: String, _ other: String) -> Bool { one.caseInsensitiveCompare(other) == .orderedSame }
-        if let byAddress = bookmarks.first(where: { addresses[$0.id].map { same($0, host) } == true }) { return byAddress }
-        return bookmarks.first { addresses[$0.id] == nil && same($0.name, host) }
+        candidates(host: host, in: bookmarks, addresses: addresses).first
     }
 
-    /// The saved PC for `host`, asked of Windows App itself.
-    static func savedPC(for host: String) throws -> Bookmark? {
+    /// The saved PCs for `host`, asked of Windows App itself, sorted into the VM's (signing in as
+    /// `user`) and another account's. `list` and `export` are Windows App's own, except in tests.
+    static func savedPC(for host: String, user: String?,
+                        list: () throws -> [Bookmark] = { try WindowsAppBookmarks.list() },
+                        export: (String) throws -> String = { try WindowsAppBookmarks.export($0) }) throws -> Lookup {
         let bookmarks = try list()
-        return match(host: host, in: bookmarks, addresses: addresses(of: bookmarks, matching: host))
+        return lookup(host: host, user: user, in: bookmarks,
+                      targets: targets(of: bookmarks, matching: host, user: user, export: export))
     }
 
-    /// `full address:s:` for each saved PC, stopping at the first that is `host`: each export is
-    /// another run of Windows App's binary, and once one matches the rest can't change the answer.
-    /// A PC that won't export is left out rather than counted as a non-match, so `match` falls back
-    /// to its name.
-    private static func addresses(of bookmarks: [Bookmark], matching host: String) -> [String: String] {
-        var found: [String: String] = [:]
+    /// What each saved PC's export says (see `target(inExport:)`), stopping at the first that is
+    /// `host` signing in as `user`: each export is another run of Windows App's binary, and once one
+    /// is the VM's the rest can't change which one Connect uses. Stopping at the host alone was the
+    /// old rule, and it let a stale PC listed first hide the VM's own. A PC that won't export is
+    /// left out rather than counted as a non-match, so `lookup` falls back to its name. `export` is
+    /// Windows App's, except in tests.
+    static func targets(of bookmarks: [Bookmark], matching host: String, user: String?,
+                        export: (String) throws -> String) -> [String: Target] {
+        var found: [String: Target] = [:]
         for bookmark in bookmarks {
-            guard let text = try? export(bookmark.id), let address = address(inExport: text) else { continue }
-            found[bookmark.id] = address
-            if address.caseInsensitiveCompare(host) == .orderedSame { break }
+            guard let text = try? export(bookmark.id) else { continue }
+            let target = target(inExport: text)
+            guard target.address != nil || target.user != nil else { continue }
+            found[bookmark.id] = target
+            if let address = target.address, same(address, host),
+               user == nil || target.user.map({ sameAccount($0, user ?? "") }) == true { break }
         }
         return found
+    }
+
+    /// The host and the account out of one export. Pure.
+    static func target(inExport export: String) -> Target {
+        Target(address: address(inExport: export), user: rdpValue("username", in: export))
     }
 
     /// A fresh id for a new saved PC.
@@ -348,13 +461,16 @@ enum WindowsAppBookmarks {
         if let refusal = refusalToWrite(installed: executableURL != nil, appRunning: appIsRunning) { throw refusal }
 
         let existing = try list()
-        if let already = match(host: host, in: existing, addresses: addresses(of: existing, matching: host)) {
-            return .alreadyThere(already)
-        }
+        let found = lookup(host: host, user: user, in: existing,
+                           targets: targets(of: existing, matching: host, user: user, export: { try export($0) }))
+        if let already = found.mine { return .alreadyThere(already) }
         let id = try newID(notIn: existing.map(\.id))
 
         var arguments = ["write", id, "--hostname", host, "--username", user, "--password", password]
-        if let name = freeName(friendlyName, notIn: existing) { arguments += ["--friendlyname", name] }
+        if let name = newName(friendlyName, host: host, user: user, besideAnotherAccount: found.otherAccount != nil,
+                              notIn: existing) {
+            arguments += ["--friendlyname", name]
+        }
         // A VM has no fixed screen, so the session should follow the window. Everything else is left
         // at Windows App's own defaults: nothing else has been measured, and a setting has to pay for
         // itself before Winbar sets it.
@@ -365,7 +481,21 @@ enum WindowsAppBookmarks {
         guard let saved = try list().first(where: { $0.id.caseInsensitiveCompare(id) == .orderedSame }) else {
             throw Failure.notSaved(id: id)
         }
+        if let other = found.otherAccount { return .createdBeside(saved, otherAccount: other) }
         return .created(saved)
+    }
+
+    /// The friendly name for a new saved PC. Usually `freeName(wanted)`. Beside another account's PC
+    /// for the same host it must not be the host itself, and must be free: a tile's accessibility
+    /// description is its friendly name, else its host, and two tiles described alike would leave
+    /// Connect pressing either. So it falls back to "<name> (<user>)". Pure.
+    static func newName(_ wanted: String?, host: String, user: String, besideAnotherAccount: Bool,
+                        notIn bookmarks: [Bookmark]) -> String? {
+        let name = freeName(wanted, notIn: bookmarks)
+        guard besideAnotherAccount else { return name }
+        if let name, !same(name, host) { return name }
+        let base = wanted?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? wanted! : host
+        return freeName("\(base) (\(user))", notIn: bookmarks)
     }
 
     /// Removes a saved PC. Refuses while Windows App is open, for the same reason `save` does.

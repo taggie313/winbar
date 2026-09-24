@@ -122,7 +122,7 @@ enum SetupFlow {
     // MARK: - The snapshot
 
     /// UTM's list of VMs, or why there isn't one. Never an empty list standing in for a failure:
-    /// "UTM has no Windows VM — Make One" said to a Mac whose Apple Event is still waiting on the
+    /// "UTM has no Windows VM — Install Windows…" said to a Mac whose Apple Event is still waiting on the
     /// Automation prompt would send someone off to install a second copy of Windows.
     enum VMListing: Equatable, Sendable {
         case notAsked
@@ -311,6 +311,11 @@ enum SetupFlow {
         var windowsAppRunning = false
         /// The Remote Desktop port's answer, for the "it didn't work" screen.
         var readiness: RDP.Readiness?
+        /// The host whose saved-PC tile this window's last Connect pressed; nil after a one-off
+        /// connection, or before any. Paired with the person's answer to "Did the Windows desktop
+        /// appear?", it's evidence of a saved PC that Windows App's command line may never give
+        /// (`Recipe.connectedSavedPC`).
+        var savedPCPressed: String?
 
         // Step 7.
         /// vCPUs and memory staged in step 3, and headless if chosen: applied with one restart.
@@ -466,27 +471,22 @@ enum SetupFlow {
         case utmChanged
         /// The chosen VM stopped, started or was restarted.
         case vmChanged
-        /// Winbar came back to the front (`NSApplication.didBecomeActiveNotification`). The person was
-        /// in another app — System Settings granting Accessibility, the App Store installing Windows
-        /// App, Windows itself doing a manual step — where anything here can change without a process
-        /// starting or stopping, so nothing read before they left can be trusted either.
-        case reactivated
+        // Not Winbar coming back to the front: that made every page read itself again whenever it was
+        // looked at (`SetupRunner.init`). A step waiting on another app looks again, quietly, a moment
+        // after its window becomes key (`SetupJourneyActions.returnRead`), and marks nothing stale.
     }
 
-    /// Whether `facts` still describe this Mac, from what a process-table scan says now, when the
-    /// Mac last woke (`NSWorkspace.didWakeNotification`) and when Winbar last came to the front. nil
-    /// while they do. Pure: the runner passes the observations in, so the rule can be checked without
+    /// Whether `facts` still describe this Mac, from what a process-table scan says now and when the
+    /// Mac last woke (`NSWorkspace.didWakeNotification`). nil while they do. Pure: the runner passes the observations in, so the rule can be checked without
     /// UTM.
     ///
-    /// The most serious reason wins: a sleep puts every wall-clock wait in doubt, a process change
-    /// says what moved, and coming back to the front only says something might have.
-    static func staleness(of facts: Facts, utmPIDs: Set<Int32>, vmPID: Int32?, lastWake: Date?,
-                          lastActivation: Date? = nil) -> Staleness? {
+    /// The most serious reason wins: a sleep puts every wall-clock wait in doubt, and a process change
+    /// says what moved.
+    static func staleness(of facts: Facts, utmPIDs: Set<Int32>, vmPID: Int32?, lastWake: Date?) -> Staleness? {
         guard let stamp = facts.stamp else { return .neverTaken }
         if let lastWake, lastWake > stamp.taken { return .slept }
         if utmPIDs != stamp.utmPIDs { return .utmChanged }
         if vmPID != stamp.vmPID { return .vmChanged }
-        if let lastActivation, lastActivation > stamp.taken { return .reactivated }
         return nil
     }
 
@@ -549,9 +549,9 @@ enum SetupFlow {
     }
 
     enum VMChoice: Equatable, Sendable {
-        /// "No Windows VM yet" `[Make One]`.
+        /// "No Windows VM yet" `[Install Windows…]`.
         case none
-        /// "One Windows VM" `[Make a New One]` `[Use “…”]`.
+        /// "One Windows VM" `[Install Windows in a New VM…]` `[Use “…”]`.
         case one(VMInfo)
         /// "Which VM?", every QEMU VM, in the order the menu's **Choose VM** lists them
         /// (`VMInfo.choosable`).
@@ -730,14 +730,26 @@ enum SetupFlow {
         switch c2.kind {
         case .fixable, .manual:
             // Live, not C2's word: the app can be opened or quit between two reads, and a save while
-            // it's open is the one thing never worth risking.
-            if facts.windowsAppRunning { return .windowsAppOpen(host: host) }
+            // it's open is the one thing never worth risking. Not when its command line has stopped
+            // answering, though: nothing can be saved then anyway, quitting doesn't bring it back, and
+            // the card's **Open Windows App** is how the person saves the PC themselves.
+            if facts.windowsAppRunning, !commandLineSilent(facts) { return .windowsAppOpen(host: host) }
             guard c2.kind == .fixable else { return .manual(c2) }
             guard let user = facts.rdpUser else { return .notYet(c2) }
             return .save(host: host, user: user)
         case .ok, .info, .error:
             return .notYet(c2)
         }
+    }
+
+    /// C2 couldn't be answered because Windows App's command line didn't respond: the read ran out of
+    /// time, or an earlier one did and Winbar stopped asking (`WindowsAppBookmarks.ReadGate`). A
+    /// Windows App problem, not the person's: Windows App 11.4.2's `--script bookmark list` was seen
+    /// hanging before it read anything, three times out of three. The saved PC's card says so in
+    /// those words rather than the terminal's (`SetupCopy.SavedPC.silent`). Pure.
+    static func commandLineSilent(_ facts: Facts) -> Bool {
+        guard let c2 = facts.rows["C2"], c2.kind == .manual else { return false }
+        return WindowsAppBookmarks.Copy.saysNoAnswer(c2.detail)
     }
 
     /// Step 6.
@@ -776,10 +788,10 @@ enum SetupFlow {
     /// The VM's own screen, as H5's last reading has it, for the recovery card's advice on watching
     /// Windows start. Only the finish step reads H5 (`checks(in:)`), so someone who reaches Connect
     /// without having been to Finish in this session has no reading: a VM made headless by `winbar
-    /// setup` or **Go Headless…**, going through **Set Up Winbar…** again, is exactly that. The card
+    /// setup` or **Run in the Background…**, going through **Set Up Winbar…** again, is exactly that. The card
     /// must not guess a UTM window for them, nor a missing one for everyone else.
     enum Console: Equatable, Sendable {
-        /// H5 ok: no display device, so only **Show Console Window…** shows what Windows is doing.
+        /// H5 ok: no display device, so only **Bring Back Windows' Screen…** shows what Windows is doing.
         case headless
         /// H5 fixable: the console is on, so UTM has a window for the VM.
         case onScreen
@@ -820,6 +832,21 @@ enum SetupFlow {
         !facts.windowsApp.isInstalled && facts.answers.leftAlone.contains("C1")
     }
 
+    /// The Skips that taking a step back up undoes (`SetupCommand.revisit`): the certificate's, and the
+    /// saved PC's together with Windows App's, since a skipped Windows App leaves the saved PC with
+    /// nowhere to go and the step then shows Windows App's install first. Empty for every other step:
+    /// Tune's Skips belong to its rows, each with its own button back. Pure.
+    ///
+    /// A Skip was a dead end. Live, Windows App's command line never answered, the person chose to go
+    /// on, and "Saved PC skipped" then had nothing on it to press, although a second try might answer.
+    static func skips(in step: WizardStep) -> Set<String> {
+        switch step {
+        case .certificate: return ["H7"]
+        case .savedPC: return ["C1", "C2"]
+        default: return []
+        }
+    }
+
     /// Step 7.
     struct FinishScreen: Equatable, Sendable {
         var vm: String?
@@ -838,7 +865,7 @@ enum SetupFlow {
     /// that won't say is treated as "maybe", like the real guard.
     enum HeadlessOffer: Equatable, Sendable {
         case alreadyHeadless
-        /// **Go Headless** was pressed: it's in `pending`, waiting for the restart.
+        /// **Run in the Background** was pressed: it's in `pending`, waiting for the restart.
         case staged
         /// **Keep the Screen**.
         case kept
@@ -858,7 +885,7 @@ enum SetupFlow {
         case checkOtherVMs
         case otherVMsRunning([String])
         case couldNotConfirm(String)
-        /// "Run it without a screen?" `[Keep the Screen]` `[Go Headless]`.
+        /// "Run it without a screen?" `[Keep the Screen]` `[Run in the Background]`.
         case offer
 
         /// Something still has to happen before the step is done: a question to ask UTM, a row to

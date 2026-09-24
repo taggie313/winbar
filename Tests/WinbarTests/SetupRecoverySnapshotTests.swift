@@ -24,6 +24,8 @@ enum SetupRecoveryFixtures {
         add("vm-unlisted", .vm) { $0.facts?.vms = .notAsked }
         add("vm-messages", .vm) {
             $0.installMessages = [.init(code: "W_MEDIA_LEFT", text: "The setup disk could not be removed. It still contains the temporary answer file. Keep it private until you can delete it.", at: testMoment())]
+            // The folder the install couldn't delete, handed back with the warning, as a real install does.
+            $0.setupDisk = "/tmp/winbar-example/5d2c7a10.noindex"
         }
         add("certificate-needs", .certificate) { $0.facts?.rows["H7"] = JourneyFixtures.row("H7", .manual("No certificate", how: "Check G7")); $0.facts?.rows["G7"] = JourneyFixtures.row("G7", .fixable("Set the guest name")) }
         add("certificate-waiting", .certificate) {

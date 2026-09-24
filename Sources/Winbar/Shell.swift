@@ -240,12 +240,21 @@ private final class Box<T> {
 
 /// Re-runs `check` until it passes or `timeout` elapses. Blocking.
 @discardableResult
-func waitUntil(timeout: TimeInterval, every interval: TimeInterval, _ check: () -> Bool) -> Bool {
+func waitUntil(timeout: TimeInterval, every interval: TimeInterval, cancelled: (() -> Bool)? = nil,
+               _ check: () -> Bool) -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     while true {
+        if cancelled?() == true { return false }
         if check() { return true }
         if Date() >= deadline { return false }
-        pause(interval)
+        guard let cancelled else {
+            pause(interval)
+            continue
+        }
+        // In short slices, so **Stop Waiting** is heard within a quarter of a second rather than at the
+        // next check, which can be five seconds and a guest-agent call away.
+        let next = Date().addingTimeInterval(interval)
+        while !cancelled(), next.timeIntervalSinceNow > 0 { pause(min(0.25, next.timeIntervalSinceNow)) }
     }
 }
 

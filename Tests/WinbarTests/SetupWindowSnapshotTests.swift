@@ -114,10 +114,13 @@ struct SetupWindowSnapshots {
     }
 
     /// The control: the same bar in the fill shade it had, measured the same way, fails in dark mode.
+    /// Under Increase Contrast that shade was 0x004E8C; the fill is pale there now (the default button's
+    /// black-titled fill), so the old value is named.
     @MainActor @Test("The bar in the accent's fill shade fails that in dark mode")
     func downloadBarContrastControl() throws {
         for appearance in [Snapshot.Appearance.dark, .darkIncreaseContrast] {
-            let fill = SetupStyle.palette(dark: true, increasedContrast: appearance.increaseContrast).accentFill
+            let fill = appearance.increaseContrast ? SetupStyle.RGB(0x004E8C)
+                : SetupStyle.palette(dark: true, increasedContrast: false).accentFill
             let old = ProgressView(value: 0.8).tint(fill.color)
             let contrast = try #require(try barContrast(old, fill: fill, appearance: appearance))
             #expect(contrast < 3, "\(appearance.rawValue): \(contrast)")

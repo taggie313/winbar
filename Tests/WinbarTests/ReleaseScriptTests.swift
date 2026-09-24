@@ -55,3 +55,51 @@ struct ReleaseScriptGuards {
         #expect(s.contains("git rev-parse HEAD^{tree}"))
     }
 }
+
+/// The disk image's window: Winbar beside Applications, so the drag it exists for is obvious to
+/// somebody who has never installed a Mac app from one. Finder is the only thing that writes that
+/// layout, and it may not answer (no Automation consent, no GUI session), so the layout must never be
+/// able to stop a release. Read as text, like the guards above: running it means running Finder.
+@Suite("The disk image opens with Winbar beside Applications, when Finder will lay it out")
+struct ReleaseDiskImageLayout {
+    static let script = ReleaseScriptGuards.script
+
+    /// build_dmg's body, so the checks below are about it and not some other part of the script.
+    static let buildDMG: String = {
+        guard let start = script.range(of: "build_dmg() {"),
+              let end = script.range(of: "\n}\n", range: start.upperBound..<script.endIndex) else { return "" }
+        return String(script[start.lowerBound..<end.upperBound])
+    }()
+
+    @Test("Built read/write, laid out, then compressed read-only")
+    func readWriteThenCompressed() throws {
+        let body = Self.buildDMG
+        let create = try #require(body.range(of: "-format UDRW"))
+        let layout = try #require(body.range(of: "layout_dmg_window \"$mnt\""))
+        let convert = try #require(body.range(of: "hdi convert \"$rw\" -format UDZO"))
+        #expect(create.lowerBound < layout.lowerBound && layout.lowerBound < convert.lowerBound)
+        #expect(body.contains("unmount_dmg \"$mnt\""))
+    }
+
+    @Test("A Finder that won't answer costs a warning, never the release")
+    func bestEffort() {
+        let body = Self.buildDMG
+        #expect(body.contains("if layout_dmg_window \"$mnt\"; then"))
+        #expect(body.contains("warn \"Finder didn't lay out the disk image window"))
+        #expect(Self.script.contains("with timeout of 60 seconds"))
+        #expect(!Self.script.contains("sudo "))
+    }
+
+    @Test("Winbar on the left, Applications on the right, on one row")
+    func sideBySide() throws {
+        func position(_ item: String) throws -> (Int, Int) {
+            let line = try #require(Self.script.split(separator: "\n").first { $0.contains("position of item \"\(item)\"") })
+            let numbers = line.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
+            return (numbers[numbers.count - 2], numbers[numbers.count - 1])
+        }
+        let app = try position("Winbar.app")
+        let applications = try position("Applications")
+        #expect(app.0 < applications.0)
+        #expect(app.1 == applications.1)
+    }
+}

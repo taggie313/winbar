@@ -82,6 +82,19 @@ struct PackagingTests {
         #expect(mkdir < copy)
     }
 
+    /// The icon Finder, the Dock, Spotlight and the DMG show: named in Info.plist, copied before the
+    /// seal like Armie's files, and present where the script reads it.
+    @Test("The app icon is named, copied before signing, and in the repository")
+    func appIcon() throws {
+        #expect(text("Resources/Info.plist").contains("<key>CFBundleIconFile</key>\n\t<string>AppIcon</string>"))
+        let lines = text("scripts/build-app.sh").components(separatedBy: "\n")
+        let copy = try #require(lines.firstIndex { $0.hasPrefix("cp Resources/AppIcon.icns ") })
+        let firstSign = try #require(lines.firstIndex { $0.trimmingCharacters(in: .whitespaces).hasPrefix("codesign ") })
+        #expect(copy < firstSign)
+        let size = try FileManager.default.attributesOfItem(atPath: root.appendingPathComponent("Resources/AppIcon.icns").path)[.size] as? Int ?? 0
+        #expect(size > 100_000 && size < 2_000_000)
+    }
+
     @Test("The three files are in the repository where build-app.sh reads them")
     func filesPresent() throws {
         var total = 0

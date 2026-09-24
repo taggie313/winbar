@@ -121,9 +121,9 @@ enum CreateScriptError: Error, Equatable {
         case .wrongState(let message):
             return WinbarError(message)
         case .refused(let message):
-            return WinbarError("Winbar didn't remove the install disks", message)
+            return WinbarError("Winbar didn't detach the install disks from UTM", message)
         case .changedUnexpectedly(let message):
-            return WinbarError("UTM reports something unexpected after removing the install disks", message)
+            return WinbarError("UTM reports something unexpected after detaching the install disks", message)
         case .automationDenied:
             return Automation.deniedError()
         case .other(let title, let detail):
@@ -505,7 +505,7 @@ on run argv
 			on error
 				error "UTM has no virtual machine with id " & vmId number 1111
 			end try
-			if vmStatus is not stopped then error "The VM must be shut down before its install disks can be removed." number 1112
+			if vmStatus is not stopped then error "The VM must be shut down before its install disks can be detached." number 1112
 			set c to configuration of theVM
 			-- A custom icon name makes `update configuration` throw iconNotFound; an empty icon is
 			-- skipped (the same trap and fix as UTMScripting.updateScript).
@@ -566,7 +566,7 @@ on run argv
 		set AppleScript's text item delimiters to "; "
 		set msg to problems as text
 		set AppleScript's text item delimiters to ""
-		error "After removing the install disks UTM reports: " & msg number 1114
+		error "After detaching the install disks UTM reports: " & msg number 1114
 	end if
 	set fields to {nRemovable as text, "1", diskId, (count of displaysAfter) as text, macAfter}
 	set AppleScript's text item delimiters to US

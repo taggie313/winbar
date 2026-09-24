@@ -19,8 +19,13 @@ import Foundation
 /// A second request while one is in flight is refused, not queued. A queued **Fix** behind a
 /// five-minute wait would run against facts nobody had looked at since it was pressed. The refusal
 /// (`Refusal`) names the work in flight, and what it is waiting for when that's a person in another
-/// app's window (`SetupCopy.Working.refusal`). Re-reading the Mac is not "work" in this sense and is
-/// never refused: it waits its turn on the queue.
+/// app's window (`SetupCopy.Working.refusal`). A read somebody pressed (**Check Again**) is a request
+/// like any other, and is refused the same way. A read nobody pressed never refuses and is never
+/// refused in words: the runner's own after a wake is taken once the queue is free
+/// (`retakeIfWatched`); the window's look (`lookAgain`) is declined while anything runs, and the
+/// window owes it until nothing does (`SetupWindowController.readByItself`); and a look or a read the
+/// window owes itself that the app's gate turned away is taken on the menu's next tick
+/// (`readWhenFree`).
 ///
 /// ## Sleep (critique §3, first part)
 ///
@@ -38,8 +43,7 @@ import Foundation
 /// ## Stale facts (critique §3, second part)
 ///
 /// A snapshot is a photograph. It goes stale when the Mac wakes (`NSWorkspace.didWakeNotification`),
-/// when Winbar comes back to the front (`NSApplication.didBecomeActiveNotification`), and when UTM's
-/// processes or the VM's come or go — which the menu's own five-second refresh already scans for, so
+/// and when UTM's processes or the VM's come or go — which the menu's own five-second refresh already scans for, so
 /// it calls `processTableTick()` rather than the runner keeping a second timer. Whoever holds a
 /// snapshot can ask `staleness(of:)`; observers are told `.stale` the moment it happens, and a fresh
 /// snapshot follows (`.refreshed`) once the queue is free. With no window attached nothing is read:
@@ -87,6 +91,14 @@ final class SetupRunner {
         /// one per step, because each of them is the same thing — a read — and a second name for it
         /// would be a second thing to keep in step.
         case checkAgain(WizardStep)
+        /// A look nobody pressed: the window's read when it becomes key again on a step that waits on
+        /// another app (`SetupJourneyActions.returnRead`). Not a **Check Again**: it forgets only what
+        /// the thing done elsewhere can have changed (`Forget`), so coming back never costs a survey
+        /// of Windows, a second Winbar for the self-test or Windows App's command line unless that is
+        /// what it's for. It goes through `SetupRunner.lookAgain`, never `run`: it is announced as a
+        /// refresh (`Event.refreshing`, `.refreshed`), raises no step, and leaves `lastEnded` alone,
+        /// so a failure card and the certificate's "not verified" stand through it.
+        case lookAgain(WizardStep, forgetting: Forget)
         case installUTM
         /// The App Store hand-off (`Dependencies.windowPlan`), never the cask.
         case installWindowsApp
@@ -119,10 +131,11 @@ final class SetupRunner {
         static let ownWork: Set<String> = ["H2", "H7", "C2"]
         var isSelection: Bool { if case .chooseVM = self { return true }; return false }
 
-        /// Which step the work belongs to. Doing it extends what later snapshots read to that step.
+        /// Which step the work belongs to. Doing it extends what later snapshots read to that step —
+        /// except a look (`lookAgain`), which reads what the wizard has reached and raises nothing.
         var step: WizardStep {
             switch self {
-            case .checkAgain(let step): return step
+            case .checkAgain(let step), .lookAgain(let step, _): return step
             case .installUTM, .settleUTM: return .lookAround
             case .chooseVM, .startVM: return .vm
             case .survey, .fixEverything, .keepBitLocker: return .tune
@@ -146,7 +159,7 @@ final class SetupRunner {
         var holdsMacAwake: Bool {
             switch self {
             case .installUTM, .startVM, .survey, .fix, .fixEverything, .applyChanges: return true
-            case .checkAgain, .installWindowsApp, .settleUTM, .chooseVM, .recordDone, .trustCertificate,
+            case .checkAgain, .lookAgain, .installWindowsApp, .settleUTM, .chooseVM, .recordDone, .trustCertificate,
                  .savePC, .connect, .guide, .keepBitLocker, .discardChanges: return false
             }
         }
@@ -160,24 +173,33 @@ final class SetupRunner {
             }
         }
 
-        /// Whether **Stop Waiting** can end it. Only the certificate: its wait is Winbar's own
-        /// subprocess, which Winbar can end, and it runs for five minutes. The Automation wait is
-        /// three rounds of utmctl that end by themselves within a minute.
-        var canStopWaiting: Bool { self == .trustCertificate }
+        /// Whether **Stop Waiting** can end it. The certificate: its wait is Winbar's own subprocess,
+        /// which Winbar can end, and it runs for five minutes. The start: once UTM has been asked, the
+        /// rest is up to three minutes of Winbar asking whether Windows is up yet, which stopping
+        /// leaves Windows to finish by itself. Connect: up to two minutes of asking whether Windows
+        /// takes Remote Desktop yet before Windows App is opened, which stopping ends as a cancel (the
+        /// step is ready to try again). The restart: the wait for Windows after it, which is the start's
+        /// wait again; `Reconfigure.apply` itself can't be cut short, so a stop pressed during it only
+        /// skips that wait, and the restart has still finished. Josh's Connect had no way out of its
+        /// wait, and neither did the restart's. The Automation wait is three rounds of utmctl that end
+        /// by themselves within a minute.
+        var canStopWaiting: Bool {
+            switch self {
+            case .trustCertificate, .startVM, .connect, .applyChanges: return true
+            default: return false
+            }
+        }
 
         /// Whether the work can be judged against the snapshot the runner holds, or needs a fresh one
         /// first. Everything but a read: a read is the fresh snapshot.
-        var needsFreshFacts: Bool {
-            if case .checkAgain = self { return false }
-            return true
-        }
+        var needsFreshFacts: Bool { !isRead }
 
         /// Whether fresh facts still ask for this work: the step still offers the button that asks
         /// for it. False means the Mac changed underneath the window (UTM quit, the VM stopped, a row
         /// went ok, Windows App was opened) and the work is not carried out. Pure.
         func applies(to facts: SetupFlow.Facts) -> Bool {
             switch self {
-            case .checkAgain:
+            case .checkAgain, .lookAgain:
                 return true
             case .installUTM:
                 return SetupRunner.actionable(Dependencies.windowPlan(for: .utm, state: facts.utm, brew: facts.homebrew,
@@ -228,6 +250,39 @@ final class SetupRunner {
                 return !facts.pending.isEmpty && facts.chosen != nil
             }
         }
+    }
+
+    /// What a look nobody pressed (`Work.lookAgain`) forgets before it reads: the one cache the thing
+    /// done in another app can have changed, and never more. Caches, not checks: forgetting a check
+    /// by its section (`Context.refresh(after:)`) would drop a client check's saved-PC lookup with
+    /// its self-test, and a look for Accessibility would run Windows App's command line. Each case
+    /// also forgets every status, so the rows are worked out again from what is kept.
+    ///
+    /// Nothing here forgets Windows App's saved PCs. The saved-PC step's look waits on Windows App
+    /// being quit, which a statuses look reads live (`WindowsAppBookmarks.appIsRunning`, a process
+    /// scan), and C2 is worked out again from the lookup already made. The lookup itself runs Windows
+    /// App's `--script bookmark list`, which reads while the app is open by design and which 11.4.2
+    /// was seen deadlocking; a look would run it on every return. **Check Again** and **Try Again**
+    /// still ask it.
+    ///
+    /// Once, a look does run it: when no lookup was ever made. With Windows App not installed, C2
+    /// says it needs Windows App (C1) without asking it anything, so there is no lookup to work from;
+    /// the first look after Windows App appears — back from the App Store, on the saved-PC step or
+    /// the finished page with Windows App skipped — makes the one lookup the step needs before it can
+    /// offer **Save It**, as its arrival read would have. Every look after that works from it. On
+    /// 11.4.2 that lookup can hang for the read gate's 10 seconds under "Checking again…", and the
+    /// card then says the command line isn't responding (`WindowsAppBookmarks.ReadGate`).
+    enum Forget: Equatable, Sendable {
+        /// Only the statuses: what is read live on every snapshot — H1's and C1's apps, the port,
+        /// the process table, whether Windows App is open — is read again, and the rest is worked
+        /// out from the caches.
+        case statuses
+        /// utmctl's answer and UTM's VM list: an Automation switch turned on, a VM made in UTM.
+        case utm
+        /// The survey of Windows: a sign-in on Windows' own screen.
+        case guest
+        /// The self-test behind C3 and C4: Accessibility turned on for Winbar.
+        case selfTest
     }
 
     /// Whether a snapshot read through `step` holds the Mac awake while it reads. From tune on, a read
@@ -346,7 +401,17 @@ final class SetupRunner {
     struct Refusal: Error, Equatable, Sendable, CustomStringConvertible {
         let wanted: Work
         let inFlight: InFlight
+        /// The app's gate's own words (`AppWorkGate`), when it was the gate that turned it down: the
+        /// menu or another window is doing something, which `inFlight` can't name.
         var reason: String? = nil
+        /// The gate's words have stopped being true: the runner has had the gate since, for work or a
+        /// read that began after this refusal, so whatever held it then has let go. "Winbar is still
+        /// starting “…”" said on after the menu had finished, until Ben pressed something else; the
+        /// page says it in the past tense from then on (`SetupCopy.Working.refused`).
+        var reasonPassed = false
+        /// The answers the press would have given, when it would have changed them: it is judged with
+        /// them whether it still makes sense to choose again (`SetupWindowState.stillRefused`).
+        var answers: SetupFlow.Answers? = nil
         var description: String { reason ?? String(SetupCopy.Working.refusal(inFlight).characters) }
     }
 
@@ -357,9 +422,11 @@ final class SetupRunner {
         case ended(Ending)
         /// The snapshot last handed out no longer describes the Mac. A fresh one follows.
         case stale(SetupFlow.Staleness)
-        /// An automatic read is still work: show it before disabling/refusing other actions.
+        /// A read nobody pressed has begun: the runner's own after a wake or a process came or went
+        /// (`retake`), or the window's look on coming back (`lookAgain`). Pages keep their card
+        /// through it; the runner's buttons wait for it, since it holds the queue.
         case refreshing(InFlight)
-        /// A fresh snapshot nobody asked for, after `.stale` and `.refreshing`.
+        /// That read's fresh snapshot. It never replaces how the last press ended (`lastEnded`).
         case refreshed(SetupFlow.Facts)
     }
 
@@ -454,8 +521,6 @@ final class SetupRunner {
         var processes: (String?) -> (utm: Set<Int32>, vm: Int32?)
         /// `NSWorkspace.shared.notificationCenter`, where the wake is posted.
         var workspace: NotificationCenter
-        /// `NotificationCenter.default`, where the app's activation is posted.
-        var app: NotificationCenter
         var workGate: AppWorkGate? = nil
 
         static var live: Environment {
@@ -469,7 +534,7 @@ final class SetupRunner {
                         },
                         processes: { vm in (Set(UTM.processIDs), VMProcesses.find(vm)?.pid) },
                         workspace: NSWorkspace.shared.notificationCenter,
-                        app: .default, workGate: .shared)
+                        workGate: .shared)
         }
     }
 
@@ -486,12 +551,15 @@ final class SetupRunner {
     /// Why `latest` is stale, once something has said so; nil again with the next snapshot.
     private var latestStale: SetupFlow.Staleness?
     private var retakeQueued = false
+    /// A look, or a read the window owed itself, that the app's gate turned away (the menu was
+    /// starting a VM, say): owed, and taken as a read of everything once the gate is free, on the
+    /// menu's next tick (`retakeIfWatched`, `readWhenFree`).
+    private var lookTurnedAway = false
     private var lastEnding: Ending?
     private var answers = SetupFlow.Answers()
     /// How far the wizard has got: snapshots read every step up to here (`readPlan`).
     private var reach: WizardStep = .lookAround
     private var lastWake: Date?
-    private var lastActivation: Date?
     private var observers: [UUID: (Event) -> Void] = [:]
     private var notificationTokens: [(NotificationCenter, NSObjectProtocol)] = []
 
@@ -500,9 +568,15 @@ final class SetupRunner {
         env = environment
         let wake = env.workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil,
                                              queue: nil) { [weak self] _ in self?.woke() }
-        let active = env.app.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil,
-                                         queue: nil) { [weak self] _ in self?.cameBack() }
-        notificationTokens = [(env.workspace, wake), (env.app, active)]
+        // Not Winbar coming back to the front. That re-read everything up to the furthest step each
+        // time — a survey of Windows from Tune on — so a page that was done went back to Checking…
+        // whenever the person looked at it, and the click that brought the window forward greyed out
+        // the button they came back to press: an Approve Certificate… pressed during the read was
+        // refused, and the refusal went with the read, so macOS's dialog never came. A step that waits
+        // on something done in another app takes a quiet, scoped look when its window becomes key
+        // instead (`SetupJourneyActions.returnRead`, `lookAgain`), a moment later, so any press made
+        // first wins; everything else keeps what it read, and Check Again.
+        notificationTokens = [(env.workspace, wake)]
     }
 
     deinit {
@@ -626,19 +700,74 @@ final class SetupRunner {
         }
     }
 
-    /// Whether `facts` still describe this Mac: a process-table scan and the two remembered times,
-    /// cheap enough to ask before drawing any button that acts.
-    func staleness(of facts: SetupFlow.Facts) -> SetupFlow.Staleness? {
-        let scan = env.processes(facts.chosenVM)
-        let (wake, active) = locked { (lastWake, lastActivation) }
-        return SetupFlow.staleness(of: facts, utmPIDs: scan.utm, vmPID: scan.vm, lastWake: wake,
-                                   lastActivation: active)
+    /// A look nobody pressed (`Work.lookAgain`): a fresh snapshot that forgets only what the look
+    /// names, handed out as a refresh (`.refreshing`, then `.refreshed`). Returns whether a read is
+    /// coming: this one, or a read of everything already queued.
+    ///
+    /// Not `run`, and not work. It makes no `Job` and says no lines; it never raises `reach`, so going
+    /// back to look doesn't make every later snapshot read further; and it never touches `lastEnded`.
+    /// That last is the point. A look that ended as work would replace how the last press ended: a
+    /// failed install's card would turn back into the plain "install UTM" card, and the certificate's
+    /// "not verified — check again" would be answered by a read that was never about it.
+    ///
+    /// Declined — false, and nothing said — while anything is in flight: that work ends with a
+    /// snapshot of its own. Turned away by the app's gate (the menu starting a VM), it is owed, and
+    /// taken as a read of everything on the menu's next tick (`lookTurnedAway`, `retakeIfWatched`).
+    /// Either way nothing reaches the window but the refresh itself: no refusal, no banner.
+    @discardableResult
+    func lookAgain(_ work: Work) -> Bool {
+        let started = env.clock()
+        lock.lock()
+        if retakeQueued {
+            lock.unlock()
+            return true
+        }
+        guard current == nil, refreshFlight == nil else {
+            lock.unlock()
+            return false
+        }
+        // In `run`'s order: this lock, then the gate's.
+        var lease: AppWorkGate.Lease?
+        if let gate = env.workGate {
+            guard case .success(let held) = gate.begin(.setup, label: "checking setup", vm: latest?.chosenVM,
+                                                       readsInstall: work.step <= .vm) else {
+                lookTurnedAway = true
+                lock.unlock()
+                return false
+            }
+            lease = held
+        }
+        let flight = InFlight(work: work, started: started, vm: latest?.chosenVM)
+        refreshFlight = flight
+        let targets = Array(observers.values)
+        // Queued under the lock, as `retake` does, so nothing handed out after can overtake it.
+        env.callbacks.async { targets.forEach { $0(.refreshing(flight)) } }
+        lock.unlock()
+
+        env.queue.async {
+            // Everything, when something has happened since the last snapshot or there is none.
+            let everything = self.locked { self.latestStale != nil || self.latest == nil }
+            let facts = self.snapshot(after: Performed(work: work, outcome: .finished), everything: everything)
+            lease?.finish()
+            self.store(facts) { targets in targets.forEach { $0(.refreshed(facts)) } }
+        }
+        return true
     }
 
-    /// Where step 7's restart stands, for a window that comes back to it.
-    var restartReport: RestartReport {
-        let (flight, ending, facts) = locked { (current, lastEnding, latest) }
-        return SetupRunner.restartReport(inFlight: flight, last: ending, facts: facts ?? SetupFlow.Facts())
+    /// A read the window owed itself that the app's gate turned away (the menu starting a VM): owed
+    /// here as a turned-away look is (`lookTurnedAway`), and taken as a read of everything once the
+    /// gate is free, on the menu's next tick. The window hears it as a refresh, which is its moment
+    /// to take a Check Again it still owes (`SetupWindowController.readByItself`).
+    func readWhenFree() {
+        locked { lookTurnedAway = true }
+        retakeIfWatched()
+    }
+
+    /// Whether `facts` still describe this Mac: a process-table scan and the last wake, cheap enough
+    /// to ask before drawing any button that acts.
+    func staleness(of facts: SetupFlow.Facts) -> SetupFlow.Staleness? {
+        let scan = env.processes(facts.chosenVM)
+        return SetupFlow.staleness(of: facts, utmPIDs: scan.utm, vmPID: scan.vm, lastWake: locked { lastWake })
     }
 
     // MARK: - Freshness
@@ -647,12 +776,6 @@ final class SetupRunner {
         let now = env.clock()
         locked { lastWake = now }
         invalidate(.slept)
-    }
-
-    private func cameBack() {
-        let now = env.clock()
-        locked { lastActivation = now }
-        invalidate(.reactivated)
     }
 
     /// The menu's five-second refresh calls this (`AppDelegate.refresh`): its timer is the one that
@@ -700,15 +823,20 @@ final class SetupRunner {
     /// in flight (work ends with a snapshot of its own, read after whatever made this one stale), and
     /// none queued already.
     ///
-    /// And only while a window is attached. Once the runner exists it hears every wake, activation and
+    /// And only while a window is attached. Once the runner exists it hears every wake and
     /// process change for the rest of the session, and a read at the wizard's furthest step can be a
     /// survey of Windows, a second Winbar launched for the self-test, Windows App's CLI, an Apple
     /// Event, a network probe and a write to Config — all for nobody, and some of it beside the menu's
     /// own work. With no window, the snapshot is only marked stale: `attach` re-reads it for the
     /// first window that needs it, and `run` re-reads stale facts before judging any work anyway.
+    ///
+    /// A look the app's gate turned away (`lookTurnedAway`) is owed in the same way: nothing marked
+    /// the snapshot stale, but the window asked for a look and was told nothing, so the menu's next
+    /// tick takes it.
     private func retakeIfWatched() {
         let retake: Bool = locked {
-            guard latestStale != nil, !observers.isEmpty, current == nil, refreshFlight == nil, !retakeQueued else { return false }
+            guard latestStale != nil || lookTurnedAway, !observers.isEmpty, current == nil, refreshFlight == nil,
+                  !retakeQueued else { return false }
             retakeQueued = true
             return true
         }
@@ -733,6 +861,8 @@ final class SetupRunner {
             guard current == nil, refreshFlight == nil else { retakeQueued = false; return nil }
             let flight = InFlight(work: .checkAgain(reach), started: env.clock(), vm: latest?.chosenVM)
             refreshFlight = flight
+            // This read is of everything, so it is the look that was turned away, too.
+            lookTurnedAway = false
             let targets = Array(observers.values)
             env.callbacks.async { targets.forEach { $0(.refreshing(flight)) } }
             return flight
@@ -843,7 +973,7 @@ final class SetupRunner {
         }
 
         // What the work may have changed is read again. Everything is, when anything happened while
-        // it ran (a wake, Winbar coming back, a process coming or going) or there was nothing before.
+        // it ran (a wake, a process coming or going) or there was nothing before.
         if outcome == .overtaken, let before { return (outcome, before) }
         let everything = before.map { staleness(of: $0) != nil } ?? true
         let facts = snapshot(after: Performed(work: work, outcome: outcome, rowFailures: job.rowFailures),
@@ -956,6 +1086,8 @@ extension SetupRunner {
         var rdpUser: String?
         var windowsAppRunning = false
         var readiness: RDP.Readiness?
+        /// The host whose saved-PC tile this window's last Connect pressed (`Facts.savedPCPressed`).
+        var savedPCPressed: String?
         var pending = ConfigChanges()
         /// nil: not asked (only the last step asks).
         var otherVMs: Result<[String], WinbarError>?
@@ -978,8 +1110,9 @@ extension SetupRunner {
     ///   read. A check not read has no row, and absent is never "fine".
     /// - A fix that failed leaves its words on its row (`Row.failure`), and a **Done** that didn't take
     ///   leaves "still: …" (`Row.still`). Both stay across later snapshots for as long as the row
-    ///   says the same kind of thing — a re-read after Winbar comes back to the front mustn't wipe
-    ///   the one message the person needs — and go when it changes, or when the row is fixed.
+    ///   says the same kind of thing — a read nobody pressed, after a wake or on the window's look
+    ///   when it becomes key, mustn't wipe the one message the person needs — and go when it
+    ///   changes, or when the row is fixed.
     /// - A VM list that failed is a failure, never an empty list.
     /// - Whether the VM runs comes from the stamp's process scan, not UTM's list, so the two can't
     ///   disagree within one snapshot.
@@ -1009,6 +1142,7 @@ extension SetupRunner {
         facts.rdpUser = readings.rdpUser
         facts.windowsAppRunning = readings.windowsAppRunning
         facts.readiness = readings.readiness
+        facts.savedPCPressed = readings.savedPCPressed
         facts.pending = readings.pending
         facts.otherVMs = readings.otherVMs.map(SetupFlow.OtherVMs.init) ?? .notAsked
         facts.utmRestartOwed = readings.pendingRestart.map { !stamp.utmPIDs.isDisjoint(with: $0.pids) } ?? false
@@ -1144,6 +1278,28 @@ extension SetupRunner {
         readPlan(through: step, utmRunning: readings.utm.isInstalled && utmUp,
                  mayAskUTM: settled != nil || consent() == .decided,
                  connectPressed: answers.connectPressed || answers.connectionOpened)
+    }
+
+    /// Whether a snapshot asks utmctl again rather than taking what it said to the last **Open UTM
+    /// and Ask** or **Try Again** (`settled`). A utmctl that said nothing while macOS's prompt may still
+    /// be up isn't asked again by a mere re-read: twenty more seconds of nothing, and every Apple Event
+    /// after it would wait out a timeout of its own. Every other answer is asked again, because the fix
+    /// for it happens outside the window, and the window's look when it becomes key on such a page
+    /// asks UTM again (`SetupJourneyActions.returnRead`, forgetting `Forget.utm`):
+    ///
+    /// - A refusal comes back at once, so asking again costs nothing, and once the switch is on in
+    ///   System Settings the next read is what notices. Taking the old answer kept the window on
+    ///   "not allowed" however often it was looked at again, until someone pressed **Try Again**.
+    /// - Silence with macOS's answer already on file (`consent`, asked only then) has no prompt to wait
+    ///   behind, so asking again can't queue behind one.
+    /// - An error of UTM's own ("not running") is as quick, and opening UTM is the fix.
+    ///
+    /// Not the read straight after the asking (`justAsked`), which the answer was just given to: after
+    /// a minute of silence with an answer on file, it would wait twenty seconds more for nothing. Pure.
+    static func reasksUTM(after settled: UTM.CtlAnswer, justAsked: Bool, consent: () -> Automation.Consent) -> Bool {
+        guard !justAsked else { return false }
+        guard case .silent = settled else { return true }
+        return consent() == .decided
     }
 
     // MARK: Step 7, coming back to it (pure)

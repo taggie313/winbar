@@ -65,10 +65,12 @@ import Testing
     static var failed: CreateJobState {
         state(stage: .oobe, outcome: .failed,
               messages: [("N_PC_SAVED", CreateCopy.nPCSaved(name: plan.vmName))],
-              failure: CreateFailure(code: "E_TIMEOUT", title: "Windows still hadn't finished installing",
-                                     detail: "Windows still hadn't finished installing after 2 hours, so Winbar "
-                                        + "stopped waiting.",
-                                     nextStep: "The VM is still running: look at its window in UTM."))
+              // The job's own E_TIMEOUT words (`CreateJobRun`), not an invented next step.
+              failure: CreateFailure(code: "E_TIMEOUT",
+                                     title: "Windows still hadn't finished installing after 2 hours, so Winbar stopped "
+                                        + "waiting.",
+                                     detail: "The VM is still running: look at its window in UTM to see where it stopped.",
+                                     nextStep: "To start over: winbar create --cancel \"\(plan.vmName)\", then create it again."))
     }
 
     /// Installed, with a warning the ending has to box rather than footnote.

@@ -488,11 +488,12 @@ esac
 # --------------------------------------------------------- the disk image ---
 
 # Builds $DMG out of whatever state $APP is in right now: Winbar.app beside a
-# symlink to /Applications, read-only and compressed. Called twice in a real
-# release's life — once here on a dry run, once after stapling.
+# symlink to /Applications, read-only and compressed, with its window laid out
+# when Finder will do it. Called twice in a real release's life — once here on a
+# dry run, once after stapling.
 build_dmg() {
-  local stage="$WORK/dmg"
-  rm -rf "$stage" "$DMG"
+  local stage="$WORK/dmg" rw="$WORK/layout.dmg" mnt="$WORK/layout"
+  rm -rf "$stage" "$DMG" "$rw"
   mkdir -p "$stage"
   # ditto, not cp -R: it is the copy that keeps the extended attributes, the
   # symlinks and the resource forks a signed bundle's seal covers. A stapled
@@ -501,22 +502,72 @@ build_dmg() {
   # The drag target, and the whole reason this is a disk image rather than a
   # zip: both icons are in the one window, and dragging the app onto the folder
   # installs it. A symlink costs nothing in the image and Finder draws it as
-  # the real folder. Nothing here arranges that window — no background, no icon
-  # positions, no set size. That would mean building the image read/write,
-  # mounting it, scripting Finder into writing a .DS_Store and converting it
-  # back; this image has no .DS_Store, so Finder opens the volume in whatever
-  # view the person already uses.
+  # the real folder.
   ln -s /Applications "$stage/Applications"
-  # One hdiutil call does the lot: -srcfolder sizes the image from the folder,
+  # Built read/write first, so Finder can be asked to lay the window out: the
+  # layout is a .DS_Store only Finder writes. HFS+ because an APFS image needs a
+  # newer macOS to mount than the app needs to run, and this has to open on
+  # every Mac the cask claims to support.
+  hdi create -volname "$VOLNAME" -srcfolder "$stage" -fs HFS+ -format UDRW -ov "$rw" \
+    || die "hdiutil couldn't build $rw"
+  rm -rf "$stage"
+  mkdir -p "$mnt"
+  hdi attach "$rw" -mountpoint "$mnt" -readwrite -noverify -noautoopen -quiet \
+    || die "hdiutil couldn't mount $rw to lay out its window"
+  MOUNTED="$MOUNTED
+$mnt"
+  # Best effort, on purpose. Without it the image is exactly what it was before
+  # this step existed — correct, just unarranged — so a Finder that won't answer
+  # (no Automation consent for this terminal, no GUI session) costs a warning,
+  # never the release.
+  if layout_dmg_window "$mnt"; then
+    ok "disk image window: Winbar and Applications side by side"
+  else
+    warn "Finder didn't lay out the disk image window; it opens in the person's own view"
+  fi
+  # macOS's own bookkeeping, not part of the window; best effort like the layout.
+  rm -rf "$mnt/.fseventsd" "$mnt/.Trashes" 2>/dev/null || true
+  sync
+  unmount_dmg "$mnt"
   # UDZO is the read-only zlib-compressed format (that is what makes it
   # read-only and compressed — there is no separate flag), and zlib-level=9
-  # spends a few seconds of the release on a smaller download. HFS+ because an
-  # APFS image needs a newer macOS to mount than the app needs to run, and this
-  # has to open on every Mac the cask claims to support.
-  hdi create -volname "$VOLNAME" -srcfolder "$stage" -fs HFS+ \
-    -format UDZO -imagekey zlib-level=9 -ov "$DMG" \
-    || die "hdiutil couldn't build $DMG"
-  rm -rf "$stage"
+  # spends a few seconds of the release on a smaller download.
+  hdi convert "$rw" -format UDZO -imagekey zlib-level=9 -ov -o "$DMG" \
+    || die "hdiutil couldn't compress $DMG"
+  rm -f "$rw"
+}
+
+# layout_dmg_window MOUNTPOINT: Finder writes the window's .DS_Store: icon view,
+# no toolbar, 128-point icons, the app on the left and Applications on the
+# right, which is the drag the image exists for. Addressed by path, not by
+# volume name, so another "Winbar …" image left mounted can't be the one laid
+# out. The timeout is the answer to a pending Automation prompt: it waits a
+# minute, then the release goes on without the layout.
+layout_dmg_window() {
+  osascript - "$1" >/dev/null 2>&1 <<'OSA'
+on run argv
+  with timeout of 60 seconds
+    tell application "Finder"
+      set volumeFolder to (POSIX file (item 1 of argv) as alias)
+      open volumeFolder
+      set theWindow to container window of volumeFolder
+      set current view of theWindow to icon view
+      set toolbar visible of theWindow to false
+      set statusbar visible of theWindow to false
+      set bounds of theWindow to {200, 120, 740, 440}
+      set viewOptions to icon view options of theWindow
+      set arrangement of viewOptions to not arranged
+      set icon size of viewOptions to 128
+      set position of item "Winbar.app" of volumeFolder to {140, 150}
+      set position of item "Applications" of volumeFolder to {400, 150}
+      update volumeFolder without registering applications
+      delay 1
+      close theWindow
+    end tell
+  end timeout
+end run
+OSA
+  [ -f "$1/.DS_Store" ]
 }
 
 # check_dmg NOTARIZED: mounts $DMG the way a user's Mac will, checks what is in

@@ -65,8 +65,14 @@ struct CreateProgress: Equatable {
     /// done, failed or cancelled; nil while it runs.
     var outcome: CreateJobState.Outcome?
     var header: String
+    /// The whole install's time as a clock, for the ending's own column.
     var elapsed: String
+    /// "Stage 6 of 10 · Copying files": the install's own count, named so it isn't read as a second
+    /// "step" under the setup window's "Step 3 of 8", with what the stage is.
     var step: String
+    /// "14 min so far · usually 10–15 min": the running time, said as one, beside what to expect. The
+    /// header's bare "14:32" didn't say what it counted.
+    var soFar: String
     var fraction: Double
     var rows: [Row]
     /// W_STALL or W_STALL_BUSY, while that stall is still true.
@@ -93,7 +99,8 @@ struct CreateProgress: Equatable {
         header = CreateCopy.pHeader(edition: state.plan.edition.displayName, name: state.plan.vmName)
         let end = state.finishedAt ?? now
         elapsed = CreateElapsed.clock(end.timeIntervalSince(state.startedAt))
-        step = CreateCopy.pStep(state.stage.number)
+        step = CreateCopy.pStage(state.stage)
+        soFar = CreateCopy.pSoFar(end.timeIntervalSince(state.startedAt))
         fraction = Double(state.stage.number - (state.isFinished ? 0 : 1)) / 10
         let failedHere = state.outcome == .failed
         rows = CreateStage.allCases.map { stage in
@@ -108,9 +115,11 @@ struct CreateProgress: Equatable {
                 // clock would restart at 0:00 twenty times over. A state file from a Winbar that
                 // didn't record the stage's start falls back to it all the same.
                 let began = state.stageStartedAt ?? state.updatedAt
+                // In minutes, as a duration, like the header's: a second ticking clock beside the
+                // header's read as two unlabelled times.
                 return Row(stage: stage, mark: mark, title: stage.runningTitle,
                            detail: CreateProgress.detail(state.detail),
-                           elapsed: mark == .running ? CreateElapsed.clock(end.timeIntervalSince(began)) : nil)
+                           elapsed: mark == .running ? CreateElapsed.minutes(end.timeIntervalSince(began)) : nil)
             }
             return Row(stage: stage, mark: .pending, title: stage.runningTitle)
         }
@@ -136,6 +145,14 @@ struct CreateJobView: View {
     let state: CreateJobState
     /// The wizard's Armie, while these views are its step 2 (`CreateRootView.armie`).
     var armie: ArmieHost? = nil
+    /// Quieter words: the system's secondary grey in the window of its own, the wizard's muted grey
+    /// inside it (`setupHosted`), where the secondary measured 3.5 to 3.9:1 on the light backdrop.
+    @Environment(\.quietText) private var quiet
+
+    /// Inside the Set Up Winbar window, where the buttons go in the wizard's own footer band.
+    @Environment(\.setupHosted) private var hosted
+    /// The quieter notes of a running install, folded away until asked for (`runningBody`).
+    @State private var showingNotes = false
 
     private var progress: CreateProgress { CreateProgress(state: state, now: controller.now) }
 
@@ -150,10 +167,23 @@ struct CreateJobView: View {
                     case nil: runningBody
                     }
                 }
-                .padding(20)
+                // Inside Set Up Winbar the title sits where every other page's does, 2 pt under the
+                // step bar's row, as the form's does; the window of its own keeps its margin.
+                .padding(.horizontal, SetupStyle.pagePadding)
+                .padding(.top, hosted ? 2 : SetupStyle.pagePadding)
+                .padding(.bottom, SetupStyle.pagePadding)
+                .frame(maxWidth: hosted ? SetupStyle.contentWidth + 2 * SetupStyle.pagePadding : .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity)
             }
-            Divider()
-            buttons.padding(20)
+            if hosted {
+                // The wizard's own footer band, the one its other pages draw (`SetupFooterBand`): the
+                // install drew a divider and buttons of its own, 9 pt higher, so the footer jumped when
+                // an install started.
+                SetupFooterBand { buttons }
+            } else {
+                Divider()
+                buttons.padding(20)
+            }
         }
     }
 
@@ -161,34 +191,61 @@ struct CreateJobView: View {
 
     private var runningBody: some View {
         let progress = self.progress
+        let (boxed, quiet) = (progress.notes.filter(\.boxed), progress.notes.filter { !$0.boxed })
+        let heading = CreateJobView.heading(state, hosted: hosted)
         return VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(progress.header).font(.headline)
-                Spacer()
-                Text(progress.elapsed).monospacedDigit().foregroundStyle(.secondary)
-            }
-            HStack(spacing: 10) {
+            // The page's title, a heading of its own (`JobHeading`): it sat inside the relabelled
+            // element below, whose label dropped it, so VoiceOver never read the header at all.
+            JobHeading(heading: heading, hosted: hosted)
+            VStack(alignment: .leading, spacing: 8) {
+                // Under the title, what is installed where; in the window of its own the headline says it.
+                if hosted {
+                    Text(CreateCopy.pSubtitle(edition: state.plan.edition.displayName, name: state.plan.vmName))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(progress.step)
+                    Spacer(minLength: 0)
+                    Text(progress.soFar).monospacedDigit().foregroundStyle(self.quiet)
+                }
+                .font(.callout)
                 ProgressView(value: progress.fraction)
-                Text(progress.step).font(.callout).foregroundStyle(.secondary)
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(progress.step)
+            .accessibilityLabel(CreateJobView.progressLabel(progress, state: state, hosted: hosted))
+            // A stall is the one thing here that needs the person, so it comes before the stages. Its
+            // button, Show VM Window, is the footer's corner and Return's while it lasts (`actions`).
+            if let stall = progress.stall {
+                Callout(.attention) { Text(stall) }
+            }
             StepList(rows: progress.rows)
-            if let stall = progress.stall { NoteBox(stall) }
-            noteList(progress.notes)
-            Text(controller.readOnly ? CreateCopy.pFooterCLI : CreateCopy.pFooter)
-                .font(.callout).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            // Last on the page, under the stages and anything the job has said: those are the install,
-            // and he mustn't push the running row, a stall or a note further down it. Only the running
-            // body has him; the ending and the failure are drawn without.
+            // Under the stages he narrates and above the notes, which pushed him below the fold. Only
+            // the running body has him; the ending and the failure are drawn without.
             //
-            // No rule above him, unlike step 1's card. At the first-open size a note or two from the job
-            // (a preflight caution, the saved PC) and the app's two-line footer put him below the fold,
-            // and a rule of his own would be all that showed of him: a second line just above the
-            // button bar's, which reads as something cut off. The page's spacing sets him apart.
+            // No rule above him, unlike step 1's card: the page's spacing sets him apart, and a rule of
+            // his own at the fold would read as something cut off.
             if let armie, let cue = ArmieCue.installing(state) {
                 ArmieSays(line: cue.line, art: armie.art, clip: cue.clip, send: armie.send)
+            }
+            // The warnings that make something the password copy promised untrue stay in view; the
+            // rest (a battery caution, FileVault) are there for whoever wants them.
+            ForEach(boxed, id: \.code) { NoteBox($0.text) }
+            if !quiet.isEmpty {
+                DisclosureGroup(isExpanded: $showingNotes) {
+                    noteList(quiet).padding(.top, 6)
+                } label: {
+                    Text(CreateCopy.pNotes(quiet.count)).font(.callout)
+                }
+            }
+            if controller.readOnly {
+                Text(CreateCopy.pFooterCLI).font(.callout).foregroundStyle(self.quiet)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                // Not "you don't need to watch or click anything" under a stall that asks Ben to look
+                // at the VM's window.
+                Text(progress.stall == nil ? CreateCopy.pCloseWindow : CreateCopy.pCloseWindowStalled)
+                    .font(.callout).foregroundStyle(self.quiet)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -205,7 +262,7 @@ struct CreateJobView: View {
                     } else {
                         Text(note.text)
                             .font(.callout)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(quiet)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -219,25 +276,23 @@ struct CreateJobView: View {
     private var doneBody: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
-                Text("✓ " + CreateCopy.installed(edition: state.plan.edition.displayName,
-                                                 name: state.plan.vmName)).font(.headline)
+                JobHeading(heading: CreateJobView.heading(state, hosted: hosted), hosted: hosted)
                 Spacer()
                 Text(CreateElapsed.minutes((state.finishedAt ?? controller.now).timeIntervalSince(state.startedAt)))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(quiet)
             }
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
                 GridRow {
-                    Text("Sign in as").foregroundStyle(.secondary)
+                    Text("Sign in as").foregroundStyle(quiet)
                     Text(state.plan.userName)
                 }
                 GridRow {
-                    Text("Reach it at").foregroundStyle(.secondary)
+                    Text("Reach it at").foregroundStyle(quiet)
                     Text(CreateChoices.hostName(computerName: state.plan.computerName))
                 }
             }
             if controller.isEmbedded {
-                Text("Close this result to return to setup. Choose this VM there if you want Winbar to look after it.")
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(SetupCopy.markdown(CreateCopy.doneEmbedded)).fixedSize(horizontal: false, vertical: true)
             } else {
             Text(CreateCopy.nNextCommand(plan: state.plan)).fixedSize(horizontal: false, vertical: true)
             HStack {
@@ -263,11 +318,11 @@ struct CreateJobView: View {
 
     private func bullet(_ text: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text("·").foregroundStyle(.secondary)
+            Text("·").foregroundStyle(quiet)
             Text(text).fixedSize(horizontal: false, vertical: true)
         }
         .font(.callout)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(quiet)
     }
 
     // MARK: Failed and cancelled
@@ -275,15 +330,14 @@ struct CreateJobView: View {
     private var failureBody: some View {
         let progress = self.progress
         return VStack(alignment: .leading, spacing: 12) {
-            Text(CreateJobView.failureHeader(state)).font(.headline)
-                .fixedSize(horizontal: false, vertical: true)
+            JobHeading(heading: CreateJobView.heading(state, hosted: hosted), hosted: hosted)
             if let failure = state.failure {
                 let detail = CreateJobView.failureDetail(failure)
                 if !detail.isEmpty {
                     Text(detail).fixedSize(horizontal: false, vertical: true)
                 }
                 if let next = failure.nextStep.flatMap({ CreateCopy.windowNextStep($0, resumable: state.isResumable) }) {
-                    Text(next).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text(SetupCopy.markdown(next)).foregroundStyle(quiet).fixedSize(horizontal: false, vertical: true)
                 }
             }
             StepList(rows: progress.rows)
@@ -293,24 +347,86 @@ struct CreateJobView: View {
 
     private var cancelledBody: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(CreateCopy.cancelledHeader(name: state.plan.vmName)).font(.headline)
+            JobHeading(heading: CreateJobView.heading(state, hosted: hosted), hosted: hosted)
             // What this cancel did, when this window is the one that asked; otherwise what a cancel
             // does (the CLI's, or one this window didn't see).
             Text(controller.cancelNote ?? CreateCopy.cancelledNote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(quiet)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    /// `✗ {what failed}`, or the milder `!` line when Windows is installed but some of the first
-    /// sign-in steps didn't work (E_RESULT_FAILED).
-    static func failureHeader(_ state: CreateJobState) -> String {
-        guard let failure = state.failure else { return "✗ " + CreateCopy.eStopped }
-        if failure.code == "E_RESULT_FAILED" {
-            return "! " + CreateCopy.installedWithProblems(edition: state.plan.edition.displayName,
-                                                           name: state.plan.vmName)
+    /// What VoiceOver is told when the install ends — its heading — once per ending: nil while it
+    /// runs, and nil for an ending already said (the same ended state arrives from the run's own
+    /// callback and from the menu bar's follower). Pure.
+    static func announcement(from old: CreateJobState?, to new: CreateJobState) -> String? {
+        guard new.isFinished, !(old?.isFinished == true && old?.id == new.id) else { return nil }
+        switch new.outcome {
+        case .done:
+            return CreateCopy.installed(edition: new.plan.edition.displayName, name: new.plan.vmName)
+        case .failed:
+            return failureHeader(new)
+        case .cancelled:
+            return CreateCopy.cancelledHeader(name: new.plan.vmName)
+        case nil:
+            return nil
         }
-        return "✗ \(failure.title)"
+    }
+
+    /// What failed, or the milder line when Windows is installed but some of the first sign-in steps
+    /// didn't work (E_RESULT_FAILED). Words only: the mark beside it is `failureMark`'s, the one
+    /// `StatusMark` the rest of the window uses, where a text ✗ or ! in the body colour was read out
+    /// as part of the title.
+    static func failureHeader(_ state: CreateJobState) -> String {
+        guard let failure = state.failure else { return CreateCopy.eStopped }
+        if failure.code == "E_RESULT_FAILED" {
+            return CreateCopy.installedWithProblems(edition: state.plan.edition.displayName, name: state.plan.vmName)
+        }
+        return failure.title
+    }
+
+    static func failureMark(_ state: CreateJobState) -> StatusMark.Status {
+        state.failure?.code == "E_RESULT_FAILED" ? .attention : .failed
+    }
+
+    /// The top of each view: inside Set Up Winbar, a page title at the wizard's size over the status
+    /// line; in the window of its own, the status line alone as the headline. Every other page of the
+    /// wizard has a 24 pt title, and the install's was 13 pt text. Pure.
+    struct Heading: Equatable {
+        /// The page's title (`SetupPageTitle`), inside Set Up Winbar only.
+        var title: String?
+        var mark: StatusMark.Status?
+        /// The line under the title, or the headline in the window of its own.
+        var line: String?
+    }
+
+    static func heading(_ state: CreateJobState, hosted: Bool) -> Heading {
+        let edition = state.plan.edition.displayName, name = state.plan.vmName
+        switch state.outcome {
+        case nil:
+            // The line goes in the progress element's label, which VoiceOver reads after the title.
+            return hosted ? Heading(title: CreateCopy.pTitle) : Heading(line: CreateCopy.pHeader(edition: edition, name: name))
+        case .done:
+            return Heading(title: hosted ? CreateCopy.dTitle : nil, mark: .done,
+                           line: CreateCopy.installed(edition: edition, name: name))
+        case .failed:
+            let problems = state.failure?.code == "E_RESULT_FAILED"
+            // Installed with problems says so as its title; its line is which steps failed.
+            let line = problems && hosted ? (state.failure?.title ?? failureHeader(state)) : failureHeader(state)
+            return Heading(title: hosted ? (problems ? CreateCopy.dTitleProblems : CreateCopy.fTitle) : nil,
+                           mark: failureMark(state), line: line)
+        case .cancelled:
+            return hosted ? Heading(title: CreateCopy.cTitle) : Heading(line: CreateCopy.cancelledHeader(name: name))
+        }
+    }
+
+    /// The running page's progress, as VoiceOver reads it after the heading: inside Set Up Winbar what
+    /// is installed where (the title says only "Installing Windows"), then the stage and the time. The
+    /// label replaced the header the element once held, so the header was never read. Pure.
+    static func progressLabel(_ progress: CreateProgress, state: CreateJobState, hosted: Bool) -> String {
+        let parts = [hosted ? CreateCopy.pSubtitle(edition: state.plan.edition.displayName, name: state.plan.vmName) : nil,
+                     progress.step, progress.soFar]
+        return parts.compactMap { $0 }.joined(separator: ", ")
     }
 
     /// The detail with the header's own sentence taken off the front. Several failures word their
@@ -326,51 +442,160 @@ struct CreateJobView: View {
 
     // MARK: Buttons
 
+    /// One of the buttons under an install, as a value, so the rule for which ones there are, and which
+    /// is the default, can be read without drawing.
+    struct Action: Equatable {
+        enum Press: Equatable { case showVM, showLog, deleteVM, cancelInstall, close, done, tryAgain }
+        /// `standard` is the window's default button, which Return presses; `cancel` takes Escape.
+        enum Kind: Equatable { case plain, destructive, cancel, standard }
+
+        var title: String
+        var press: Press
+        var kind: Kind = .plain
+        var enabled = true
+    }
+
+    /// The buttons under `state`: bottom-left what looks at the VM, bottom-right the way on. Pure.
+    ///
+    /// While a stall is shown, **Show VM Window** moves from the bottom left to the corner, as the
+    /// default: the stall asks Ben to look at the VM's window.
+    static func actions(_ state: CreateJobState, readOnly: Bool, cancelling: Bool,
+                        stalled: Bool = false) -> (leading: [Action], trailing: [Action]) {
+        var leading: [Action] = []
+        if state.outcome == nil || state.outcome == .failed, !(state.outcome == nil && stalled) {
+            leading.append(Action(title: CreateCopy.bShowVM, press: .showVM,
+                                  enabled: state.stage.number >= CreateStage.boot.number))
+        }
+        if state.outcome == .failed, state.logPath != nil {
+            leading.append(Action(title: CreateCopy.bShowLog, press: .showLog))
+        }
+        // Deleting the VM is the one thing here that can't be undone, so it sits apart from the way
+        // forward, marked as destructive, rather than beside Try Again in the same style.
+        if state.outcome == .failed {
+            leading.append(Action(title: CreateCopy.bDeleteVM, press: .deleteVM, kind: .destructive))
+        }
+        var trailing: [Action] = []
+        switch state.outcome {
+        case nil:
+            if !readOnly {
+                trailing.append(Action(title: CreateCopy.bCancelInstall, press: .cancelInstall, enabled: !cancelling))
+            }
+            // "Hide" sat right under "Hide Armie", and said nothing of what came after it.
+            // A stall is the one moment in the install when Ben has to act, and its callout asks him to
+            // look at the VM's window: Show VM Window is then the corner and Return's, and Close Window,
+            // the default the rest of the time, is plain beside it.
+            trailing.append(Action(title: CreateCopy.bCloseWindow, press: .close, kind: stalled ? .plain : .standard))
+            if stalled {
+                trailing.append(Action(title: CreateCopy.bShowVM, press: .showVM, kind: .standard,
+                                       enabled: state.stage.number >= CreateStage.boot.number))
+            }
+        case .done:
+            trailing.append(Action(title: CreateCopy.bDone, press: .done, kind: .standard))
+        case .failed:
+            // The job's own test for what `--resume` (and so Try Again) can carry on with: the VM is
+            // still there, its setup disk is still there, and Windows had started. When the install
+            // can carry on, carrying on is the default and Close is Escape; Close being the default
+            // sent Return to the button that gives up.
+            if state.isResumable {
+                trailing.append(Action(title: CreateCopy.bClose, press: .done, kind: .cancel))
+                trailing.append(Action(title: CreateCopy.bTryAgain, press: .tryAgain, kind: .standard))
+            } else {
+                trailing.append(Action(title: CreateCopy.bClose, press: .done, kind: .standard))
+            }
+        case .cancelled:
+            trailing.append(Action(title: CreateCopy.bClose, press: .done, kind: .standard))
+        }
+        return (leading, trailing)
+    }
+
     @ViewBuilder private var buttons: some View {
-        HStack {
-            if state.outcome == nil || state.outcome == .failed {
-                Button(CreateCopy.bShowVM) { controller.showVMWindow() }
-                    .disabled(state.stage.number < CreateStage.boot.number)
-            }
-            if state.outcome == .failed, state.logPath != nil {
-                Button(CreateCopy.bShowLog) { controller.showLog() }
-            }
-            // Deleting the VM is the one thing here that can't be undone, so it sits apart from the way
-            // forward, marked as destructive, rather than beside Try Again in the same style.
-            if state.outcome == .failed {
-                Button(CreateCopy.bDeleteVM, role: .destructive) { controller.cancelInstall() }
-            }
+        let actions = CreateJobView.actions(state, readOnly: controller.readOnly, cancelling: controller.cancelling,
+                                            stalled: state.outcome == nil && progress.stall != nil)
+        HStack(spacing: 10) {
+            ForEach(Array(actions.leading.enumerated()), id: \.offset) { _, action in button(action) }
             Spacer()
-            switch state.outcome {
-            case nil:
-                if !controller.readOnly {
-                    Button(CreateCopy.bCancelInstall) { controller.cancelInstall() }
-                        .disabled(controller.cancelling)
-                }
-                Button(CreateCopy.bHide) { controller.close() }
-                    .keyboardShortcut(.defaultAction)
-            case .done:
-                Button(CreateCopy.bDone) { controller.dismissJob() }
-                    .keyboardShortcut(.defaultAction)
-            case .failed:
-                // The job's own test for what `--resume` (and so Try Again) can carry on with: the
-                // VM is still there, its setup disk is still there, and Windows had started.
-                // When the install can carry on, carrying on is the default and Close is Escape; Close
-                // being the default sent Return to the button that gives up.
-                if state.isResumable {
-                    Button(CreateCopy.bClose) { controller.dismissJob() }
-                        .keyboardShortcut(.cancelAction)
-                    Button(CreateCopy.bTryAgain) { controller.tryAgain() }
-                        .keyboardShortcut(.defaultAction)
-                        .buttonStyle(.borderedProminent)
+            ForEach(Array(actions.trailing.enumerated()), id: \.offset) { _, action in button(action) }
+        }
+    }
+
+    @ViewBuilder private func button(_ action: Action) -> some View {
+        let control = Button(action.title, role: action.kind == .destructive ? .destructive : nil) { press(action.press) }
+            .disabled(!action.enabled)
+        switch action.kind {
+        case .standard: control.windowDefaultButton()
+        case .cancel: control.keyboardShortcut(.cancelAction)
+        case .plain, .destructive: control
+        }
+    }
+
+    private func press(_ press: Action.Press) { controller.perform(press) }
+}
+
+/// The top of an install view (`CreateJobView.Heading`): inside Set Up Winbar the page's title at the
+/// wizard's size, then the status line with its mark; in the window of its own, the status line as the
+/// headline. Either way VoiceOver lands on it as a heading.
+struct JobHeading: View {
+    let heading: CreateJobView.Heading
+    let hosted: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let title = heading.title { SetupPageTitle(title) }
+            if let line = heading.line {
+                if hosted {
+                    SetupStatusLine(heading.mark, line)
                 } else {
-                    Button(CreateCopy.bClose) { controller.dismissJob() }
-                        .keyboardShortcut(.defaultAction)
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        if let mark = heading.mark { StatusMark(mark) }
+                        Text(line).font(.headline).fixedSize(horizontal: false, vertical: true)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityAddTraits(.isHeader)
                 }
-            case .cancelled:
-                Button(CreateCopy.bClose) { controller.dismissJob() }
-                    .keyboardShortcut(.defaultAction)
             }
         }
     }
+}
+
+// MARK: - The install's words in these views
+
+extension CreateCopy {
+    /// Where the running install stands, in its own count: "Stage 6 of 10 · Copying files".
+    static func pStage(_ stage: CreateStage) -> String {
+        let short = stage.shortTitle
+        return "Stage \(stage.number) of 10 · " + (short.first.map { $0.uppercased() + short.dropFirst() } ?? short)
+    }
+
+    /// How long a Windows install usually takes on a recent Mac, from the installs Winbar has timed.
+    static let pUsually = "usually 10–15 min"
+
+    static func pSoFar(_ seconds: TimeInterval) -> String {
+        "\(CreateElapsed.minutes(seconds)) so far · \(pUsually)"
+    }
+
+    /// The running install's close button, and what closing it does: the window comes back by itself
+    /// when the install ends (`CreateWindowController.reopensWhenJobEnds`, true for any install this
+    /// app runs whose window has been open — the only one this sentence is drawn for).
+    static let bCloseWindow = "Close Window"
+    static let pCloseWindow = "You don't need to watch or click anything. " + pCloseWindowStalled
+    /// The same, under a stall, which does ask Ben to look and perhaps click.
+    static let pCloseWindowStalled = "You can close this window: Winbar carries on, the menu bar shows how it's going, "
+        + "and this window comes back when Windows is ready."
+
+    /// The install page's title inside Set Up Winbar, at the wizard's title size, while it runs and
+    /// as it ends (`CreateJobView.heading`).
+    static let pTitle = "Installing Windows"
+    /// Under it: what, and where.
+    static func pSubtitle(edition: String, name: String) -> String { "\(edition) in “\(name)”" }
+    static let dTitle = "Windows is installed"
+    static let dTitleProblems = "Windows is installed, with problems"
+    static let fTitle = "Windows didn't finish installing"
+    static let cTitle = "Install cancelled"
+
+    /// The done page inside Set Up Winbar, for an install it doesn't hand back by itself (one that
+    /// didn't choose its VM): the button is **Done**, and this said "Close this result".
+    static let doneEmbedded = "Choose **\(bDone)** to go back to setup, where you can pick this VM for Winbar to look after."
+
+    /// The disclosure the running install's quieter notes fold behind.
+    static func pNotes(_ count: Int) -> String { count == 1 ? "1 note about this install" : "\(count) notes about this install" }
 }

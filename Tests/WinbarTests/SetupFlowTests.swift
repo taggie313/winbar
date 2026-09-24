@@ -494,7 +494,7 @@ struct SetupFlowOrdering {
         var facts = Given.done
         facts.windowsApp = state
         facts.rows["C1"] = Given.row("C1", .fixable("not installed; setup can open its App Store page"))
-        facts.rows["C2"] = Given.row("C2", .ok("winlab01.local (your word; Windows App didn't answer)"))
+        facts.rows["C2"] = Given.row("C2", .ok("winlab01.local (saved earlier; Windows App didn't answer)"))
         facts.answers = SetupFlow.Answers(started: true)
         #expect(SetupFlow.savedPC(facts) == .needsWindowsApp(state))
         #expect(!SetupFlow.isSatisfied(.savedPC, facts))
@@ -620,21 +620,6 @@ struct SetupFlowFreshness {
         }
     }
 
-    /// Back from System Settings, the App Store or Windows itself: nothing read before the person
-    /// left can be trusted. The control is an activation before the snapshot, which changes nothing.
-    @Test("Coming back to the front since the snapshot makes it stale, and before it doesn't")
-    func reactivated() {
-        #expect(SetupFlow.staleness(of: Self.stamped, utmPIDs: [4242], vmPID: 5151, lastWake: nil,
-                                    lastActivation: Self.taken.addingTimeInterval(90)) == .reactivated)
-        #expect(SetupFlow.staleness(of: Self.stamped, utmPIDs: [4242], vmPID: 5151, lastWake: nil,
-                                    lastActivation: Self.taken.addingTimeInterval(-90)) == nil)
-        // A sleep or a process change says more than coming back does, so it wins.
-        #expect(SetupFlow.staleness(of: Self.stamped, utmPIDs: [4242], vmPID: 5151,
-                                    lastWake: Self.taken.addingTimeInterval(60),
-                                    lastActivation: Self.taken.addingTimeInterval(90)) == .slept)
-        #expect(SetupFlow.staleness(of: Self.stamped, utmPIDs: [], vmPID: nil, lastWake: nil,
-                                    lastActivation: Self.taken.addingTimeInterval(90)) == .utmChanged)
-    }
 
     /// A wizard left on step 4 overnight, with the VM stopped since, goes back to step 2's Start It
     /// rather than offering Trust It against a VM that isn't running.

@@ -20,9 +20,15 @@ enum UpdateCheck {
     /// the link keeps working without knowing a version.
     static let releasesURL = URL(string: "https://github.com/\(repo)/releases/latest")!
 
-    /// Where a bug report goes. The report's own preamble names it, `winbar diagnose` prints it and
-    /// the menu bar app opens it — one constant, so those three never drift apart.
+    /// Where a bug report goes. The report's own preamble names it and `winbar diagnose` prints it —
+    /// one constant, so the two never drift apart.
     static let issuesURL = URL(string: "https://github.com/\(repo)/issues")!
+
+    /// What Report a Problem… opens: a new issue, not the list of everyone else's. The list left the
+    /// person to find New Issue and then pick a template written around Terminal commands; this one
+    /// is two lines, what happened and "drag the file here".
+    static let menuIssueTemplate = "from-the-menu.md"
+    static let newIssueFromMenuURL = URL(string: "https://github.com/\(repo)/issues/new?template=\(menuIssueTemplate)")!
 
     /// GitHub's public API for the same thing. No token: anonymous requests are limited to 60 an
     /// hour per address, which one a day is comfortably inside even on a shared one.

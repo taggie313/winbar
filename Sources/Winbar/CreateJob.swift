@@ -554,7 +554,7 @@ extension CreateStage {
         case .devices: return "Windows Setup: setting up devices"
         case .oobe: return "Windows Setup: getting ready"
         case .firstLogon: return "Installing UTM Guest Tools and applying your choices"
-        case .finish: return "Removing the install disks and restarting Windows"
+        case .finish: return "Detaching the install disks from UTM and restarting Windows"
         }
     }
 
@@ -570,7 +570,7 @@ extension CreateStage {
         case .devices: return "Windows Setup set up devices"
         case .oobe: return "Windows Setup got Windows ready"
         case .firstLogon: return "Installed UTM Guest Tools and applied your choices"
-        case .finish: return "Removed the install disks and restarted Windows"
+        case .finish: return "Detached the install disks from UTM and restarted Windows"
         }
     }
 

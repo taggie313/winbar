@@ -590,7 +590,7 @@ enum CreateCLI {
         }
         if done.stopped { lines.append(Term.paint("✓", .green) + " Stopped the VM") }
         if done.deletedVM { lines.append(Term.paint("✓", .green) + " Deleted the VM in UTM") }
-        if done.removedInstallDisks { lines.append(Term.paint("✓", .green) + " Removed the install disks from the VM") }
+        if done.removedInstallDisks { lines.append(Term.paint("✓", .green) + " Detached the install disks from UTM") }
         if done.deletedSetupDisk { lines.append(Term.paint("✓", .green) + " Deleted the setup disk") }
         if done.deletedSavedPC { lines.append(Term.paint("✓", .green) + " Deleted the saved PC in Windows App") }
         // A job that had already lost its VM and its setup disk: it is closed, and saying nothing at
@@ -1003,7 +1003,7 @@ enum CreateCLI {
         var rows: [(label: String, value: String, wrapped: Bool)] = []
         func add(_ label: String, _ value: String, wrapped: Bool = true) { rows.append((label, value, wrapped)) }
         add("VM", "“\(plan.vmName)” in UTM \(utmVersion ?? "(not installed)"): \(plan.cores) vCPUs, "
-            + "\(plan.memoryMiB / 1024) GB memory, \(plan.diskGiB) GB disk (NVMe), Shared Network, UEFI, no TPM; "
+            + "\(plan.memoryMiB / 1024) GB memory, \(plan.diskGiB) GB disk (NVMe; grows as used), Shared Network, UEFI, no TPM; "
             + "its window stays on during the install"
             + (plan.keepConsole ? " and afterwards (--console)" : ", then Winbar takes it headless"))
         add("Windows", "\(plan.edition.displayName) (image \(imageIndex) of \(image.editions.count)), build "

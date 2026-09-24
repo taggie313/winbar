@@ -38,7 +38,7 @@ struct SetupCertificatePageTests {
         let state = CertificateFixtures.state("skipped")
         let page = CertificateFixtures.page(state)
         #expect(page.phase == .skipped && page.canApprove && !page.canSkip)
-        #expect(page.detail.contains("not been verified"))
+        #expect(page.detail.contains("isn't approved"))
         #expect(SetupFlow.isSatisfied(.certificate, state.facts!))
         #expect(SetupCopy.journeyNext(.certificate, facts: state.facts) == "Continue Without Approval")
     }
@@ -51,7 +51,7 @@ struct SetupCertificatePageTests {
         let page = CertificateFixtures.page(state)
         #expect(page.phase == .verified && !page.canApprove && !page.canSkip)
         #expect(page.detail.contains("winlab02.local"))
-        #expect(SetupCopy.journeyNext(.certificate, facts: state.facts) == "Continue to Windows App")
+        #expect(SetupCopy.journeyNext(.certificate, facts: state.facts) == "Continue to Saved PC")
         #expect(CertificateFixtures.page(CertificateFixtures.state("unverified")).phase == .attention)
     }
 
@@ -100,7 +100,7 @@ struct SetupCertificatePageTests {
         state.facts?.answers.leftAlone.insert("H7")
         let page = CertificateFixtures.page(state)
         #expect(page.phase == .skipped && !page.canApprove)
-        #expect(!SetupCopy.Certificate.next(page.phase, canApprove: page.canApprove).contains("Approve Instead"))
+        #expect(!SetupCopy.Certificate.next(page).contains("Approve Instead"))
     }
 
     @Test("The instructions explain where to act, which password, and the completion signal")
@@ -109,7 +109,7 @@ struct SetupCertificatePageTests {
         #expect(SetupCopy.Certificate.completion.contains("checks the result automatically"))
         #expect(SetupCopy.Certificate.completion.contains("Certificate verified"))
         #expect(SetupCopy.Certificate.waiting.contains("already approved"))
-        #expect(SetupCopy.journeyNext(.savedPC, facts: nil) == "Continue to Connection Test")
+        #expect(SetupCopy.journeyNext(.savedPC, facts: nil) == "Continue to Connect")
         #expect(SetupCopy.journeyNext(.connect, facts: JourneyFixtures.facts) == "Continue Without Connecting")
         var facts = JourneyFixtures.facts
         facts.answers.connected = true

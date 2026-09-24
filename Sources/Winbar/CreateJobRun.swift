@@ -44,8 +44,8 @@ extension CreateJob {
     /// Stopped after the VM existed: Windows carries on installing, and `--resume` picks it up.
     static func interruptedWatching(_ name: String) -> CreateJobError {
         CreateJobError("N_STOPPED_WATCHING",
-                       "Stopped watching. Windows keeps installing in “\(name)”; the last steps (removing the "
-                           + "install disks and checking the result) wait for Winbar.", "",
+                       "Stopped watching. Windows keeps installing in “\(name)”; the last steps (detaching the "
+                           + "install disks from UTM and checking the result) wait for Winbar.", "",
                        nextStep: "winbar create --resume \"\(name)\"", exit: 130)
     }
 
@@ -564,12 +564,18 @@ final class CreateRun {
         guard WindowsAppBookmarks.executableURL != nil else { return }   // C1 already says it isn't installed
         let host = CreateChoices.hostName(computerName: plan.computerName)
         do {
-            switch try WindowsAppBookmarks.save(host: host, user: plan.userName, password: password,
-                                                friendlyName: plan.vmName) {
-            case .created(let saved):
+            let result = try WindowsAppBookmarks.save(host: host, user: plan.userName, password: password,
+                                                      friendlyName: plan.vmName)
+            switch result {
+            case .created(let saved), .createdBeside(let saved, _):
                 state.savedPCID = saved.id
+                state.savedPCName = saved.name
+                state.savedPCOtherAccountName = result.otherAccount?.bookmark.name
+                state.savedPCOtherAccountUser = result.otherAccount?.user
                 save()
-                log.write("✓ saved the PC “\(saved.name)” in Windows App for \(host) (id \(saved.id))")
+                // Not the other PC's name: it is whatever someone typed, and the log goes into reports.
+                log.write("✓ saved the PC “\(saved.name)” in Windows App for \(host) (id \(saved.id))"
+                          + (result.otherAccount == nil ? "" : "; left the one that signs in as another account alone"))
                 message("N_PC_SAVED", CreateCopy.nPCSaved(name: saved.name))
             case .alreadyThere(let saved):
                 log.write("Windows App already had a saved PC for \(host) (“\(saved.name)”); left alone")
@@ -634,7 +640,7 @@ final class CreateRun {
     /// `--no-select`.
     private func select(created: CreatedVM, bitLockerOn: Bool?, headless: Bool) {
         guard let selection = CreateRun.selection(plan: plan, created: created, bitLockerOn: bitLockerOn,
-                                                  headless: headless) else { return }
+                                                  headless: headless, state: state) else { return }
         _ = Config.selectVM(selection.vmName, id: created.vmID)
         Config.vmMAC = selection.mac
         Config.rdpHost = selection.rdpHost
@@ -646,6 +652,9 @@ final class CreateRun {
         Config.declinedTuning = selection.declinedTuning
         Config.consoleEnabled = selection.consoleEnabled
         if let on = selection.bitLockerOn { Config.recordBitLocker(on: on, for: selection.vmName) }
+        // The saved PC this run wrote, so Connect finds it by name before setup has looked — and, when
+        // it was written beside another account's PC for the same host, never presses that one.
+        if let saved = selection.savedPC { Config.savedPC = saved }
         log.write("Winbar now looks after “\(selection.vmName)”")
     }
 
@@ -667,18 +676,30 @@ final class CreateRun {
         var consoleEnabled: Bool
         /// What the guest audit saw, when it could be read.
         var bitLockerOn: Bool?
+        /// What to remember about the saved PC this run wrote in Windows App, when it wrote one.
+        var savedPC: SavedPCMemory? = nil
     }
 
     static func selection(plan: CreatePlan, created: CreatedVM, bitLockerOn: Bool?,
-                          headless: Bool) -> Selection? {
+                          headless: Bool, state: CreateJobState? = nil) -> Selection? {
         guard plan.select else { return nil }
+        let host = CreateChoices.hostName(computerName: plan.computerName)
+        // Only while the saved PC is still there: a cancel takes it back and clears its id.
+        let savedPC = state.flatMap { state -> SavedPCMemory? in
+            guard state.savedPCID != nil, let name = state.savedPCName else { return nil }
+            let beside = state.savedPCOtherAccountUser != nil
+            return SavedPCMemory(host: host, name: name.caseInsensitiveCompare(host) == .orderedSame ? nil : name,
+                                 otherAccountHost: beside ? host : nil,
+                                 otherAccountName: beside ? state.savedPCOtherAccountName : nil,
+                                 otherAccountUser: state.savedPCOtherAccountUser)
+        }
         return Selection(vmName: plan.vmName, mac: created.mac,
-                         rdpHost: CreateChoices.hostName(computerName: plan.computerName), rdpUser: plan.userName,
+                         rdpHost: host, rdpUser: plan.userName,
                          keepBitLocker: !plan.has(.noBitLocker), noVisualTweaks: plan.noVisualTweaks,
                          declinedAutologon: !plan.has(.autologon),
                          declinedRemoteDesktop: !plan.has(.remoteDesktop),
                          declinedTuning: !plan.has(.winbarTuning), consoleEnabled: !headless,
-                         bitLockerOn: bitLockerOn)
+                         bitLockerOn: bitLockerOn, savedPC: savedPC)
     }
 
     // MARK: - 5. Start, answer the prompt, and watch
@@ -1111,16 +1132,17 @@ final class CreateRun {
         }
 
         try checkInterrupt()
-        detail("Removing the install disks…")
+        detail("Detaching the install disks from UTM…")
         switch CreateScripts.finish(vmID: vmID, diskID: created.systemDiskID) {
         case .success(let done):
-            log.write("✓ removed \(done.removed) CD(s); \(done.drivesLeft) drive(s) left, display \(done.displays)")
+            log.write("✓ detached \(done.removed) CD drive(s) from UTM; \(done.drivesLeft) drive(s) left, display \(done.displays)")
         case .failure(let error):
             // The VM still references the setup disk, so the file stays: a CD whose image is gone
             // makes the next start fail.
-            throw CreateJobError.install("E_DETACH", "Couldn't remove the install disks from the VM (\(error.error.title)).",
-                                         "Windows is installed. With the VM shut down, remove its CD drives in UTM "
-                                             + "(the VM's settings), then delete \(media.isoURL.path).")
+            throw CreateJobError.install("E_DETACH", "Couldn't detach the install disks from UTM (\(error.error.title)).",
+                                         "Windows is installed. With the VM shut down, remove its two CD drives in UTM "
+                                             + "(the VM's settings). Windows and its own disk stay as they are. Then "
+                                             + "delete \(media.isoURL.path).")
         }
 
         // From here the VM no longer references the setup disk, so whatever happens next it goes.
@@ -1343,11 +1365,12 @@ final class CreateRun {
     private func startAgain(vmID: String) throws {
         detail("Starting Windows…")
         if case .failure(let error) = UTM.start(vmName, id: state.vmID) {
-            throw CreateJobError.install("E_RESTART", "Windows is installed, but the VM didn't start again after its "
-                                         + "install disks were removed (\(error.title)).", error.detail,
+            throw CreateJobError.install("E_RESTART", "Windows is installed, but the VM didn't start again after Winbar "
+                                         + "detached its install disks from UTM (\(error.title)).", error.detail,
                                          nextStep: "winbar start")
         }
-        detail("Waiting for Windows…")
+        // The install disks are off by now; this is the stage's long part, so say it is, and how long.
+        detail("Windows is starting. Winbar waits for it to answer, up to three minutes…")
         if UTM.waitForGuestAgent(vmID, timeout: 180) {
             log.write("✓ \(CreateStage.finish.doneTitle)")
         } else {
@@ -1449,13 +1472,14 @@ final class CreateRun {
                 log.write("✓ deleted the VM in UTM" + (forgotten.isEmpty ? "" : " (and forgot \(forgotten.count) setting(s) for it)"))
             } else if let created = state.created {
                 if case .failure(let error) = CreateScripts.finish(vmID: vmID, diskID: created.systemDiskID) {
-                    throw CreateJobError.install("E_DETACH", "Couldn't remove the install disks from the VM "
+                    throw CreateJobError.install("E_DETACH", "Couldn't detach the install disks from UTM "
                                                  + "(\(error.error.title)).",
-                                                 "With the VM shut down, remove its CD drives in UTM, then delete "
+                                                 "With the VM shut down, remove its two CD drives in UTM (the VM's "
+                                                     + "settings). Windows and its own disk stay as they are. Then delete "
                                                      + (state.mediaDir ?? "the setup disk"))
                 }
                 done.removedInstallDisks = true
-                log.write("✓ removed the install disks")
+                log.write("✓ detached the install disks from UTM")
             }
         }
         // The saved PC is kept only when the VM it names is kept: a PC pointing at a host that was

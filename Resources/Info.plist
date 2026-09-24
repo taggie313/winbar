@@ -12,6 +12,8 @@
 	<string>net.elusive.winbar</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleName</key>
 	<string>Winbar</string>
 	<key>CFBundlePackageType</key>
@@ -27,6 +29,21 @@
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<!-- What macOS shows when Winbar first touches a protected place. Without one the prompt gives no
+	     reason, and it comes at the worst moment: a problem report to the Desktop, an install resumed
+	     from an ISO in Downloads, or a shared folder in Documents looked at when the menu opens. -->
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Winbar saves the problem report you asked for to your Desktop, and checks a folder there that you chose to share with Windows.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Winbar reads the Windows ISO you chose, or checks the folder you chose to share with Windows, in your Documents folder.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Winbar looks for a Windows ISO in your Downloads folder and reads the one you chose to install Windows from.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Winbar reads the Windows ISO you chose, or checks the folder you chose to share with Windows, on this drive.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>Winbar reads the Windows ISO you chose, or checks the folder you chose to share with Windows, on this network drive.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 Joshua Lutz</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Winbar asks UTM to start, stop and reconfigure your Windows virtual machine.</string>
 	<key>NSLocalNetworkUsageDescription</key>

@@ -385,16 +385,21 @@ enum SharedFolder {
     /// Written into the shared folder for a moment so Windows can be asked to find it. Hidden, and
     /// removed again whatever happens.
     static let markerName = ".winbar-share-check"
+    /// The marker a problem report's survey uses (`Context.surveyTraces`). A name of its own, because
+    /// a report may run while a set-up step checks the same folder with `markerName`, and each writes
+    /// its own token and removes its file when done: sharing one name, either could read the other's
+    /// token as "Windows is serving an old folder", or delete the other's marker mid-check.
+    static let reportMarkerName = ".winbar-report-check"
 
-    static func writeMarker(in folder: String) -> String? {
+    static func writeMarker(in folder: String, named name: String = markerName) -> String? {
         let token = UUID().uuidString
-        let path = (folder as NSString).appendingPathComponent(markerName)
+        let path = (folder as NSString).appendingPathComponent(name)
         guard (try? token.write(toFile: path, atomically: true, encoding: .utf8)) != nil else { return nil }
         return token
     }
 
-    static func removeMarker(in folder: String) {
-        try? FileManager.default.removeItem(atPath: (folder as NSString).appendingPathComponent(markerName))
+    static func removeMarker(in folder: String, named name: String = markerName) {
+        try? FileManager.default.removeItem(atPath: (folder as NSString).appendingPathComponent(name))
     }
 
     /// Whether Windows is serving `setting`, judged from what the guest reported.

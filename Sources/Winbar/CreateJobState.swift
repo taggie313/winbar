@@ -79,6 +79,13 @@ struct CreateJobState: Codable, Equatable, Sendable {
     /// password went to Windows App and never here. nil when the PC was already there, when Windows
     /// App was open, or when there is no Windows App.
     var savedPCID: String?
+    /// That saved PC's name, so the end of the install can tell Connect which tile is this VM's.
+    var savedPCName: String?
+    /// The saved PC for the same host that signs in as another account, when the new one was written
+    /// beside it: its name and that account. Connect keeps off tiles named after the host while it is
+    /// there, and an anonymised report masks both (`SavedPCMemory`).
+    var savedPCOtherAccountName: String?
+    var savedPCOtherAccountUser: String?
     /// When stage 5 first began, for "installing since". Kept across resumes and Mac restarts.
     var installStartedAt: Date?
     /// When the job entered the stage it is in now, so a front-end can say how long that stage has

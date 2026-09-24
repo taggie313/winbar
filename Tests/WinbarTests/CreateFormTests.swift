@@ -235,11 +235,22 @@ private func readyModel(_ given: CreateFormFacts = facts(), build: Int = 26200,
         let model = readyModel(facts(cores: 8, totalCores: 12, memoryGB: 16))
         #expect(model.coresWarning == nil)
         model.cores = 12
-        #expect(model.coresWarning == ChoiceWarning.coresHigh(topTier: 8).description)
+        // In processor cores, the window's word for them; Terminal's warning says vCPUs.
+        #expect(model.coresWarning == CreateCopy.windowCoresHigh(topTier: 8))
+        #expect(model.coresWarning?.contains("vCPU") == false && ChoiceWarning.coresHigh(topTier: 8).description.contains("vCPUs"))
         model.memoryGB = 12
         #expect(model.memoryWarnings == [ChoiceWarning.memoryHigh(totalGB: 16).description])
         model.memoryGB = 4
         #expect(model.memoryWarnings == [ChoiceWarning.memoryLow.description])
+    }
+
+    /// The number beside the stepper can be typed past it, and the status line then says so in the
+    /// window's word for them: Terminal's "vCPUs: 2 to 12." was the one place the form still said vCPUs.
+    @Test func tooManyCoresBlockInProcessorCores() {
+        let model = readyModel(facts(cores: 8, totalCores: 12))
+        model.cores = 99
+        #expect(model.status == .blocked(CreateCopy.windowCoresRange(max: 12)))
+        #expect(model.status != .blocked(ChoiceProblem.coresRange(max: 12).description))
     }
 
     @Test func fileVaultOffIsSaidUnderBitLockerAndUnderThePassword() {
@@ -427,7 +438,8 @@ private func message(_ code: String, _ text: String, at: Date = Date()) -> Creat
                                       now: started.addingTimeInterval(872))
         #expect(progress.header == "Installing Windows 11 Pro in “Windows 11”")
         #expect(progress.elapsed == "14:32")
-        #expect(progress.step == "step 6 of 10")
+        #expect(progress.step == "Stage 6 of 10 · Copying files")
+        #expect(progress.soFar == "14 min so far · usually 10–15 min")
         #expect(progress.fraction == 0.5)
         #expect(progress.rows.count == 10)
         #expect(progress.rows[0] == CreateProgress.Row(stage: .check, mark: .done,
@@ -436,7 +448,7 @@ private func message(_ code: String, _ text: String, at: Date = Date()) -> Creat
         #expect(running.mark == .running)
         #expect(running.title == "Windows Setup: copying files")
         #expect(running.detail == "7.9 GB written to the VM's disk")
-        #expect(running.elapsed == "9:48")
+        #expect(running.elapsed == "9 min")
         #expect(progress.rows[6].mark == .pending)
         #expect(progress.rows[6].title == "Windows Setup: setting up devices")
         #expect(progress.stall == nil)
@@ -462,7 +474,9 @@ private func message(_ code: String, _ text: String, at: Date = Date()) -> Creat
         let progress = CreateProgress(state: job, now: started.addingTimeInterval(7300))
         #expect(progress.rows[7].mark == .failed)
         #expect(progress.rows[7].title == "Windows Setup: getting ready")
-        #expect(CreateJobView.failureHeader(job) == "✗ Windows still hadn't finished installing")
+        // The words, and the one red cross beside them, not a ✗ in the text VoiceOver reads out.
+        #expect(CreateJobView.failureHeader(job) == "Windows still hadn't finished installing")
+        #expect(CreateJobView.failureMark(job) == .failed)
         // Try Again asks the job, not a list of codes the two could drift apart on: the VM and its
         // setup disk are still there, so this one can be carried on with.
         #expect(job.isResumable)
@@ -477,7 +491,8 @@ private func message(_ code: String, _ text: String, at: Date = Date()) -> Creat
         // no Try Again button.
         let job = state(stage: .firstLogon, outcome: .failed, started: started, updated: started, failure: failure,
                         mediaDir: nil)
-        #expect(CreateJobView.failureHeader(job) == "! Windows 11 Pro is installed in “Windows 11”, with problems")
+        #expect(CreateJobView.failureHeader(job) == "Windows 11 Pro is installed in “Windows 11”, with problems")
+        #expect(CreateJobView.failureMark(job) == .attention)
         #expect(!job.isResumable)
     }
 
@@ -556,10 +571,10 @@ private func message(_ code: String, _ text: String, at: Date = Date()) -> Creat
         let started = Date(timeIntervalSince1970: 1_000_000)
         let copying = state(stage: .copy, detail: "7.9 GB written to the VM's disk", started: started,
                             updated: started.addingTimeInterval(860), stageStarted: started.addingTimeInterval(284))
-        #expect(CreateProgress(state: copying, now: started.addingTimeInterval(872)).rows[5].elapsed == "9:48")
+        #expect(CreateProgress(state: copying, now: started.addingTimeInterval(872)).rows[5].elapsed == "9 min")
         // A state file from a Winbar that didn't record the stage's start still reads something.
         let older = state(stage: .copy, started: started, updated: started.addingTimeInterval(284))
-        #expect(CreateProgress(state: older, now: started.addingTimeInterval(872)).rows[5].elapsed == "9:48")
+        #expect(CreateProgress(state: older, now: started.addingTimeInterval(872)).rows[5].elapsed == "9 min")
     }
 
     /// Every note and warning the job raised reaches the window, in order. Four of them say that
@@ -720,7 +735,7 @@ private func message(_ code: String, _ text: String, at: Date = Date()) -> Creat
         #expect(CreateJobView.failureDetail(repeated)
                 == "So Winbar stopped waiting. The VM is still running.")
 
-        let separate = CreateFailure(code: "E_DETACH", title: "Winbar didn't remove the install disks",
+        let separate = CreateFailure(code: "E_DETACH", title: "Winbar didn't detach the install disks from UTM",
                                      detail: "UTM refused the change.", nextStep: nil)
         #expect(CreateJobView.failureDetail(separate) == "UTM refused the change.")
 
@@ -739,5 +754,33 @@ struct CreateFormStatusColourTests {
         #expect(!model.statusIsProblem)
         model.iso = .failed(file: "not-windows.iso", message: "That isn't a Windows ISO.")
         #expect(model.statusIsProblem)
+    }
+}
+
+/// "128 GB disk" read as 128 GB taken from the Mac. The disk grows as Windows fills it, so the summary and
+/// the field say so, where people read them (not only in a tooltip).
+@Suite("The disk size is presented as a ceiling, not a cost")
+struct DiskSizeWordingTests {
+    @Test func summaryAndCaption() {
+        let model = CreateFormModel(facts: facts())
+        let vm = model.summary.first { $0.label == CreateCopy.sVM }?.value ?? ""
+        #expect(vm.contains("a disk that grows as needed, up to \(model.diskGB) GB"))
+        #expect(!vm.hasSuffix("GB disk"))
+        #expect(CreateCopy.diskCaption.contains("only as Windows fills it"))
+    }
+}
+
+/// Live, the last stage showed its long wait only as a grey detail under "Detaching the install disks
+/// from UTM and restarting Windows", three minutes after the disks were off; the person reported the
+/// wizard as stuck on detaching. The running step's detail is drawn like its title.
+@MainActor @Suite("The running step's detail says what's happening now, at full strength")
+struct RunningDetailTests {
+    @Test func runningDetailIsNotQuiet() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Sources/Winbar/StepList.swift"), encoding: .utf8)
+        #expect(source.contains("foregroundStyle(mark == .running ? Color.primary : quiet)"))
+        let job = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Sources/Winbar/CreateJobRun.swift"), encoding: .utf8)
+        #expect(job.contains("Windows is starting. Winbar waits for it to answer, up to three minutes…"))
     }
 }

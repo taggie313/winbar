@@ -1048,8 +1048,10 @@ struct DiagnoseMACRedaction {
             settings: ["vm.a.rdpHost": "from-settings.local"],
             checked: ["FROM-PASSWORD-CHECK"],
             guestOutput: GuestOutput(pairs: [("COMPUTERNAME", "FROM-GUEST"),
-                                             ("DNSHOST", "from-guest-dns")])))
+                                             ("DNSHOST", "from-guest-dns")]),
+            otherSavedPCNames: ["From C2's Row"]))
         #expect(found.contains("from-settings"))        // rdpHost, with .local taken off
+        #expect(found.contains("From C2's Row"))        // another account's saved PC, this report's C2
         #expect(found.contains("FROM-PASSWORD-CHECK"))  // passwordCheckedFor
         #expect(found.contains("FROM-GUEST"))           // the short name Windows cuts to 15
         #expect(found.contains("from-guest-dns"))       // and the DNS form it doesn't cut

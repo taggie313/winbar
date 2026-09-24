@@ -10,23 +10,28 @@ struct TuneOrderTests {
         get throws { try #require(SetupRecoveryFixtures.screens.first { $0.0 == "tune-mixed" }?.1.facts) }
     }
 
-    @Test("A row that needs the person comes first; the rest keep the recipe's order")
+    @Test("A row that needs the person comes first; each group keeps the recipe's order")
     func attentionFirst() throws {
         let facts = try mixed
         let rows = SetupFlow.tune(facts).rows
-        let ordered = SetupTuneStatus.attentionFirst(rows, facts: facts)
+        let groups = SetupTuneGroups(facts)
+        let ordered = groups.needsYou + groups.others + groups.verified
         let needs = rows.filter { SetupTuneStatus.status(for: $0, facts: facts) == .needsAttention }
         #expect(!needs.isEmpty, "the fixture has nothing needing attention, so this proves nothing")
         #expect(ordered.prefix(needs.count).map(\.id) == needs.map(\.id))
-        #expect(ordered.dropFirst(needs.count).map(\.id) == rows.filter { !needs.map(\.id).contains($0.id) }.map(\.id))
+        for group in [groups.needsYou, groups.others, groups.verified] {
+            #expect(group.map(\.id) == rows.filter { row in group.contains { $0.id == row.id } }.map(\.id))
+        }
         #expect(Set(ordered.map(\.id)) == Set(rows.map(\.id)) && ordered.count == rows.count)
     }
 
-    @Test("The counts point at those rows, and say nothing when there are none")
-    func pointer() {
-        #expect(SetupCopy.Tune.attentionPointer([.verified: 14, .needsAttention: 1]) == "One setting needs you. It's first below.")
-        #expect(SetupCopy.Tune.attentionPointer([.needsAttention: 3])?.hasPrefix("3 settings need you") == true)
-        #expect(SetupCopy.Tune.attentionPointer([.verified: 15]) == nil)
+    @Test("The headline says how many need the person, and nothing of the sort when none do")
+    func pointer() throws {
+        #expect(SetupTuneHeadline.of(try mixed) == .needsYou(count: 1, fixable: 0))
+        #expect(SetupCopy.Tune.headline(.needsYou(count: 1, fixable: 0)).title == "1 setting needs you")
+        #expect(SetupCopy.Tune.headline(.needsYou(count: 1, fixable: 0)).detail?.hasPrefix("It's first below") == true)
+        #expect(SetupCopy.Tune.headline(.needsYou(count: 3, fixable: 0)).title.hasPrefix("3 settings need you"))
+        #expect(SetupTuneHeadline.of(JourneyFixtures.facts) == .tuned(staged: 0))
     }
 
     @Test("Recipe sentences lose their check codes in the window")
@@ -61,15 +66,31 @@ struct WindowRecoveryWordsTests {
     @Test("Homebrew's failure points at Try Again; a UTM that isn't UTM, or is too old, at the Finder and Check Again")
     func lookAround() {
         let failed = "It stopped with exit status 1; its own output is above. Try it again yourself: brew install --cask utm"
-        let shown = SetupCopy.LookAround.forWindow(failed)
-        #expect(shown.hasPrefix("It stopped with exit status 1; its own output is above. Choose Try Again below."))
-        #expect(!shown.contains("brew"))
+        let drawn = SetupCopy.LookAround.forWindow(failed)
+        let shown = String(drawn.characters)
+        // "Its own output is above" is Terminal's layout, and the exit status a number Ben can't use; in the
+        // window the output is the open fold below, and the sentence opens on what to do, naming the
+        // button in bold as every instruction in the window does.
+        #expect(shown == "Choose Try Again below. If it keeps failing, UTM's own download at getutm.app works too.")
+        #expect(boldRuns(drawn) == [SetupCopy.bTryAgain])
+        #expect(!shown.contains("brew") && !shown.contains("above") && !shown.contains("exit status"))
         let unfinished = "Run it yourself and watch what it says: brew install --cask utm"
-        #expect(!SetupCopy.LookAround.forWindow(unfinished).contains("brew"))
-        for state in [DependencyState.wrongSignature("signed by team ABCDE12345"), .tooOld(version: "4.5.4", minimum: "4.6.0")] {
-            let words = SetupCopy.LookAround.plan(.manual("brew upgrade --cask utm"), state: state).joined()
-            #expect(!words.contains("brew") && words.contains("Check Again"), "\(state)")
+        #expect(!String(SetupCopy.LookAround.forWindow(unfinished).characters).contains("brew"))
+        // Homebrew's own words around it stay as they were, not read as Markdown.
+        let path = "Couldn't write /opt/homebrew/some_cask_dir. Try it again yourself: brew install --cask utm"
+        #expect(String(SetupCopy.LookAround.forWindow(path).characters).hasPrefix("Couldn't write /opt/homebrew/some_cask_dir. "))
+        // A plan Winbar can't carry out: no Terminal advice under Details, and the card's sentence
+        // names what to do in the Finder and the window.
+        let wrong = DependencyState.wrongSignature("signed by team ABCDE12345")
+        let old = DependencyState.tooOld(version: "4.5.4", minimum: "4.6.0")
+        for state in [wrong, old] {
+            let manual = InstallPlan.manual("brew upgrade --cask utm")
+            #expect(SetupCopy.LookAround.plan(manual, state: state).isEmpty, "\(state)")
+            let words = SetupCopy.LookAround.summary(manual, state: state) + SetupCopy.LookAround.details(manual, state: state).joined()
+            #expect(!words.contains("brew"), "\(state)")
         }
+        #expect(SetupCopy.LookAround.summary(.manual(""), state: wrong).contains("**Show in Finder**"))
+        #expect(SetupCopy.LookAround.summary(.manual(""), state: old).hasSuffix(SetupCopy.LookAround.comeBack))
     }
 }
 

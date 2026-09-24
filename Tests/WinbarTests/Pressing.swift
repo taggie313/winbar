@@ -53,6 +53,10 @@ import Vision
         return true
     }
 
+    /// The window's secure field, as AppKit draws it, if it has one: whether it's there, can be typed
+    /// in, and what it holds.
+    var secureField: NSSecureTextField? { Self.secureField(in: host) }
+
     private static func secureField(in view: NSView) -> NSSecureTextField? {
         if let field = view as? NSSecureTextField { return field }
         return view.subviews.lazy.compactMap { secureField(in: $0) }.first
@@ -89,9 +93,14 @@ enum Drawing {
         }
     }
 
-    /// The first line containing `words`, ignoring case.
+    /// The first line containing `words`, ignoring case. An ellipsis matches three dots: Vision reads
+    /// a button's "…" as "...", so a title that asks for more (**Install Windows in a New VM…**) was
+    /// never found by its own name.
     static func find(_ words: String, in lines: [Line]) -> Line? {
-        lines.first { $0.text.range(of: words, options: .caseInsensitive) != nil }
+        let words = words.replacingOccurrences(of: "…", with: "...")
+        return lines.first {
+            $0.text.replacingOccurrences(of: "…", with: "...").range(of: words, options: .caseInsensitive) != nil
+        }
     }
 
     /// The filled buttons painted in `colour`, in points, top to bottom. A filled button is painted
@@ -99,50 +108,92 @@ enum Drawing {
     /// word or a line in the same blue (light mode's text accent is the fill's colour) is its shape:
     /// rows of at least `minWidth` points of that colour unbroken, above and below its title (whose
     /// rows the white letters break up), at least `minHeight` points deep in all. The step bar's
-    /// current segment is 4 pt deep, and a word's strokes are never that wide.
+    /// current segment is 8 pt deep, and a word's strokes are never that wide.
+    ///
+    /// Every such run in a row counts, not only the widest, so two filled buttons side by side — No
+    /// and Yes in one row — are two, where taking each row's widest run saw one.
     static func filled(_ colour: SetupStyle.RGB, in png: Data, scale: Double = 2,
                        minWidth: Double = 40, minHeight: Double = 12, title: Double = 16) -> [CGRect] {
         guard let image = Snapshot.pixels(png) else { return [] }
         func byte(_ component: Double) -> UInt32 { UInt32((component * 255).rounded()) }
         let wanted = byte(colour.red) | byte(colour.green) << 8 | byte(colour.blue) << 16 | 0xFF00_0000
-        // Each row's longest unbroken run of the colour, as the columns it spans.
-        var runs: [ClosedRange<Int>?] = []
-        for y in 0..<image.height {
-            var best: ClosedRange<Int>?
-            var start: Int?
-            for x in 0...image.width {
-                let hit = x < image.width && image.rgba[y * image.width + x] == wanted
-                if hit, start == nil { start = x }
-                if !hit, let first = start {
-                    if x - first > (best.map { $0.count } ?? 0) { best = first...(x - 1) }
-                    start = nil
+        struct Band { var top, bottom, left, right: Int }
+        func overlap(_ a: (left: Int, right: Int), _ b: (left: Int, right: Int)) -> Int {
+            min(a.right, b.right) - max(a.left, b.left)
+        }
+        // Consecutive rows whose wide runs overlap are one band.
+        var open: [Band] = []
+        var bands: [Band] = []
+        for y in 0...image.height {
+            var runs: [ClosedRange<Int>] = []
+            if y < image.height {
+                var start: Int?
+                for x in 0...image.width {
+                    let hit = x < image.width && image.rgba[y * image.width + x] == wanted
+                    if hit, start == nil { start = x }
+                    if !hit, let first = start {
+                        if Double(x - first) >= minWidth * scale { runs.append(first...(x - 1)) }
+                        start = nil
+                    }
                 }
             }
-            runs.append(best.flatMap { Double($0.count) >= minWidth * scale ? $0 : nil })
-        }
-        // Consecutive rows with a wide run are one band; two bands over the same columns with no more
-        // than a title's height between them are the top and bottom of one button.
-        var bands: [(top: Int, bottom: Int, left: Int, right: Int)] = []
-        var y = 0
-        while y < runs.count {
-            guard let first = runs[y] else { y += 1; continue }
-            var band = (top: y, bottom: y, left: first.lowerBound, right: first.upperBound)
-            while y + 1 < runs.count, let next = runs[y + 1] {
-                y += 1
-                band = (band.top, y, min(band.left, next.lowerBound), max(band.right, next.upperBound))
+            // A row through a button's title has several runs, one each side of a word; all of them
+            // under one band are that band.
+            var next: [Band] = []
+            for run in runs {
+                func under(_ band: Band) -> Bool { overlap((band.left, band.right), (run.lowerBound, run.upperBound)) > 0 }
+                if let index = next.firstIndex(where: under) {
+                    next[index].left = min(next[index].left, run.lowerBound)
+                    next[index].right = max(next[index].right, run.upperBound)
+                } else if let index = open.firstIndex(where: under) {
+                    var band = open.remove(at: index)
+                    band.bottom = y
+                    band.left = min(band.left, run.lowerBound)
+                    band.right = max(band.right, run.upperBound)
+                    next.append(band)
+                } else {
+                    next.append(Band(top: y, bottom: y, left: run.lowerBound, right: run.upperBound))
+                }
             }
-            if let last = bands.last, Double(band.top - last.bottom) <= title * scale,
-               min(last.right, band.right) - max(last.left, band.left) > (band.right - band.left) / 2 {
-                bands[bands.count - 1] = (last.top, band.bottom, min(last.left, band.left), max(last.right, band.right))
+            bands += open
+            open = next
+        }
+        // Two bands over the same columns with no more than a title's height between them are the top
+        // and bottom of one button.
+        var buttons: [Band] = []
+        for band in bands.sorted(by: { $0.top < $1.top }) {
+            if let index = buttons.lastIndex(where: { above in
+                Double(band.top - above.bottom) <= title * scale
+                    && overlap((above.left, above.right), (band.left, band.right)) > (band.right - band.left) / 2
+            }) {
+                buttons[index].bottom = band.bottom
+                buttons[index].left = min(buttons[index].left, band.left)
+                buttons[index].right = max(buttons[index].right, band.right)
             } else {
-                bands.append(band)
+                buttons.append(band)
             }
-            y += 1
         }
-        return bands.filter { Double($0.bottom - $0.top + 1) >= minHeight * scale }.map { band in
+        return buttons.filter { Double($0.bottom - $0.top + 1) >= minHeight * scale }.map { band in
             CGRect(x: Double(band.left) / scale, y: Double(band.top) / scale,
                    width: Double(band.right - band.left + 1) / scale, height: Double(band.bottom - band.top + 1) / scale)
         }
+    }
+
+    /// The contrast of the darkest ink in `rect` (points) against the surface it is drawn on — the
+    /// commonest colour there, which is what shows between a line's letters. How a line's colour is
+    /// measured as drawn, antialiasing and a translucent surface included, rather than as a value.
+    static func inkContrast(_ png: Data, in rect: CGRect, scale: Double = 2) -> Double? {
+        guard let image = Snapshot.pixels(png) else { return nil }
+        func rgb(_ pixel: UInt32) -> SetupStyle.RGB {
+            SetupStyle.RGB(UInt32(pixel & 0xFF) << 16 | UInt32(pixel >> 8 & 0xFF) << 8 | UInt32(pixel >> 16 & 0xFF))
+        }
+        let xs = max(0, Int(rect.minX * scale))..<min(image.width, Int(rect.maxX * scale))
+        let ys = max(0, Int(rect.minY * scale))..<min(image.height, Int(rect.maxY * scale))
+        guard !xs.isEmpty, !ys.isEmpty else { return nil }
+        var counts: [UInt32: Int] = [:]
+        for y in ys { for x in xs { counts[image.rgba[y * image.width + x], default: 0] += 1 } }
+        guard let surface = counts.max(by: { $0.value < $1.value }).map({ rgb($0.key) }) else { return nil }
+        return counts.keys.map { SetupStyle.contrast(rgb($0), surface) }.max()
     }
 
     /// How many pixels look red — the system red of an error line, antialiased — in the band of rows

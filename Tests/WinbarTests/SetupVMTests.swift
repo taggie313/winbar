@@ -41,7 +41,7 @@ private final class VMHandoffMachine: SetupMachine {
         let runner = SetupRunner(machine: machine, environment: .init(
             queue: DispatchQueue(label: "winbar.test.vm-handoff"), callbacks: .main, clock: Date.init,
             keepAwake: { _ in {} }, processes: { _ in ([100], 101) },
-            workspace: NotificationCenter(), app: NotificationCenter()))
+            workspace: NotificationCenter()))
         let creator = FakeEmbeddedCreate()
         let controller = SetupWindowController(state: SetupFixtures.state(.vm, facts: SetupVMTests.facts(chosen: SetupVMTests.old)),
             art: nil, settings: .init(wizardShown: { false }, markShown: {}, armieHidden: { true }, hideArmie: {}),

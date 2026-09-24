@@ -50,7 +50,7 @@ private final class ReviewWindow: NSWindow {
     private func runner(_ machine: ReviewMachine, gate: AppWorkGate? = nil) -> SetupRunner {
         SetupRunner(machine: machine, environment: .init(queue: DispatchQueue(label: "winbar.test.review"),
             callbacks: .main, clock: Date.init, keepAwake: { _ in {} }, processes: { _ in ([100], 101) },
-            workspace: NotificationCenter(), app: NotificationCenter(), workGate: gate))
+            workspace: NotificationCenter(), workGate: gate))
     }
     private func controller(_ runner: SetupRunner, step: WizardStep = .vm,
                             creator: FakeEmbeddedCreate = FakeEmbeddedCreate()) -> SetupWindowController {

@@ -1,8 +1,8 @@
 # Winbar
 
 A menu bar icon for a Windows 11 virtual machine in [UTM](https://mac.getutm.app) on an Apple
-silicon Mac, plus `winbar setup`, which tunes that VM into a quiet, headless machine you reach
-over Remote Desktop.
+silicon Mac, plus `winbar setup`, which tunes that VM into a quiet machine that runs in the
+background, reached over Remote Desktop.
 
 Click **Connect** and you're at the Windows desktop in Windows App, already signed in. No
 password prompt, no certificate warning, no chooser window. When you're done, **Shut Down**
@@ -17,7 +17,7 @@ Or, in Terminal:
 winbar setup
 ```
 
-- **Headless.** The VM runs with no virtual screen at all, which cuts idle host CPU by roughly two thirds (measured below — the saving is real but small in absolute terms).
+- **In the background.** The VM runs with no virtual screen at all (the command line calls this headless), which cuts idle host CPU by roughly two thirds (measured below — the saving is real but small in absolute terms).
 - **One click.** Connect opens your saved PC in Windows App, reusing its stored password.
 - **A recipe, not magic.** `winbar setup` checks every setting, changes only what's wrong (asking
   first), and walks you through the few steps only a person can do. Re-running it is safe.
@@ -32,16 +32,29 @@ winbar setup
 2. Open **Winbar**. The first time, on a Mac where it hasn't been set up, the **Set Up Winbar**
    window opens by itself; after that it's **Set Up Winbar…** in Winbar's menu, whenever you like.
 3. The window takes it one step at a time, and says before each macOS permission prompt what it's for:
-   - **UTM** — checks for it, and installs it if it's missing.
-   - **Windows** — uses a Windows VM you already have, or makes one and installs Windows 11 in it
-     (you'll need a Windows 11 ARM64 ISO from Microsoft).
-   - **Tuning** — checks Windows' settings, fixes what it can, and shows the result of each.
-   - **The certificate** — trusts the VM's Remote Desktop certificate, so there's no warning.
-   - **The saved PC** — helps you get Windows App from the Mac App Store if you need it, and saves
-     the VM in it.
-   - **A first connection** — opens the Windows desktop, and asks you whether it appeared.
-   - **Headless, if you want it** — only once the desktop has worked: takes the VM's screen away,
-     with one restart, then asks you to connect once more.
+   - **Look around** — checks for UTM, and installs it if it's missing.
+   - **The VM** — uses a Windows VM you already have, or makes a new one and installs Windows 11 in
+     it (you'll need a Windows 11 ARM64 ISO from Microsoft).
+   - **Tune** — checks Windows' settings, fixes what it can, and shows the result of each.
+   - **Certificate** — approves the VM's certificate on this Mac, so Windows App shows no warning.
+   - **Saved PC** — helps you get Windows App from the Mac App Store if you need it, and saves the
+     VM in it as a PC.
+   - **Connect** — opens the Windows desktop, and asks you whether it appeared.
+   - **Finish** — once the desktop has worked, offers to **Run in the Background**: it takes the
+     VM's own screen away (the command line calls this headless), with one restart, then asks you to
+     connect once more. Then **Open Windows** opens it. **Bring Back Windows' Screen…** in the menu
+     gives the VM its screen back later. The first time, the finished screen points at Winbar's
+     icon in the menu bar, where all of this lives from now on, and **Show Me** points at it again;
+     where macOS isn't showing the icon, the screen says where to look instead.
+   - **Open Winbar when I log in** — the finished screen switches this on, so the menu bar icon is
+     still there after you restart. Under it the screen says what that opens: "Opens only Winbar's
+     icon in the menu bar. Unless the switch below is on, Windows stays off until you connect to it
+     or start it from Winbar's menu." Switch it off there, or with **Launch at Login** in the menu.
+   - **Also start Windows when Winbar opens** — off unless you turn it on. Winbar then starts the VM
+     each time it opens, without connecting to it, so at login with the switch above on, and Windows
+     holds its share of your Mac's memory from then until you shut it down. A VM that kept its screen
+     opens its window in UTM as it starts. **Start Windows with Winbar** in the menu is the same
+     switch.
 
 Everything the window does is on the command line too — `winbar create` makes a VM and `winbar setup`
 does the rest — and the rest of this README describes that route.
@@ -73,7 +86,7 @@ differ, but every comparison was made like-for-like.
 
 | Finding | Measurement |
 |---|---|
-| **Headless costs less — but far less than this table used to claim.** UTM's virtual GPU is display-only, so frames Windows draws are copied by the Mac's CPU, and with no display device that work isn't done. | Guest idle, host CPU per minute, **median of 30 one-minute samples**: **0.5 s** headless (QEMU 0.53, UTM 0.00) against **1.7 s** with the window open (QEMU 0.66, UTM 1.01) — about two thirds less, and both a small fraction of one core. Idle cost is **bursty**: three quarters of minutes sit near 0.5 s and the rest jump to several seconds, so the median is quoted; the mean swung between 0.8 and 2.7 across two runs and is not a number to rely on. The **59.8 s** published here before could not be reproduced at idle — see below. |
+| **Running in the background (headless) costs less — but far less than this table used to claim.** UTM's virtual GPU is display-only, so frames Windows draws are copied by the Mac's CPU, and with no display device that work isn't done. | Guest idle, host CPU per minute, **median of 30 one-minute samples**: **0.5 s** headless (QEMU 0.53, UTM 0.00) against **1.7 s** with the window open (QEMU 0.66, UTM 1.01) — about two thirds less, and both a small fraction of one core. Idle cost is **bursty**: three quarters of minutes sit near 0.5 s and the rest jump to several seconds, so the median is quoted; the mean swung between 0.8 and 2.7 across two runs and is not a number to rely on. The **59.8 s** published here before could not be reproduced at idle — see below. |
 | **More vCPUs isn't better.** On an M5 Max (6 "Super" cores plus 12 "Performance" cores), a fixed workload was run at 4, 6 and 8 vCPUs. | **6 was cheapest** in host CPU and fastest. **8 cost 28% more** host CPU (37.8 vs 29.6 CPU-s) for no speed gain; 4 was slower and no cheaper. Winbar sets vCPUs to your Mac's top-tier core count, kept between 4 and 8. |
 | **Converting the disk image (qcow2 to raw) isn't worth it.** | The Mac writes 2 GiB to the image file in 0.17 s; Windows takes 2.2 s for the same write. **~93% of the cost is the virtual disk device path**, not the image format. |
 | **"Stop" has to go through Windows.** UTM's stop button presses a virtual ACPI power button. Once Windows has blanked its display, it treats that press as *wake* (event log: Kernel-Power 566) and never shuts down. | Winbar asks Windows itself to shut down, through UTM's guest agent, and only falls back to the power button. |
@@ -120,7 +133,10 @@ the size of it did not.
 
 Go to the [latest release](https://github.com/taggie313/winbar/releases/latest) and download
 **Winbar-<version>.dmg**. Open it, and drag Winbar onto the Applications folder beside it. That's
-the install.
+the install. If you open Winbar straight from the disk image (or from Downloads) instead, it offers
+once to move itself to Applications and reopen from there; a copy on the disk image is gone when
+the image is ejected, and so is anything that points at it, like a login item. Winbar never turns
+on Launch at Login from such a copy.
 
 Then open **Winbar** from Applications once, to start it and put its icon in the menu bar. macOS
 asks whether to open an app downloaded from the internet — Winbar is signed and notarized by
@@ -267,11 +283,12 @@ is off. **Pick a password you don't use for your Mac or anywhere else.**
 
 Winbar reads the ISO, builds the setup disk, creates the VM in UTM, answers the installer's "Press
 any key to boot from CD" prompt for you, and watches Windows Setup through the firmware's serial
-console. When Windows is up it installs the Guest Tools, applies your choices, takes the install
-discs off, and then — unless you gave `--console`, Remote Desktop can't be reached, or another VM
-is running in UTM — shuts the VM down once and brings it back headless. Going headless restarts
-UTM, which would stop any other VM it's running, so with one of those up the install ends on the
-console instead. If another VM starts while Winbar is finishing, it leaves UTM alone and leaves
+console. When Windows is up it installs the Guest Tools, applies your choices, shuts it down,
+detaches the install disks from UTM and starts it again — in the background, with no screen of its
+own (the command line calls this headless), unless you gave `--console`, Remote Desktop can't be
+reached, or another VM is running in UTM. Taking the screen away restarts UTM while the VM is shut
+down, which would stop any other VM it's running, so with one of those up the install ends with the
+screen still on instead. If another VM starts while Winbar is finishing, it leaves UTM alone and leaves
 your VM stopped, and says to close the other VMs and run `winbar start`. You can close the window
 or press Ctrl-C at any point: the install carries on, and `winbar create --resume` picks it back
 up.
@@ -311,7 +328,7 @@ Run it again any time. When everything is already right, it changes nothing.
 |---|---|
 | Sets vCPUs to your Mac's top-tier core count (4 to 8) | Balanced power plan with a fast ramp-up; idle cores may park; display off after 5 min; never sleeps; hibernation off |
 | Sets memory by how much your Mac has: 16 GB if it has 64 GB or more, 12 GB from 32 GB, otherwise 8 GB, but never more than half your Mac's memory. A larger value you already chose is left alone | Power button = Shut down |
-| Makes the VM headless, once Remote Desktop works | Turns off SysMain, Windows Search indexing and DiagTrack (telemetry) |
+| Runs the VM in the background (headless), once Remote Desktop works | Turns off SysMain, Windows Search indexing and DiagTrack (telemetry) |
 | Trusts the VM's Remote Desktop certificate (macOS asks you to approve) | Turns off transparency and animations (skip with `--no-visual-tweaks`) |
 | | Turns on Remote Desktop, with Network Level Authentication (once your account has a password) |
 | | Gives Remote Desktop a certificate named for the address your Mac uses |
@@ -381,8 +398,9 @@ You'll meet these in this order. Winbar opens the right window for each one.
     would.
 12. **Allow Local Network**, if macOS asks. Winbar checks the VM's Remote Desktop port before it
     connects.
-13. **Go headless.** Once you've connected successfully, setup offers to remove the VM's virtual
-    screen (the VM restarts once). You can also do it later: `winbar display off`.
+13. **Run in the background** (setup asks "Go headless?"). Once you've connected successfully, setup
+    offers to remove the VM's virtual screen (the VM restarts once). You can also do it later:
+    `winbar display off`, or **Run in the Background…** in the menu.
 
 ### Options
 
@@ -405,13 +423,14 @@ something is happening. The top of the menu shows the VM's name and status.
 | **Start** | Starts the VM without connecting (there when it's stopped) |
 | **Shut Down** | Asks Windows to shut down properly. Hold **⌥** for **Force Stop**, a hard power-off (it asks first) |
 | **Restart** | Clean shutdown, then start again |
-| **Show Console Window…** / **Go Headless…** | Switch between UTM's window and headless (restarts the VM; asks first) |
+| **Bring Back Windows' Screen…** / **Run in the Background…** | Gives the VM its screen back in a UTM window, or takes it away so Windows runs in the background (restarts the VM; asks first) |
 | **Open Shared Folder** / **Share a Folder…** | Opens the folder this VM shares with Windows, or picks one (restarts the VM; asks first) |
 | **Set Up Winbar…** | Opens the Set Up Winbar window, which walks through the whole setup and changes nothing that's already right — the same as `winbar setup --window` |
 | **Open UTM** | Brings up UTM |
 | **New Windows VM…** | Opens the create window, the same as `winbar create --window` (off while an install is running) |
-| **Report a Problem…** | Writes the `winbar diagnose` report, shows it in the Finder and opens the issues page, so you can drag it straight in. Asks first, with a box for the anonymised version |
-| **Launch at Login** | Start Winbar when you log in |
+| **Report a Problem…** | Writes the `winbar diagnose` report, shows it in the Finder and opens a new issue, so you can drag it straight in. Asks first; the names in it are placeholders unless you untick the box. Works during an install or a setup step too |
+| **Launch at Login** | Opens Winbar's icon in the menu bar when you log in; unless **Start Windows with Winbar** is ticked too, Windows stays off until you connect to it or start it. Set Up Winbar's finished screen turns it on (**Open Winbar when I log in**) unless you've already chosen. Not from a copy on the disk image, which would be gone after a restart |
+| **Start Windows with Winbar** | Starts the VM without connecting whenever Winbar opens (at login too, with **Launch at Login** on), unless it's running already or Winbar is busy with an install or a setup step. Windows then holds its share of your Mac's memory until you shut it down. Off until you tick it here or turn on **Also start Windows when Winbar opens** on Set Up Winbar's finished screen |
 | **Quit Winbar** | Quits Winbar. The VM keeps running. While Winbar is in the middle of something, it asks first |
 
 If no VM is chosen yet, the menu offers **Choose VM** and points to **Set Up Winbar…** to tune it.
@@ -420,7 +439,7 @@ Everything is also on the command line:
 
 ```sh
 winbar start | stop | restart | connect
-winbar display on | off        # UTM window, or headless
+winbar display on | off        # UTM window, or in the background (headless)
 winbar share                   # the folder Windows can see (see below)
 winbar config                  # show the VM, host and user Winbar uses
 winbar config --host mypc.local --user alex
@@ -559,9 +578,9 @@ logs and no settings, every section says so and the file is still written. It ne
 Windows password, and it's swept for anything shaped like a password, a key or a token.
 
 **Never opened Terminal?** The menu has **Report a Problem…**, which does the same thing: it says
-what it's about to gather, offers the anonymised version as a checkbox, takes a minute or two with
-the icon blinking, then shows you the file in the Finder and opens the issues page so you can drag
-it in. Winbar gathers it itself, so the `winbar doctor` table in it is the app's own view of your
+what it's about to gather, writes the anonymised version unless you untick its box, takes a minute
+or two with the icon blinking, then shows you the file in the Finder and opens a new issue so you
+can drag it in. It only reads, so it works in the middle of an install or a setup step too. Winbar gathers it itself, so the `winbar doctor` table in it is the app's own view of your
 Mac — its Automation and Local Network permissions, not your terminal's, which is the same reason
 `--self-test` has to run as the app (below).
 
@@ -580,6 +599,21 @@ again.
 **Connect opens Windows App but doesn't connect.** `winbar doctor` asks Windows App what it has
 saved, so start there. Connect finds the tile by the PC's Friendly name when it has one, and by its
 PC name when it hasn't; `winbar config` shows which name Winbar is looking for.
+
+**"Windows App's command line isn't responding".** Winbar saves your PC, and checks for one, through
+Windows App's own command line, which some copies of Windows App (11.4.2 was seen doing it) hang on
+before they answer. Winbar stops asking after ten seconds rather than keep waiting. Save the PC
+yourself in Windows App (Devices → + → Add PC, with the PC name Set Up Winbar shows and your Windows
+account), then choose **I've Saved the PC**; or choose **Try Again** later. Connect works either way,
+and once Connect has opened the Windows desktop through your saved PC and you've said so, Set Up
+Winbar counts the PC as saved.
+
+**"A saved PC for … belongs to another account".** Windows App has a saved PC for the VM's host
+name that signs in as a different Windows account — usually one left over from a VM you deleted
+that had the same name. Winbar counts a saved PC as the VM's only when both the host and the account
+match, and Connect won't press that one. Either edit it in Windows App so it signs in as the VM's
+account, or let setup save a new one beside it (it gets a name of its own, so the two tiles can't be
+confused); deleting the old one in Windows App is fine too.
 
 **Accessibility looks on, but Winbar says it isn't.** macOS sometimes keeps a stale entry. Reset
 it and let Winbar ask again:
@@ -626,7 +660,7 @@ Exit Node menu, or turn the exit node off.
 once Windows has blanked its display, the virtual power button only wakes it. Use Winbar's Shut
 Down. If Windows is still going after two minutes, Winbar asks whether to keep waiting (the
 default), force it off or give up: Windows may be installing updates, which it doesn't show while
-headless, and powering off then can damage it. If it's waiting on an app with unsaved work,
+it runs in the background, and powering off then can damage it. If it's waiting on an app with unsaved work,
 connect and deal with it, or use ⌥ Force Stop (a hard power-off, like pulling the plug).
 
 **You edited the VM's `config.plist` by hand and the change vanished.** UTM keeps each VM's
@@ -634,7 +668,7 @@ configuration in memory and writes it back, overwriting edits made while it runs
 in UTM's own settings window, or with `winbar display` / `winbar setup`, which go through UTM.
 
 **You need to see the VM's screen** (a boot menu, a BitLocker recovery prompt, a VM that won't
-come up on the network): `winbar display on`, or **Show Console Window…** in the menu.
+come up on the network): `winbar display on`, or **Bring Back Windows' Screen…** in the menu.
 
 **Windows asks for a BitLocker recovery key.** Enter the key you saved. If you set Windows up with
 a Microsoft account, the key is probably also at
@@ -678,8 +712,8 @@ report answerable:
 
 Leave out anything you'd rather not publish: the report prints this Mac's name, your Mac and
 Windows user names, the Windows PC name, your VM's name and host name, and the id and MAC address
-UTM gave it. `winbar diagnose --anonymise` replaces all of those with placeholders, and so does the
-checkbox in **Report a Problem…**. A `WINBAR_DEBUG=1` run has no such flag and prints the VM names
+UTM gave it. `winbar diagnose --anonymise` replaces all of those with placeholders, and so does
+**Report a Problem…** unless you untick its box. A `WINBAR_DEBUG=1` run has no such flag and prints the VM names
 and the id UTM gave each of them — it logs what `utmctl list` answered — so that one you read
 through yourself. Nothing prints a password.
 

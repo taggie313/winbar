@@ -208,7 +208,6 @@ private struct Rig {
     let clock = TestClock()
     let table = ProcessTable()
     let workspace = NotificationCenter()
-    let app = NotificationCenter()
     let queue = DispatchQueue(label: "winbar.tests.setup")
     let callbacks = DispatchQueue(label: "winbar.tests.setup.callbacks")
     let runner: SetupRunner
@@ -219,7 +218,7 @@ private struct Rig {
         machine.heldNow = { awake.held }
         runner = SetupRunner(machine: machine, environment: SetupRunner.Environment(
             queue: queue, callbacks: callbacks, clock: { clock.read() }, keepAwake: { awake.begin($0) },
-            processes: { _ in table.read() }, workspace: workspace, app: app, workGate: workGate))
+            processes: { _ in table.read() }, workspace: workspace, workGate: workGate))
     }
 
     /// Runs `work` and waits for its ending.
@@ -254,7 +253,6 @@ private struct Rig {
     }
 
     func wake() { workspace.post(name: NSWorkspace.didWakeNotification, object: nil) }
-    func comeBack() { app.post(name: NSApplication.didBecomeActiveNotification, object: nil) }
 }
 
 /// Invented machines and people only.
@@ -303,12 +301,14 @@ private let everyWork: [SetupRunner.Work] = [
     .checkAgain(.lookAround), .installUTM, .installWindowsApp, .settleUTM, .chooseVM("winlab01", id: Given.winlab.id),
     .startVM("winlab01"), .survey, .fix(checkID: "G1"), .fixEverything, .recordDone(checkID: "H6"),
     .trustCertificate, .savePC, .connect, .applyChanges, .guide(checkID: "H6"), .keepBitLocker, .discardChanges(checkID: nil),
+    .lookAgain(.connect, forgetting: .selfTest),
 ]
 
 private func covers(_ work: SetupRunner.Work) -> Bool {
     switch work {
     case .checkAgain, .installUTM, .installWindowsApp, .settleUTM, .chooseVM, .startVM, .survey, .fix, .fixEverything,
-         .recordDone, .trustCertificate, .savePC, .connect, .applyChanges, .guide, .keepBitLocker, .discardChanges:
+         .recordDone, .trustCertificate, .savePC, .connect, .applyChanges, .guide, .keepBitLocker, .discardChanges,
+         .lookAgain:
         return true
     }
 }
@@ -476,6 +476,69 @@ struct SetupRunnerOneAtATime {
         #expect(rig.finish(.fix(checkID: "G1"))?.outcome == .finished)
     }
 
+    /// The VM step's three-minute start, which had no way out. The fake waits as the live machine's
+    /// `Setup.waitForWindows` now does: until the job is cancelled.
+    @Test("Stop Waiting ends a VM start's wait, as a cancel, and the next press goes ahead")
+    func stopWaitingForAStart() throws {
+        let rig = Rig()
+        rig.table.set(vm: .some(nil))
+        let waiting = DispatchSemaphore(value: 0)
+        rig.machine.body = { _, job in
+            waiting.signal()
+            let deadline = Date().addingTimeInterval(10)
+            while !job.isCancelled, Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+            try job.checkCancellation()
+        }
+        let ended = DispatchSemaphore(value: 0)
+        var ending: SetupRunner.Ending?
+        _ = rig.start(.startVM("winlab01"), ended: ended) { ending = $0 }
+        #expect(waiting.wait(timeout: .now() + 5) == .success)
+        #expect(rig.runner.inFlight?.canStopWaiting == true)
+        #expect(rig.runner.stopWaiting())
+        #expect(ended.wait(timeout: .now() + 5) == .success)
+        #expect(ending?.outcome == .cancelled)
+        rig.settle()
+        rig.machine.body = { _, _ in }
+        #expect(rig.finish(.checkAgain(.vm))?.outcome == .finished)
+    }
+
+    /// Josh's Connect had no way out of its two-minute wait for Windows to take Remote Desktop. The
+    /// fake waits as the live machine's `Connection.waitForRemoteDesktop` does: until the job is
+    /// cancelled, then `checkCancellation`. The control is `canStopWaiting` without Connect:
+    /// `stopWaiting()` is false and the wait runs out.
+    @Test("Stop Waiting ends Connect's wait, as a cancel, and the next press goes ahead")
+    func stopWaitingForConnect() throws {
+        // Ready to connect: Accessibility allowed, so the fresh facts still offer Connect.
+        let rig = Rig(mac: Given.mac { $0.statuses["C3"] = .ok("Allowed") })
+        let waiting = DispatchSemaphore(value: 0)
+        rig.machine.body = { _, job in
+            waiting.signal()
+            let deadline = Date().addingTimeInterval(10)
+            while !job.isCancelled, Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+            try job.checkCancellation()
+        }
+        let ended = DispatchSemaphore(value: 0)
+        var ending: SetupRunner.Ending?
+        _ = rig.start(.connect, ended: ended) { ending = $0 }
+        #expect(waiting.wait(timeout: .now() + 5) == .success)
+        #expect(rig.runner.inFlight?.canStopWaiting == true)
+        #expect(rig.runner.stopWaiting())
+        #expect(ended.wait(timeout: .now() + 5) == .success)
+        #expect(ending?.outcome == .cancelled)
+        rig.settle()
+        rig.machine.body = { _, _ in }
+        #expect(rig.finish(.checkAgain(.connect))?.outcome == .finished)
+    }
+
+    /// Every wait with a way out says what taking it does, beside the button, wherever it's drawn.
+    @Test("Every wait Stop Waiting can end says what stopping does")
+    func everyStopSaysWhatItDoes() {
+        for work in everyWork where work.canStopWaiting {
+            #expect(SetupCopy.Working.stopConsequence(work)?.isEmpty == false, "\(work)")
+        }
+        #expect(SetupCopy.Working.stopConsequence(.applyChanges)?.contains("restart carries on") == true)
+    }
+
     /// Only a wait Winbar can end is offered a way to end it; a Homebrew install half done is not.
     @Test("Stop Waiting leaves work alone that can't stop waiting")
     func stopWaitingOnlyWaits() {
@@ -495,7 +558,9 @@ struct SetupRunnerOneAtATime {
         #expect(ended.wait(timeout: .now() + 5) == .success)
         #expect(cancelled == false)
         #expect(ending?.outcome == .finished)
-        #expect(everyWork.filter(\.canStopWaiting) == [.trustCertificate])
+        // Connect and the restart's wait for Windows joined the start and the certificate (changed on
+        // purpose): both waited minutes with no way out.
+        #expect(everyWork.filter(\.canStopWaiting) == [.startVM("winlab01"), .trustCertificate, .connect, .applyChanges])
     }
 
     @Test("Progress reaches the run's own handler and every attached window, in order")
@@ -803,6 +868,8 @@ struct SetupRunnerRestartReport {
 
 @Suite("A snapshot the Mac has moved on from is recognisably stale, and never acted on")
 struct SetupRunnerFreshness {
+    /// The refusal of the approval stays through the read that refused it, and through its snapshot
+    /// while the approval is still one the page offers; the next press takes it (`stillRefused`).
     @Test("An automatic read is visible, blocks approval honestly, and survives reopening")
     func visibleBackgroundRead() throws {
         let workGate = AppWorkGate()
@@ -813,7 +880,7 @@ struct SetupRunnerFreshness {
         let gate = Gate()
         rig.machine.onRead = { _ in gate.wait() }
         rig.clock.advance(90)
-        rig.comeBack()
+        rig.wake()
         #expect(gate.reached.wait(timeout: .now() + 3) == .success)
         let flight = try #require(rig.runner.inFlight)
         #expect(flight.work == .checkAgain(.certificate))
@@ -825,15 +892,20 @@ struct SetupRunnerFreshness {
         var state = SetupFixtures.state(.certificate, facts: old)
         state.refusal = .init(wanted: .trustCertificate, inFlight: flight)
         state = state.applying(.refreshing(flight))
-        #expect(state.inFlight != nil && state.refusal == nil)
+        #expect(state.inFlight != nil && state.refusal?.wanted == .trustCertificate)
         rig.machine.onRead = { _ in }
         gate.open.signal()
         rig.settle()
         #expect(rig.runner.inFlight == nil)
         let fresh = try #require(rig.runner.latestFacts)
-        state.refusal = .init(wanted: .trustCertificate, inFlight: flight)
+        // The approval still applies on the fresh facts, so on the certificate the refusal would stand;
+        // this Mac's Tune rows were never read, so the snapshot lands the window on Tune, and a refusal
+        // is about the page it was pressed on.
+        let refusal = try #require(state.refusal)
+        #expect(SetupWindowState.stillRefused(refusal, after: nil, on: fresh) == refusal)
         state = state.applying(.refreshed(fresh))
-        #expect(state.inFlight == nil && state.refusal == nil)
+        #expect(state.inFlight == nil)
+        #expect(state.step == .tune && state.refusal == nil)
         #expect(rig.finish(.trustCertificate)?.outcome == .finished)
         withExtendedLifetime((observation, reopened.observation)) {}
     }
@@ -861,19 +933,143 @@ struct SetupRunnerFreshness {
         withExtendedLifetime(observation) {}
     }
 
-    /// Back from System Settings, the App Store or Windows itself: anything can have changed there.
-    @Test("Coming back to the front does the same")
-    func cameBack() throws {
+    /// Winbar coming back to the front used to make everything stale and re-read every step so far:
+    /// a Tune page that was done went back to Checking… each time it was looked at, and the click
+    /// that brought the window forward greyed out Approve Certificate…, so the press after it was
+    /// refused and macOS's dialog never came. Only a step waiting on another app reads again on
+    /// return now (`SetupJourneyActions.rechecksOnReturn`). The activation is posted where AppKit
+    /// posts it; the control is a wake, which still reads.
+    @Test("Coming back to the front reads nothing and leaves the snapshot fresh")
+    func comingBackReadsNothing() throws {
         let rig = Rig()
-        let old = try #require(rig.finish(.checkAgain(.savedPC))?.facts)
-        let observation = rig.runner.attach { _ in }.observation
+        let old = try #require(rig.finish(.checkAgain(.tune))?.facts)
+        let heard = Heard()
+        let observation = rig.runner.attach { heard.add($0) }.observation
+        rig.settle()
         let reads = rig.machine.reads.count
         rig.clock.advance(90)
-        rig.comeBack()
-        #expect(rig.runner.staleness(of: old) == .reactivated)
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApp)
+        rig.settle()
+        #expect(rig.machine.reads.count == reads)
+        #expect(rig.runner.staleness(of: old) == nil)
+        #expect(rig.runner.inFlight == nil)
+        #expect(!heard.events.contains { if case .stale = $0 { return true }; return false })
+        #expect(rig.runner.run(.trustCertificate) == nil, "a press straight after coming back isn't refused")
+
+        rig.settle()
+        let control = Rig()
+        _ = control.finish(.checkAgain(.tune))
+        let watching = control.runner.attach { _ in }.observation
+        let before = control.machine.reads.count
+        control.clock.advance(90)
+        control.wake()
+        control.settle()
+        #expect(control.machine.reads.count == before + 1)
+        withExtendedLifetime((observation, watching)) {}
+    }
+
+    // MARK: A look nobody pressed
+
+    private static func events(_ heard: Heard) -> [String] {
+        heard.events.map { event in
+            switch event {
+            case .started: return "started"
+            case .progressed: return "progressed"
+            case .ended: return "ended"
+            case .stale: return "stale"
+            case .refreshing: return "refreshing"
+            case .refreshed: return "refreshed"
+            }
+        }
+    }
+
+    /// The window's look on coming back is a refresh, not work. As work, its ending replaced how the
+    /// last press ended: a failed install's card turned back into the plain "install UTM" card, and
+    /// the certificate's "not verified" was answered by a read that wasn't about it. It reads only
+    /// what it names, and it doesn't make every later snapshot read as far as the step it looked at.
+    /// The control is `run(.checkAgain(step))` in its place: `.started`/`.ended` are heard, `lastEnded`
+    /// becomes the read, and the read is of the look's step.
+    @Test("A look nobody pressed is a refresh, never an ending, and reads no further than before")
+    func lookIsARefresh() throws {
+        let rig = Rig(mac: Given.mac { $0.utm = .missing; $0.utmAnswers = nil; $0.vms = nil })
+        rig.machine.body = { _, _ in throw WinbarError("Homebrew couldn't install UTM", "It stopped with exit status 1.") }
+        let failed = try #require(rig.finish(.installUTM))
+        guard case .failed = failed.outcome else { Issue.record("expected a failed install, got \(failed.outcome)"); return }
+        let heard = Heard()
+        let observation = rig.runner.attach { heard.add($0) }.observation
+        rig.settle()
+        #expect(heard.events.isEmpty)
+
+        let look = SetupRunner.Work.lookAgain(.connect, forgetting: .selfTest)
+        #expect(rig.runner.lookAgain(look))
+        rig.settle()
+        #expect(Self.events(heard) == ["refreshing", "refreshed"])
+        #expect(rig.runner.lastEnded == failed)
+        #expect(rig.machine.reads.last?.after == look)
+        #expect(rig.machine.reads.last?.step == .lookAround, "a look reads what the wizard reached, not its own step")
+        #expect(rig.runner.inFlight == nil)
+
+        // …and the next read somebody presses still reads only as far as before.
+        _ = try #require(rig.finish(.checkAgain(.lookAround)))
+        #expect(rig.machine.reads.last?.step == .lookAround)
+        withExtendedLifetime(observation) {}
+    }
+
+    /// Work ends with a snapshot of its own. A look taken beside it would read the Mac twice at once
+    /// (on the queue behind it, against facts from before it) and say nothing new. The control is a
+    /// look without the check: its read follows the work's, one more than the work's own.
+    @Test("While work runs a look is declined, and reads nothing")
+    func lookDeclinedWhileWorking() throws {
+        let rig = Rig()
+        _ = try #require(rig.finish(.checkAgain(.certificate)))
+        let reads = rig.machine.reads.count
+        let gate = Gate()
+        rig.machine.body = { work, _ in if work == .trustCertificate { gate.wait() } }
+        let ended = DispatchSemaphore(value: 0)
+        #expect(rig.start(.trustCertificate, ended: ended) == nil)
+        #expect(gate.reached.wait(timeout: .now() + 5) == .success)
+
+        #expect(!rig.runner.lookAgain(.lookAgain(.certificate, forgetting: .statuses)))
+        #expect(rig.runner.inFlight?.work == .trustCertificate)
+        gate.open.signal()
+        #expect(ended.wait(timeout: .now() + 5) == .success)
+        rig.settle()
+        #expect(rig.machine.reads.count == reads + 1, "the trust's own read, and no second one")
+        #expect(rig.machine.reads.last?.after == .trustCertificate)
+    }
+
+    /// The menu holds the app's gate while it starts or stops a VM. A look it turns away is owed: the
+    /// window was told nothing, and the page would otherwise stay as it was until someone pressed
+    /// Check Again. The menu's own five-second tick takes it once the gate is free. The control is a
+    /// runner that forgets the refusal: nothing is read after the tick.
+    @Test("Turned away by the menu, a look is taken on the menu's next tick, and says nothing meanwhile")
+    func lookTurnedAwayIsTakenLater() throws {
+        let workGate = AppWorkGate()
+        let rig = Rig(workGate: workGate)
+        _ = try #require(rig.finish(.checkAgain(.connect)))
+        let heard = Heard()
+        let observation = rig.runner.attach { heard.add($0) }.observation
+        rig.settle()
+        let reads = rig.machine.reads.count
+
+        var menu: AppWorkGate.Lease? = try workGate.begin(.menu, label: "starting “winlab01”", vm: "winlab01").get()
+        #expect(!rig.runner.lookAgain(.lookAgain(.connect, forgetting: .selfTest)))
+        rig.settle()
+        rig.runner.processTableTick()
+        rig.settle()
+        #expect(heard.events.isEmpty, "\(heard.events)")
+        #expect(rig.machine.reads.count == reads)
+
+        menu?.finish()
+        menu = nil
+        rig.runner.processTableTick()
         rig.settle()
         #expect(rig.machine.reads.count == reads + 1)
-        #expect(rig.runner.latestFacts.map { rig.runner.staleness(of: $0) } == .some(nil))
+        #expect(Self.events(heard) == ["refreshing", "refreshed"])
+        // Taken once: the next tick, with nothing stale and nothing owed, reads nothing.
+        rig.runner.processTableTick()
+        rig.settle()
+        #expect(rig.machine.reads.count == reads + 1)
         withExtendedLifetime(observation) {}
     }
 
@@ -889,7 +1085,6 @@ struct SetupRunnerFreshness {
         let reads = rig.machine.reads.count
         rig.clock.advance(3600)
         rig.wake()
-        rig.comeBack()
         rig.table.set(vm: .some(5252))                   // the VM restarted underneath
         rig.runner.processTableTick()
         rig.settle()
@@ -1077,6 +1272,7 @@ struct SetupRunnerSnapshot {
         mac.rdpUser = "rosa"
         mac.windowsAppRunning = true
         mac.readiness = .blocked
+        mac.savedPCPressed = "winlab01.local"
         mac.pending = ConfigChanges(cpuCores: 6, memoryMB: 8192)
         mac.otherVMs = .success(["atelier"])
         mac.pendingRestart = UTMRestart(vm: "winlab01", pids: [4242])
@@ -1105,6 +1301,7 @@ struct SetupRunnerSnapshot {
         expected.rdpUser = "rosa"
         expected.windowsAppRunning = true
         expected.readiness = .blocked
+        expected.savedPCPressed = "winlab01.local"
         expected.pending = ConfigChanges(cpuCores: 6, memoryMB: 8192)
         expected.otherVMs = .running(["atelier"])
         expected.utmRestartOwed = true                   // 4242 is still running (the stamp's)
@@ -1177,7 +1374,7 @@ struct SetupRunnerSnapshot {
         #expect(facts.rows.count == Given.mac.statuses.count)
     }
 
-    /// "UTM has no Windows VM — Make One" said to a Mac whose Apple Event is waiting on the prompt
+    /// "UTM has no Windows VM — Install Windows…" said to a Mac whose Apple Event is waiting on the prompt
     /// would send someone off to install a second copy of Windows.
     @Test("A VM list that failed is a failure, one not asked is not asked, never an empty list")
     func vmList() {
@@ -1343,7 +1540,7 @@ struct SetupRunnerReadPlan {
         rig.runner.update(answers: no)
         let observation = rig.runner.attach { _ in }.observation
         rig.clock.advance(60)
-        rig.comeBack()
+        rig.wake()
         rig.settle()
         #expect(rig.machine.reads.count == 2)
         #expect(rig.machine.reads.last?.answers == no)
@@ -1539,7 +1736,7 @@ struct SetupRunnerApplies {
     @Test("Each kind of work belongs to its step")
     func steps() {
         #expect(everyWork.map(\.step) == [.lookAround, .lookAround, .savedPC, .lookAround, .vm, .vm, .tune, .tune, .tune,
-                                          .tune, .certificate, .savedPC, .connect, .finish, .tune, .tune, .finish])
+                                          .tune, .certificate, .savedPC, .connect, .finish, .tune, .tune, .finish, .connect])
         #expect(SetupRunner.Work.fix(checkID: "H5").step == .finish)
         #expect(SetupRunner.Work.recordDone(checkID: "C3").step == .connect)
     }
@@ -1594,6 +1791,31 @@ struct ShellAbort {
     }
 }
 
+/// What Stop Waiting does to the live start's wait: `Setup.waitForWindows` hands the job's
+/// cancellation to `waitUntil`, which checks it between its own checks as well as before them.
+@Suite("A wait for Windows to start can be stopped")
+struct WaitUntilCancel {
+    @Test("A cancel ends the wait well before its next check and its timeout, and isn't a success")
+    func cancels() {
+        let started = Date()
+        var checks = 0
+        let answered = waitUntil(timeout: 30, every: 5, cancelled: { Date().timeIntervalSince(started) > 0.3 }) {
+            checks += 1
+            return false
+        }
+        #expect(!answered)
+        #expect(Date().timeIntervalSince(started) < 2)
+        #expect(checks == 1)
+    }
+
+    @Test("A wait nobody cancels still checks, and still answers yes")
+    func untouched() {
+        var checks = 0
+        #expect(waitUntil(timeout: 5, every: 0.05, cancelled: { false }) { checks += 1; return checks == 3 })
+        #expect(!waitUntil(timeout: 0.2, every: 0.05) { false })
+    }
+}
+
 // MARK: - The words for work in flight
 
 @Suite("Work in flight is always named, never just busy")
@@ -1605,7 +1827,7 @@ struct SetupRunnerWords {
             let doing = SetupCopy.Working.doing(flight)
             let refusal = String(SetupCopy.Working.refusal(flight).characters)
             #expect(!doing.isEmpty)
-            #expect(refusal.hasPrefix("Winbar is still \(doing), and it does one thing at a time."), "\(work)")
+            #expect(refusal.hasPrefix("Winbar is still \(doing), and it does one thing at a time"), "\(work)")
             #expect(!refusal.localizedCaseInsensitiveContains("busy"), "\(work)")
             #expect(!refusal.contains("!"), "\(work)")
             if let waiting = work.waitsFor {
@@ -1613,8 +1835,42 @@ struct SetupRunnerWords {
                         "\(work)")
                 #expect(refusal.components(separatedBy: "waiting for").count <= 2, "said twice: \(refusal)")
             } else {
-                #expect(refusal.hasSuffix("This can go ahead once that's done."), "\(work)")
+                #expect(refusal.hasSuffix(", so what you chose didn't start. Choose it again once that's done."), "\(work)")
             }
+        }
+    }
+
+    /// The runner refuses; it never queues. "This can go ahead once that's done" read as a promise
+    /// that the press would go ahead by itself, and nothing ever did. While the work runs, the refusal
+    /// says to choose it again once it's done; once nothing runs, that the press didn't start, then;
+    /// and the app's gate's own words pass through as they are. The control is HEAD's suffix, which
+    /// says "go ahead".
+    @Test("A refusal says the press didn't start and to choose it again, while the work runs and after")
+    func refusedWords() {
+        for wanted in everyWork {
+            for work in everyWork {
+                let flight = SetupRunner.InFlight(work: work, started: Given.stamp.taken, vm: "winlab01")
+                let refusal = SetupRunner.Refusal(wanted: wanted, inFlight: flight)
+                let running = String(SetupCopy.Working.refused(refusal, busy: flight, host: "Winbar").characters)
+                if let waiting = work.waitsFor {
+                    let look = String(SetupCopy.markdown(SetupCopy.Working.whereToLook(waiting, host: "Winbar")).characters)
+                    #expect(running.hasSuffix(look), "\(work)")
+                } else {
+                    #expect(running.hasSuffix("Choose it again once that's done."), "\(work)")
+                }
+                let after = String(SetupCopy.Working.refused(refusal, busy: nil, host: "Winbar").characters)
+                #expect(after == "Winbar didn't start that: it was \(SetupCopy.Working.doing(flight)) at the time. Choose it again.")
+                for text in [running, after] {
+                    #expect(!text.contains("go ahead") && !text.localizedCaseInsensitiveContains("busy") && !text.contains("!"),
+                            "\(text)")
+                }
+            }
+        }
+        let gate = SetupRunner.Refusal(wanted: .startVM("winlab01"), inFlight: SetupRunner.InFlight(
+            work: .startVM("winlab01"), started: Given.stamp.taken, vm: "winlab01"),
+            reason: "Winbar is still stopping “atelier”. Wait for it to finish, then try again.")
+        for busy in [nil, gate.inFlight] {
+            #expect(SetupCopy.Working.refused(gate, busy: busy, host: "Winbar") == AttributedString(gate.reason!))
         }
     }
 

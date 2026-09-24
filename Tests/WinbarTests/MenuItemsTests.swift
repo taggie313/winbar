@@ -23,7 +23,8 @@ private func selector(_ action: MenuAction) -> Selector {
 /// action belongs here too, or every menu that has it reads back as nothing.
 private let plainActions: [MenuAction] = [
     .connect, .start, .shutDown, .forceStop, .restart, .toggleConsole, .sharedFolder, .openUTM, .newWindowsVM,
-    .showInstallProgress, .reportProblem, .showUpdate, .launchAtLogin, .quit, .openAutomationSettings, .setUpWinbar,
+    .showInstallProgress, .reportProblem, .showUpdate, .launchAtLogin, .startWindowsAtLaunch, .quit,
+    .openAutomationSettings, .setUpWinbar,
 ]
 
 private func state(vm: String? = "winlab01", running: Bool = false, launchAtLogin: Bool = false) -> MenuState {
@@ -63,6 +64,26 @@ struct MenuItemsTests {
     func launchAtLoginTick() throws {
         #expect(try item("Launch at Login", in: state(launchAtLogin: true)).state == .on)
         #expect(try item("Launch at Login", in: state(launchAtLogin: false)).state == .off)
+        // What logging in opens, on hover: only the icon.
+        #expect(try item("Launch at Login", in: state()).toolTip == LaunchAtLogin.Copy.menuHelp)
+    }
+
+    @Test("Start Windows with Winbar is ticked when it is on, sends its own action, and names the VM on hover")
+    func startWindowsTick() throws {
+        var on = state()
+        on.startsWindows = true
+        let ticked = try item("Start Windows with Winbar", in: on)
+        #expect(ticked.state == .on)
+        #expect(ticked.action == selector(.startWindowsAtLaunch))
+        #expect(ticked.target === target)
+        #expect(ticked.isEnabled)
+        #expect(ticked.toolTip == StartWindowsAtLaunch.Copy.menuHelp(vm: "winlab01"))
+        #expect(try item("Start Windows with Winbar", in: state()).state == .off)
+        // Right under Launch at Login, as the finished screen has it.
+        let menu = build(on).menu
+        let launch = try #require(menu.item(withTitle: "Launch at Login"))
+        let start = try #require(menu.item(withTitle: "Start Windows with Winbar"))
+        #expect(menu.index(of: start) == menu.index(of: launch) + 1)
     }
 
     @Test("Force Stop is Shut Down's alternate: right after it, the same key, and ⌥ where Shut Down has nothing")

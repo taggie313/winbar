@@ -160,11 +160,14 @@ struct SilentUTMAdvice {
             #expect(text.hasPrefix("Winbar opened UTM"), "\(consent)")
             #expect(!text.contains("Applications folder") && !text.contains("tccutil") && !text.contains("winbar doctor"),
                     "\(consent)")
-            #expect(text.hasSuffix("then press Try Again."), "\(consent)")
             if consent == .decided {
-                #expect(text.contains("no prompt is coming") && text.contains("Privacy & Security → Automation"))
+                // The settings page is the filled button there, and the window reads again by itself
+                // when Winbar comes back to the front, so it ends on that, not on Try Again.
+                #expect(text.contains("no prompt is coming") && text.contains("Choose Open Automation Settings…"))
+                #expect(text.hasSuffix("Winbar checks again when you come back."))
                 #expect(!text.contains("Choose Allow") && !text.contains("look for"))
             } else {
+                #expect(text.hasSuffix("then choose Try Again."), "\(consent)")
                 #expect(text.contains("“Winbar” wants access to control “UTM”") && text.contains("Choose Allow there"))
             }
         }
@@ -185,9 +188,10 @@ private func plain(_ text: AttributedString) -> String { String(text.characters)
 
 /// The window's sentences that carry a chosen value, for `name` (and `host`, where it's a host name).
 private func filledStrings(name: String, host: String) -> [AttributedString] {
-    [SetupCopy.VM.oneBody(name, windows: true), SetupCopy.VM.oneBody(name, windows: false),
+    [SetupCopy.VM.oneBody(name, windows: true, use: name), SetupCopy.VM.oneBody(name, windows: false, use: name),
      SetupCopy.VM.stopped(name), SetupCopy.VM.bUse(name), SetupCopy.Tune.stagedNote(vm: name),
      SetupCopy.SavedPC.passwordLabel(user: name), SetupCopy.Certificate.body(host: host),
+     SetupCopy.SavedPC.editInstead(host: host, user: name), SetupCopy.SavedPC.editInstead(host: host, user: nil),
      SetupCopy.Connecting.opening(host: host), SetupCopy.Quitting.body(doing: "restarting “\(name)”"),
      SetupCopy.Working.restartOwed(vm: name), SetupCopy.Working.slept(while: "restarting “\(name)”"),
      SetupCopy.Working.refusal(.init(work: .startVM(name), started: Date(), vm: name)),
@@ -222,15 +226,37 @@ private let windowMarkdown: [String] = {
             .download(url: "https://example.invalid/UTM.dmg")].compactMap { SetupCopy.LookAround.bInstall(.utm, $0) }
     all += SetupCopy.VM.noneBody + [SetupCopy.VM.noneHeading, SetupCopy.VM.oneHeading, SetupCopy.VM.severalHeading,
                                     SetupCopy.VM.severalBody(count: 3)]
-    all += [SetupCopy.Tune.heading, SetupCopy.Tune.body]
+    all += [SetupCopy.Tune.heading, SetupCopy.Tune.leftAloneSkipped, SetupCopy.Tune.leftAlone(declined: "--winbar-tuning"),
+            SetupCopy.Tune.alreadyRight(13), SetupCopy.Tune.bGuide("H6"), SetupCopy.Tune.bDone("H6")]
+    for headline in [SetupTuneHeadline.notAsked, .needsYou(count: 2, fixable: 1), .needsYou(count: 1, fixable: 0),
+                     .needsYou(count: 2, fixable: 2), .unchecked(count: 1), .tuned(staged: 1)] {
+        let words = SetupCopy.Tune.headline(headline)
+        all += [words.title] + (words.detail.map { [$0] } ?? [])
+    }
+    all += [SetupCopy.Certificate.instructions, SetupCopy.Certificate.completion, SetupCopy.Certificate.stopped,
+            SetupCopy.Certificate.notVerified, SetupCopy.Certificate.notRunning, SetupCopy.Certificate.goBack,
+            SetupCopy.Certificate.skippedNext, SetupCopy.Certificate.skippedNoApproval]
     all += [SetupCopy.Certificate.heading, SetupCopy.Certificate.approvalWindow, SetupCopy.Certificate.noCertificate]
-    all += [SetupCopy.SavedPC.heading, SetupCopy.SavedPC.lead, SetupCopy.SavedPC.appOpen]
+    all += [SetupCopy.SavedPC.heading, String(SetupCopy.SavedPC.lead(user: "Bruno").characters), SetupCopy.SavedPC.appOpen,
+            SetupCopy.SavedPC.installWindowsApp, SetupCopy.SavedPC.manual, SetupCopy.SavedPC.manualNext,
+            SetupCopy.SavedPC.afterSaving, SetupCopy.SavedPC.skipped, SetupCopy.SavedPC.windowsAppSkipped,
+            SetupCopy.SavedPC.silentTitle, SetupCopy.SavedPC.silent, SetupCopy.SavedPC.silentNext,
+            SetupCopy.Finish.inBackground, SetupCopy.Finish.passedOverHeading]
+    for (host, user) in [(nil, nil), ("winlab01.local", nil), ("winlab01.local", "Bruno")] as [(String?, String?)] {
+        let words = SetupCopy.SavedPC.notYet(host: host, user: user)
+        all += [words.title, words.body]
+    }
     all += SetupCopy.SavedPC.windowsAppPlan(brewPresent: true) + SetupCopy.SavedPC.windowsAppPlan(brewPresent: false)
+    all += [SetupCopy.Connecting.accessibilityLead, SetupCopy.Connecting.readyLead, SetupCopy.Connecting.localNetworkLead,
+            SetupCopy.Connecting.networkRecovery]
     all += [SetupCopy.Connecting.heading, SetupCopy.Connecting.accessibility, SetupCopy.Connecting.localNetwork,
             SetupCopy.Connecting.waiting, SetupCopy.Connecting.didItAppearHeading,
             SetupCopy.Connecting.didItAppear(savedPC: true), SetupCopy.Connecting.didItAppear(savedPC: false)]
-    all += SetupCopy.Finish.headlessBody + [SetupCopy.Finish.headlessHeading, SetupCopy.Finish.afterRefusal,
-                                            SetupCopy.Finish.notOffering, SetupCopy.Finish.doneHeading]
+    all += [SetupCopy.Finish.choiceHeading, SetupCopy.Finish.backgroundBody, SetupCopy.Finish.keepBody,
+            SetupCopy.Finish.choiceRule, SetupCopy.Finish.afterRefusal, SetupCopy.Finish.couldNotConfirm,
+            SetupCopy.Finish.notOffering, SetupCopy.Finish.alreadyInBackground, SetupCopy.Finish.notReady,
+            SetupCopy.Finish.checking, SetupCopy.Finish.restartStopped, SetupCopy.Finish.readyHeading,
+            SetupCopy.Finish.almostHeading]
     all += [SetupCopy.Quitting.title]
     all += [SetupCopy.Working.waiting(.certificateApproval), SetupCopy.Working.waiting(.automationPrompt),
             SetupCopy.Working.bStopWaiting, SetupCopy.agentNotYet]
@@ -306,9 +332,8 @@ struct SetupWindowCopy {
     func deckMarkdownBesideAName() {
         for name in ["winlab01", "**", "*", "winlab01 **beta"] {
             let ready = SetupCopy.Finish.doneBody(vm: name, connected: true)[0]
-            #expect(plain(ready) == "“\(name)” is ready. Connect in Winbar's menu opens its desktop; Shut Down and "
-                        + "Restart are there too.")
-            for word in ["Connect", "Shut Down", "Restart"] {
+            #expect(plain(ready) == "“\(name)” is set up. From now on, choose Connect in Winbar's menu to open it.")
+            for word in ["Connect"] {
                 guard let range = ready.range(of: word) else {
                     Issue.record("\(word) is missing beside “\(name)”")
                     continue
@@ -361,7 +386,7 @@ struct SetupWindowCopy {
         #expect(text.contains("opens System Settings at Privacy & Security → Accessibility"))
         #expect(text.contains("one-off connection"))
         // The readiness probe is all Local Network is for; "Connect works either way" waits on a measurement.
-        #expect(SetupCopy.Connecting.localNetwork.contains("only to check whether the VM's Remote Desktop port is answering"))
+        #expect(SetupCopy.Connecting.localNetwork.contains("only to check whether Windows is ready for Windows App to connect"))
         #expect(!SetupCopy.Connecting.localNetwork.contains("either way"))
     }
 
@@ -374,22 +399,46 @@ struct SetupWindowCopy {
 
     @Test("Each VM screen says only what UTM told Winbar about the VMs")
     func vmScreens() {
-        #expect(plain(SetupCopy.VM.oneBody("winlab01", windows: true)).hasPrefix("UTM has one Windows VM: “winlab01”."))
-        #expect(!plain(SetupCopy.VM.oneBody("Bruno", windows: false)).contains("Windows VM"))
+        #expect(plain(SetupCopy.VM.oneBody("winlab01", windows: true, use: "winlab01")).hasPrefix("UTM has one Windows VM: “winlab01”."))
+        #expect(!plain(SetupCopy.VM.oneBody("Bruno", windows: false, use: "Bruno")).contains("Windows VM"))
         #expect(SetupCopy.VM.severalBody(count: 12).hasPrefix("UTM has 12 virtual machines."))
         #expect(plain(SetupCopy.VM.stopped("winlab01"))
                 == "“winlab01” is stopped. Winbar needs Windows running to check and tune it.")
     }
 
     /// COHERENCE C2: `Reconfigure.apply` refuses any display change while another VM runs, so the
-    /// offer states that rule, in both directions, rather than naming VMs it would then stop.
-    @Test("The headless offer quotes the re-measured saving and the rule Reconfigure keeps")
+    /// choice states that rule, in both directions, rather than naming VMs it would then stop. The
+    /// saving is said the way it matters to someone deciding (the owner's words, 0.2.1): the README
+    /// keeps the figure, and the window no longer asks the reader to take a fraction of a fraction.
+    @Test("The background choice says what it saves plainly, and the rule Reconfigure keeps")
     func headlessOffer() {
-        let text = SetupCopy.Finish.headlessBody.joined(separator: " ")
-        #expect(text.contains("about two thirds"))
-        #expect(text.contains("only does it while this is the only one"))
-        #expect(text.contains("**Show Console Window…**"))
+        #expect(SetupCopy.Finish.backgroundBody.contains("It uses a little less of your Mac's power."))
+        #expect(!SetupCopy.Finish.backgroundBody.contains("two thirds"))
+        #expect(SetupCopy.Finish.choiceRule.contains("only does it while this is the only one"))
         #expect(SetupCopy.Finish.notOffering.contains("hasn't worked yet"))
+    }
+
+    /// The owner's call for 0.2.1: the window says what the person gets, not the word for what the VM
+    /// lacks. The CLI's `--headless` and `winbar display` keep theirs; nothing on the Finish page may
+    /// say "headless", "console" or "vCPU".
+    @Test("Finish says Run in the Background, never headless, console or vCPUs")
+    func plainWords() {
+        let changes = ConfigChanges(cpuCores: 6, memoryMB: 12288, display: .headless)
+        var words = [SetupCopy.Finish.choiceHeading, SetupCopy.Finish.bBackground, SetupCopy.Finish.bKeepScreen,
+                     SetupCopy.Finish.backgroundBody, SetupCopy.Finish.keepBody, SetupCopy.Finish.choiceRule,
+                     SetupCopy.Finish.afterRefusal, SetupCopy.Finish.notOffering, SetupCopy.Finish.alreadyInBackground,
+                     SetupCopy.Finish.notReady, SetupCopy.Finish.checking, SetupCopy.Finish.restartStopped,
+                     SetupCopy.Finish.restartLine(vm: "winlab01", changes)]
+        words += [SetupCopy.Finish.Outcome.connected, .notConnected, .notTried, .windowsAppSkipped].flatMap {
+            SetupCopy.Finish.doneBody(vm: "winlab01", $0).map(plain)
+        }
+        for text in words {
+            for jargon in ["headless", "console", "vcpu"] { #expect(!text.lowercased().contains(jargon), "\(text)") }
+        }
+        #expect(SetupCopy.Finish.restartLine(vm: "winlab01", changes)
+                    == "Finishing restarts “winlab01” once to apply: 6 processor cores, 12 GB of memory, and running in the background.")
+        // Terminal's line is Terminal's: the same restart in its own words, unchanged.
+        #expect(SetupCopy.Finish.oneRestart(of: "winlab01", applies: changes.summary) == "One restart of winlab01 applies: 6 vCPUs, 12288 MB RAM, headless.")
     }
 
     /// COHERENCE C2: with another VM running, or UTM not answering, step 7 shows `otherVMsRefusal`'s
@@ -400,10 +449,9 @@ struct SetupWindowCopy {
     @Test("Beside Reconfigure's refusal the deck has only its own words, and no Go Headless button")
     func refusalFraming() {
         let framing = SetupCopy.Finish.afterRefusal
-        #expect(framing.hasPrefix("**\(SetupCopy.bCheckAgain)** asks UTM again."))
-        #expect(framing.contains("**\(SetupCopy.Finish.bKeepScreen)**"))
-        #expect(!framing.contains("**\(SetupCopy.Finish.bGoHeadless)**"))
-        #expect(plain(SetupCopy.markdown(framing)).contains("Go Headless… in Winbar's menu"))
+        #expect(framing.hasPrefix("Choose **\(SetupCopy.bCheckAgain)** once they've stopped"))
+        #expect(!framing.contains(SetupCopy.Finish.bBackground))
+        #expect(plain(SetupCopy.markdown(framing)).contains("Winbar's menu can switch it later"))
         for text in windowStrings {
             for refusal in ["stop your other vms", "couldn't confirm no other vms", "restarting utm would stop",
                             "or quit utm", "nothing was changed", "also running now"] {
@@ -414,15 +462,17 @@ struct SetupWindowCopy {
 
     @Test("The done screen only calls the VM ready when Connect worked")
     func doneScreen() {
-        #expect(plain(SetupCopy.Finish.doneBody(vm: "winlab01", connected: true)[0]).hasPrefix("“winlab01” is ready."))
+        #expect(plain(SetupCopy.Finish.doneBody(vm: "winlab01", connected: true)[0]).hasPrefix("“winlab01” is set up."))
+        #expect(SetupCopy.Finish.heading(.connected) == "Windows is ready")
+        #expect(SetupCopy.Finish.heading(.notConnected) == "Almost done" && SetupCopy.Finish.heading(.windowsAppSkipped) == "Almost done")
         // Skipped Windows App: Connect was never tried, so the ready sentence would be untrue.
         let skipped = plain(SetupCopy.Finish.doneBody(vm: "winlab01", .windowsAppSkipped)[0])
-        #expect(!skipped.contains("opens its desktop"))
-        #expect(!skipped.contains("is ready"))
+        #expect(!skipped.contains("one click away"))
+        #expect(!skipped.contains("is set up"))
         #expect(skipped.contains("Windows App"))
         let notYet = plain(SetupCopy.Finish.doneBody(vm: "winlab01", connected: false)[0])
-        #expect(!notYet.contains("ready"))
-        #expect(notYet.contains("hasn't worked yet"))
+        #expect(!notYet.contains("ready") && !notYet.contains("is set up"))
+        #expect(notYet.contains("hasn't opened on this Mac yet") && notYet.contains(SetupCopy.Finish.bTryConnectingAgain))
     }
 
     /// The window always uses the App Store for Windows App. With Homebrew present it says why rather
@@ -439,10 +489,12 @@ struct SetupWindowCopy {
         #expect(without[0].contains("\(Dependency.windowsAppDownloadMB) MB"))
     }
 
-    @Test("The Windows-App-is-open refusal is WindowsAppBookmarks' own, then the button")
+    /// The card says in one sentence what to press, and only the quit: the step reads again by itself
+    /// once Windows App has gone. The refusal `WindowsAppBookmarks` gives, word for word, is its Details.
+    @Test("The Windows-App-is-open card names its one button, and its Details are WindowsAppBookmarks' own refusal")
     func appOpen() {
-        #expect(SetupCopy.SavedPC.appOpen.hasPrefix(WindowsAppBookmarks.Copy.quitFirst))
-        #expect(SetupCopy.SavedPC.appOpen.hasSuffix("press **Check Again**."))
+        #expect(SetupCopy.SavedPC.appOpen.hasSuffix("Choose **Quit Windows App**."))
+        #expect(SetupCopy.SavedPC.appOpenWhy == WindowsAppBookmarks.Copy.quitFirst)
     }
 }
 
@@ -602,14 +654,14 @@ struct ArmieLines {
         #expect(SetupCopy.Armie.line(for: job) == SetupCopy.Armie.line(.installing(.boot)))
     }
 
-    /// Setup's wait is the guest agent, then — only when Windows signs itself in — the desktop. The
-    /// line says both halves, and nothing about what "up" means.
-    @Test("A starting VM's line says what the wait waits for, and goes when the wait runs out")
+    /// The status line beside him says what the wait waits for and how long it can take
+    /// (`Working.startWaiting`); he said it again, with "guest agent" in it. Now he says how it feels.
+    @Test("A starting VM's line doesn't repeat the wait beside it, and goes when the wait runs out")
     func startingWindows() {
         let line = SetupCopy.Armie.line(.startingWindows)
-        #expect(line.contains("guest agent"))
-        #expect(line.contains("desktop"))
-        #expect(!line.contains("counts as up"))
+        #expect(line == "Windows is waking up. It takes its time. I'll wait.")
+        #expect(!line.contains("guest agent") && !line.contains("three minutes"))
+        #expect(!line.contains(SetupCopy.Working.startWaiting) && !SetupCopy.Working.startWaiting.contains(line))
         #expect(SetupCopy.Armie.startingLine(timedOut: false) == line)
         #expect(SetupCopy.Armie.startingLine(timedOut: true) == nil)
     }
@@ -618,8 +670,11 @@ struct ArmieLines {
     func finishLine() {
         let line = SetupCopy.Armie.line(.installing(.finish))
         #expect(!line.contains("Next"))
-        for step in ["checks it over", "shuts it down", "install discs out", "starts it again"] {
-            #expect(line.contains(step), "\(step)")
+        // The stage row beside him names the disks and the restart; he names no step in order, so
+        // none of them stops being true halfway through.
+        #expect(line == "Windows is installed. One more restart, and it's ready.")
+        for step in ["checks it over", "shuts it down", "discs", "disks"] {
+            #expect(!line.contains(step), "\(step)")
         }
     }
 

@@ -390,8 +390,9 @@ enum UTM {
     }
 
     @discardableResult
-    static func waitForGuestAgent(_ vm: String, timeout: TimeInterval = 180) -> Bool {
-        waitUntil(timeout: timeout, every: 5) { VMProcesses.isRunning(vm) && guestAgentAnswers(vm) }
+    /// `cancelled` ends the wait early, false, the way the timeout does.
+    static func waitForGuestAgent(_ vm: String, timeout: TimeInterval = 180, cancelled: (() -> Bool)? = nil) -> Bool {
+        waitUntil(timeout: timeout, every: 5, cancelled: cancelled) { VMProcesses.isRunning(vm) && guestAgentAnswers(vm) }
     }
 }
 

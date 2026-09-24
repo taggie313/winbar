@@ -27,20 +27,6 @@ enum SetupTuneStatus: CaseIterable, Hashable {
         return row.kind == .info ? .information : .needsAttention
     }
 
-    /// The rows in the recipe's order, except that the ones waiting on the person come first: a
-    /// count saying "1 needs attention" above fourteen verified cards left that one below the fold.
-    /// Stable, so everything else keeps the order `winbar doctor` prints.
-    static func attentionFirst(_ rows: [SetupFlow.Row], facts: SetupFlow.Facts,
-                               work: SetupRunner.Work? = nil) -> [SetupFlow.Row] {
-        rows.enumerated()
-            .sorted { a, b in
-                let first = status(for: a.element, facts: facts, work: work) == .needsAttention
-                let second = status(for: b.element, facts: facts, work: work) == .needsAttention
-                return first != second ? first : a.offset < b.offset
-            }
-            .map(\.element)
-    }
-
     static func counts(_ facts: SetupFlow.Facts, work: SetupRunner.Work? = nil) -> [Self: Int] {
         let screen = SetupFlow.tune(facts)
         var counts: [Self: Int] = [:]
@@ -48,17 +34,96 @@ enum SetupTuneStatus: CaseIterable, Hashable {
         if !screen.unread.isEmpty { counts[.notChecked] = screen.unread.count }
         return counts
     }
+}
 
-    var symbol: String {
-        switch self {
-        case .verified: return "checkmark.circle.fill"
-        case .pendingRestart: return "clock"
-        case .skipped: return "minus.circle"
-        case .needsAttention: return "exclamationmark.triangle.fill"
-        case .information: return "info.circle"
-        case .checking: return "magnifyingglass"
-        case .applying: return "arrow.triangle.2.circlepath"
-        case .notChecked: return "questionmark.circle"
+/// The tune page's rows, in the three groups it draws, each in the recipe's order (rows Windows
+/// didn't answer for after the rest of the first): what waits on Ben first and open, then what is settled some other way (a Skip, a change waiting for the restart, a
+/// note), and last, folded into one line, what passed. Fifteen cards of the same weight, with the one
+/// that mattered twelfth, is what this replaces.
+///
+/// Grouped by how each row stands without the work in flight, so a Check Again doesn't empty the
+/// folded group into a column of spinners and put it back a moment later: the rows stay where they
+/// are, and only their marks turn (`SetupTuneStatus.status(for:facts:work:)`). Pure.
+struct SetupTuneGroups: Equatable {
+    var needsYou: [SetupFlow.Row] = []
+    var others: [SetupFlow.Row] = []
+    var verified: [SetupFlow.Row] = []
+
+    init(_ facts: SetupFlow.Facts) {
+        var unread: [SetupFlow.Row] = []
+        for row in SetupFlow.tune(facts).rows {
+            switch SetupTuneStatus.status(for: row, facts: facts) {
+            // A row Windows didn't answer for goes after the ones Ben can act on: the headline's "1
+            // setting needs you" points at the first row, and that has to be his.
+            case .needsAttention: if row.kind == .error { unread.append(row) } else { needsYou.append(row) }
+            case .verified: verified.append(row)
+            default: others.append(row)
+            }
         }
+        needsYou += unread
+    }
+}
+
+/// What the tune page says first: the one line that answers "is this done, and if not, what's mine?".
+enum SetupTuneHeadline: Equatable {
+    /// Work is running on this step; the words name it (`SetupCopy.Tune.busy`).
+    case working(String)
+    /// Some rows haven't been read, so the survey still has to ask Windows.
+    case notAsked
+    /// Rows the step waits on: `fixable` of them are what **Fix Everything** would fix.
+    case needsYou(count: Int, fixable: Int)
+    /// Nothing waits on Ben, but Winbar couldn't read some rows (Windows didn't answer). The step
+    /// goes on without them (`SetupFlow.isSatisfied`), so saying "tuned" would be untrue and "needs
+    /// you" would hold him for nothing.
+    case unchecked(count: Int)
+    /// Done: every row passed, was left alone, or is staged for the restart (`staged` of them).
+    case tuned(staged: Int)
+
+    static func of(_ facts: SetupFlow.Facts, working: String? = nil) -> Self {
+        if let working { return .working(working) }
+        let screen = SetupFlow.tune(facts)
+        if !screen.unread.isEmpty { return .notAsked }
+        let needs = SetupTuneGroups(facts).needsYou
+        // G0 is the exception to "errors don't hold the step": without Windows answering, nothing
+        // else could be read (`SetupFlow.settled`).
+        let holding = needs.filter { $0.kind != .error || $0.id == "G0" }
+        if !holding.isEmpty { return .needsYou(count: holding.count, fixable: screen.fixEverything.count) }
+        if !needs.isEmpty { return .unchecked(count: needs.count) }
+        return .tuned(staged: screen.staged.count)
+    }
+}
+
+/// The buttons on a row that waits on Ben, as values: what each says, what VoiceOver says for it,
+/// and what it sends. **Fix** where Winbar can fix it (**Try Again** after a Fix that didn't work);
+/// where Ben has to do it, a button that takes him there and one that says he did, each named for the
+/// row; **Check Again** where Windows didn't answer, which offered only Skip; **Undo This Change**
+/// for a staged change that was refused; and **Skip**, except where the row is already skipped and
+/// on G0, which nothing can stand in for. Pure.
+enum SetupTuneRowActions {
+    struct Action: Equatable {
+        var title: String
+        var spoken: String
+        var command: SetupCommand
+    }
+
+    static func of(_ row: SetupFlow.Row, facts: SetupFlow.Facts) -> [Action] {
+        func action(_ title: String, _ command: SetupCommand) -> Action {
+            Action(title: title, spoken: SetupCopy.Tune.spoken(title, row: SetupCopy.Tune.title(row)), command: command)
+        }
+        let screen = SetupFlow.tune(facts)
+        var actions: [Action] = []
+        if row.kind == .fixable, row.action == .fix {
+            actions.append(action(row.failure == nil ? SetupCopy.Tune.bFix : SetupCopy.bTryAgain, .perform(.run(.fix(checkID: row.id)))))
+        }
+        if row.kind == .manual {
+            if row.canGuide { actions.append(action(SetupCopy.Tune.bGuide(row.id), .perform(.run(.guide(checkID: row.id))))) }
+            actions.append(action(SetupCopy.Tune.bDone(row.id), .perform(.run(.recordDone(checkID: row.id)))))
+        }
+        if row.kind == .error { actions.append(action(SetupCopy.bCheckAgain, .perform(.run(.checkAgain(.tune))))) }
+        if screen.staged.contains(row.id) { actions.append(action("Undo This Change", .discardChanges(row.id))) }
+        if row.id != "G0", SetupTuneStatus.status(for: row, facts: facts) != .skipped {
+            actions.append(action(SetupCopy.bSkip, .skip(row.id)))
+        }
+        return actions
     }
 }

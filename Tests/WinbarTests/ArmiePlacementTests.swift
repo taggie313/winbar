@@ -18,7 +18,7 @@ import Testing
 private typealias F = SetupFixtures
 
 enum ArmieFixtures {
-    /// Step 2 on a Mac whose UTM has no VM at all: the **Make One** card.
+    /// Step 2 on a Mac whose UTM has no VM at all: the **Install Windows…** card.
     static var noVM: SetupWindowState {
         F.state(.vm, facts: F.facts(utm: F.installed, answers: .answered, vms: .listed([])))
     }
@@ -86,16 +86,19 @@ enum ArmieFixtures {
 
     /// Its environment reaches nothing: no job on this Mac is looked for, no form refreshed from UTM,
     /// no window shown, and the work gate is its own rather than the app's. `ownsJob` says whose
-    /// install it draws: by default the app's own, as **Make One** starts it, with the app's footer
+    /// install it draws: by default the app's own, as **Install Windows…** starts it, with the app's footer
     /// and **Cancel Install…**; false for one running in Terminal that the wizard is only showing.
     /// Answered here rather than by claiming the process-wide flag, which other tests draw from.
-    @MainActor static func createController(ownsJob: Bool = true) -> CreateWindowController {
+    /// `pressed` records the install's button presses instead of carrying them out
+    /// (`CreateWindowController.perform`), for the tests that press them.
+    @MainActor static func createController(ownsJob: Bool = true,
+                                            pressed: ((CreateJobView.Action.Press) -> Void)? = nil) -> CreateWindowController {
         CreateWindowController(facts: CreateFormFacts(
             mac: MacFacts(topTierCores: 8, totalCores: 12, memoryBytes: 32 << 30, shortUserName: "rosa"),
             utmInstalled: true, utmVersion: "4.7.5", fileVaultOn: true, freeGB: 400, volumeName: "atelier",
             existingVMNames: nil, menuVMName: nil),
             environment: .init(currentJob: { nil }, refreshForm: { _ in }, show: { _ in }, workGate: AppWorkGate(),
-                               ownsJob: { ownsJob }))
+                               ownsJob: { ownsJob }, pressed: pressed))
     }
 
     static let plan = CreatePlan(vmName: "winlab02", isoPath: "/Users/rosa/Downloads/Win11_25H2_English_Arm64_v2.iso",
@@ -137,10 +140,14 @@ enum ArmieFixtures {
         ("N_PW_FILEVAULT_OFF", CreateCopy.nPWFileVaultOff),
     ]
 
-    static let stoppedWaiting = CreateFailure(code: "E_TIMEOUT", title: "Windows still hadn't finished installing",
-                                              detail: "Windows still hadn't finished installing after 2 hours, so "
-                                                + "Winbar stopped waiting.",
-                                              nextStep: "The VM is still running: look at its window in UTM.")
+    /// E_TIMEOUT in the job's own words (`CreateJobRun`): the render drew a next step the job never
+    /// sends, and so hid the Terminal command the real one gave inside Set Up Winbar.
+    static let stoppedWaiting = CreateFailure(code: "E_TIMEOUT",
+                                              title: "Windows still hadn't finished installing after 2 hours, so Winbar "
+                                                + "stopped waiting.",
+                                              detail: "The VM is still running: look at its window in UTM to see where it "
+                                                + "stopped.",
+                                              nextStep: "To start over: winbar create --cancel \"winlab02\", then create it again.")
 }
 
 private typealias A = ArmieFixtures
@@ -239,7 +246,7 @@ struct ArmiePlacementTests {
         var unfinished = A.done
         unfinished.finished = false
         #expect(ArmieCue.cue(unfinished) == nil)
-        // Keep the Screen after a failed Go Headless finishes without new work: that card stays up.
+        // Keep the Screen after a failed Run in the Background finishes without new work: that card stays up.
         #expect(ArmieCue.cue(A.failed(A.done, .fix(checkID: "H5"))) == nil)
         var overtaken = A.done
         overtaken.lastEnding = SetupRunner.Ending(work: .applyChanges, outcome: .overtaken, facts: A.done.facts!,
@@ -422,36 +429,54 @@ struct ArmiePlacementSnapshots {
         }
     }
 
-    /// The install **Make One** started, with preflight's battery caution and FileVault note, at the
-    /// window's first-open size: those and the app's two-line footer put him just below the fold,
-    /// where a rule of his own above him was all that showed, a second line over the button bar's
-    /// that read as something cut off. What shows of him there must not be a rule across the page.
-    /// Drawn whole, he is under the notes and adds nothing across the page either, so no other fold
-    /// can leave one.
-    @MainActor @Test("Below the fold he leaves no stray rule, and drawn whole he is there under the notes")
-    func belowTheFold() throws {
+    /// The install **Install Windows…** started, with preflight's battery caution and FileVault note. He came
+    /// after those notes and the page's footer text, which put him about 150 pt below the fold of the
+    /// live window — the first-open 620 pt less the 28 pt title bar the window's content runs under.
+    /// Now he is under the stages, above the notes, which fold behind a disclosure: all of his line is
+    /// in view there, above the footer. What differs with him and without is never a rule across the
+    /// page, at the fold or drawn whole.
+    @MainActor @Test("Under the stages, all of him is in view in the live window, and he leaves no stray rule")
+    func aboveTheFold() throws {
         let art = try #require(Drawn.art)
         let install = Drawn.install { A.job(now: $0, messages: A.preflightNotes) }
+        let live = CGSize(width: Drawn.size.width, height: Drawn.size.height - 28)
+        let line = try #require(ArmieCue.installing(A.job(now: F.started, messages: A.preflightNotes))?.line)
         for appearance in [Snapshot.Appearance.light, .dark] {
             let label = appearance.rawValue
-            let fold = try Drawn.png(Drawn.screen(A.creating, art: art, embedded: install), appearance: appearance)
-            let foldHidden = try Drawn.png(Drawn.screen(A.hidden(A.creating), art: art, embedded: install),
+            let fold = try Drawn.png(Drawn.screen(A.creating, art: art, embedded: install), size: live, appearance: appearance)
+            let foldHidden = try Drawn.png(Drawn.screen(A.hidden(A.creating), art: art, embedded: install), size: live,
                                            appearance: appearance)
             let whole = try Drawn.png(Drawn.screen(A.creating, art: art, embedded: install), size: Drawn.whole,
                                       appearance: appearance)
             let wholeHidden = try Drawn.png(Drawn.screen(A.hidden(A.creating), art: art, embedded: install),
                                             size: Drawn.whole, appearance: appearance)
-            let atFold = try #require(Snapshot.difference(fold, foldHidden))
-            let drawnWhole = try #require(Snapshot.difference(whole, wholeHidden))
-            #expect(drawnWhole.count > 1000, "\(label)")
-            // The premise: this page really does hide some of him at the first-open size. If the page
-            // ever fits, the fixture needs more notes for this test to be about the fold.
-            #expect(atFold.count < drawnWhole.count, "\(label): he fits above the fold now")
-            #expect(try #require(Drawn.widestRun(fold, foldHidden)) < 0.5, "\(label): a rule at the fold")
-            #expect(try #require(Drawn.widestRun(whole, wholeHidden)) < 0.5, "\(label): a rule above him")
+            #expect(try #require(Snapshot.difference(whole, wholeHidden)).count > 1000, "\(label)")
+            // His line, read off the live-sized page (its opening words: text recognition reads a curly
+            // apostrophe its own way), above the footer's band.
+            let words = try #require(Drawing.find(String(line.prefix(20)), in: try Drawing.lines(fold)),
+                                     "\(label): his line isn't in view")
+            #expect(words.frame.maxY < live.height - setupFooterBand, "\(label): \(words)")
+            let lines = try Drawing.lines(fold)
+            let notes = try #require(Drawing.find(CreateCopy.pNotes(A.preflightNotes.count), in: lines), "\(lines)")
+            #expect(words.frame.maxY < notes.frame.minY, "\(label): he is under the notes")
+            // A rule is as wide as the page's content (560 of 600 pt). His speech bubble's edge is the
+            // widest thing of his, and it stops at the prose measure.
+            let rule = (SetupStyle.textWidth + 10) / Drawn.size.width
+            #expect(try #require(Drawn.widestRun(fold, foldHidden)) < rule, "\(label): a rule at the fold")
+            #expect(try #require(Drawn.widestRun(whole, wholeHidden)) < rule, "\(label): a rule above him")
             try Snapshot.record(fold, as: "armie-installing-notes-\(label)")
             try Snapshot.record(whole, as: "armie-installing-notes-whole-\(label)")
         }
+    }
+
+    /// The control for the width above: a rule across the page's content, drawn and not, differs in a
+    /// run wider than his bubble can be.
+    @MainActor @Test("A rule across the page is wider than that")
+    func ruleControl() throws {
+        let rule = (SetupStyle.textWidth + 10) / Drawn.size.width
+        let with = try Drawn.png(VStack { Divider() }.padding(.horizontal, SetupStyle.pagePadding))
+        let without = try Drawn.png(VStack { Color.clear.frame(height: 1) }.padding(.horizontal, SetupStyle.pagePadding))
+        #expect(try #require(Drawn.widestRun(with, without)) > rule)
     }
 
     /// The renders above say whose install they draw. The wizard's own is drawn as the app draws it,
@@ -663,7 +688,7 @@ struct ArmiePlacementPlayback {
         }
     }
 
-    /// The shipped window's own wiring, not a closure a test hands `SetupScreen`: **Make One** on the
+    /// The shipped window's own wiring, not a closure a test hands `SetupScreen`: **Install Windows…** on the
     /// empty step 2 embeds the create controller, and `SetupRootView` has to pass its views the Armie
     /// `SetupScreen` lends. Every other test supplies that closure itself, so without this one the
     /// window could stop passing him on and the install would lose him with every test still green.
@@ -675,8 +700,7 @@ struct ArmiePlacementPlayback {
         create.draw(A.job(now: create.now))
         let runner = SetupRunner(machine: UntouchedMachine(), environment: .init(
             queue: DispatchQueue(label: "winbar.test.armie-placement"), callbacks: .main, clock: Date.init,
-            keepAwake: { _ in {} }, processes: { _ in ([], nil) }, workspace: NotificationCenter(),
-            app: NotificationCenter()))
+            keepAwake: { _ in {} }, processes: { _ in ([], nil) }, workspace: NotificationCenter()))
         let setup = SetupWindowController(state: A.noVM, art: art, settings: memory.settings,
                                           makeRunner: { runner }, makeCreator: { create })
         setup.send(.newWindowsVM)

@@ -138,6 +138,65 @@ enum VMSettings {
         return held.filter { $0 != Config.Key.recordedName }
     }
 
+    /// The one-time mark on every saved PC remembered before Winbar told Windows accounts apart. Says
+    /// which VMs it marked.
+    ///
+    /// Before, C2 remembered a saved PC by host alone, and live that was a stale one: a deleted VM's,
+    /// with the same name, signing in as another account. Connect reads only what is remembered and
+    /// never asks again, so on a Mac that upgraded it would keep pressing the stale tile until setup
+    /// or doctor looked. So each remembered host is marked as one another account may also have a
+    /// saved PC for (`savedPCOtherAccountHost`, with no account: nobody saw it). Until C2 looks again,
+    /// Connect then presses only a saved PC with a name of its own, and otherwise opens a one-off
+    /// connection that asks for the password — slower, never someone else's desktop. C2 settles it
+    /// (`Recipe.savedPCMemory`), and where Windows App can't answer it, the person's word stands as
+    /// it did before (`Recipe.savedPCMemory(unanswered:host:)`).
+    ///
+    /// A VM whose record already has the mark is left alone, and so is everything after the first
+    /// run: from then on the mark is only ever written from a lookup.
+    @discardableResult
+    static func migrateSavedPCAccounts(in store: SettingsStore) -> [String] {
+        guard store.object(forKey: Config.Key.savedPCAccountsMigrated) == nil else { return [] }
+        defer { store.set(true, forKey: Config.Key.savedPCAccountsMigrated) }
+        var marked: [String] = []
+        for token in tokens(in: store) {
+            guard let host = Config.nonEmpty(store.object(forKey: key(Config.Key.savedPCHost, for: token)) as? String),
+                  store.object(forKey: key(Config.Key.savedPCOtherAccountHost, for: token)) == nil else { continue }
+            store.set(host, forKey: key(Config.Key.savedPCOtherAccountHost, for: token))
+            marked.append(token)
+        }
+        return marked
+    }
+
+    /// Which setting holds which part of `SavedPCMemory`.
+    static let savedPCSettings: [(setting: String, part: WritableKeyPath<SavedPCMemory, String?>)] = [
+        (Config.Key.savedPCHost, \.host), (Config.Key.savedPCName, \.name),
+        (Config.Key.savedPCOtherAccountHost, \.otherAccountHost),
+        (Config.Key.savedPCOtherAccountName, \.otherAccountName),
+        (Config.Key.savedPCOtherAccountUser, \.otherAccountUser),
+    ]
+
+    /// One VM's saved-PC memory, from its namespace. Blank values read as none, as every per-VM string
+    /// setting does.
+    static func savedPC(of token: String, in store: SettingsStore) -> SavedPCMemory {
+        var memory = SavedPCMemory()
+        for (setting, part) in savedPCSettings {
+            memory[keyPath: part] = Config.nonEmpty(store.object(forKey: key(setting, for: token)) as? String)
+        }
+        return memory
+    }
+
+    /// Writes all of it, removing a setting whose part is none, so nothing from an earlier lookup
+    /// outlives the one this came from.
+    static func setSavedPC(_ memory: SavedPCMemory, of token: String, in store: SettingsStore) {
+        for (setting, part) in savedPCSettings {
+            if let value = Config.nonEmpty(memory[keyPath: part]) {
+                store.set(value, forKey: key(setting, for: token))
+            } else {
+                store.removeObject(forKey: key(setting, for: token))
+            }
+        }
+    }
+
     /// The one-time move of the single global set of settings 0.1.0 kept into the selected VM's own
     /// namespace. Says which settings it moved.
     ///
@@ -164,6 +223,23 @@ enum VMSettings {
         if let name = Config.nonEmpty(name) { remember(name: name, for: token, in: store) }
         return held.map(\.0)
     }
+}
+
+/// What Winbar remembers about one VM's saved PC in Windows App. The settings go together: each is
+/// only right beside the others from the same lookup, so they are worked out as one value
+/// (`Recipe.savedPCMemory`, `CreateRun.selection`) and written as one (`Config.savedPC`).
+struct SavedPCMemory: Equatable {
+    /// `savedPCHost`: the host a saved PC of this VM's was seen for.
+    var host: String?
+    /// `savedPCName`: that saved PC's name, when it isn't the host.
+    var name: String?
+    /// `savedPCOtherAccountHost`: the host a saved PC signing in as another account is for.
+    var otherAccountHost: String?
+    /// `savedPCOtherAccountName` and `savedPCOtherAccountUser`: that saved PC's name and account,
+    /// for an anonymised report to mask. Set whenever a lookup saw it, so a host with no account is
+    /// one nobody saw: the upgrade's guess (`VMSettings.migrateSavedPCAccounts`).
+    var otherAccountName: String?
+    var otherAccountUser: String?
 }
 
 /// Settings shared by the menu bar app and the CLI. Nothing about a particular VM is compiled in:
@@ -203,9 +279,28 @@ enum Config {
         /// the BitLocker guard: it can be turned back on after Winbar last looked.
         static let bitLockerOn = "bitLockerOn"
         static let bitLockerCheckedAt = "bitLockerCheckedAt"
-        /// The host name a saved PC was last seen for (the menu found its tile, or the user confirmed
-        /// it in setup). Windows App's own data is off limits, so this is the only evidence we have.
+        /// The host name a saved PC of this VM's was last seen for: Windows App listed it, Winbar saved
+        /// it, or the person said so (**I've Saved the PC**). Not the menu finding a tile by the host's
+        /// name any more: a tile is only a name, and it may be a stale PC that signs in as nobody, which
+        /// C2 then called "your word" when nobody had said anything.
         static let savedPCHost = "savedPCHost"
+        /// The host whose saved PC Set Up Winbar's Connect pressed, when the person then said the Windows
+        /// desktop appeared (`Recipe.connectedSavedPC`): a saved PC that demonstrably works, and the one
+        /// evidence of it that doesn't need Windows App's command line, which on some Macs never
+        /// answers. C2 counts it when Windows App can't say (`Recipe.unansweredSavedPCStatus`). Named
+        /// by host, so a renamed Windows doesn't inherit it.
+        static let savedPCConnectedHost = "savedPCConnectedHost"
+        /// The host whose saved PC in Windows App signs in as another Windows account (C2 saw its
+        /// user name differ from `rdpUser`): a leftover from a deleted VM with the same name. Connect
+        /// never presses a tile by this host's name while it is set; only a saved PC of this VM's own,
+        /// by its own name.
+        static let savedPCOtherAccountHost = "savedPCOtherAccountHost"
+        /// That saved PC's name in Windows App, and the account it signs in as. Nothing reads them to
+        /// act on: C2's row prints both, so they are kept for an anonymised report to mask, whether or
+        /// not that report's own doctor run gets as far as C2. A name can be anything the person
+        /// typed, their own name included.
+        static let savedPCOtherAccountName = "savedPCOtherAccountName"
+        static let savedPCOtherAccountUser = "savedPCOtherAccountUser"
         /// `COMPUTER\user` keys whose password was already found non-blank. Probing with an empty
         /// password counts as a failed logon, and Windows 11 locks local accounts after 10 of those, so
         /// doctor must not repeat the probe on every run. The key names the guest, so it's kept across
@@ -254,6 +349,9 @@ enum Config {
         /// Set once the one global set of settings 0.1.0 kept has been moved into the selected VM's
         /// namespace. See `VMSettings.migrate`.
         static let settingsMigrated = "settingsMigrated"
+        /// Set once every saved PC remembered before Winbar told Windows accounts apart has been marked
+        /// unchecked. See `VMSettings.migrateSavedPCAccounts`.
+        static let savedPCAccountsMigrated = "savedPCAccountsMigrated"
         /// The Set Up Winbar window was put away without being needed again: **Not Now**, or closed
         /// before **Start**. It decides one thing, whether the window opens by itself at launch, so it
         /// is a yes or nothing. The spec had it hold the version that last finished the wizard, and its
@@ -262,17 +360,39 @@ enum Config {
         /// Armie's **Hide Armie** was pressed (gui-wizard.md §2b: one click, remembered, and he goes
         /// quietly). Global: he is this copy of Winbar's, not a VM's.
         static let armieHidden = "armieHidden"
+        /// **Not Now** to moving a copy running from the disk image or Downloads into Applications
+        /// (`AppLocation`). Asked once; a Launch at Login from such a copy asks again regardless.
+        static let declinedMoveToApplications = "declinedMoveToApplications"
+        /// Somebody chose Launch at Login either way — the menu's checkbox, or the Set Up window's
+        /// finished screen — so the finished screen no longer turns it on by itself.
+        static let launchAtLoginDecided = "launchAtLoginDecided"
+        /// **Also start Windows when Winbar opens** (the finished screen) or **Start Windows with
+        /// Winbar** (the menu) is on: Winbar starts the chosen VM as it opens (`StartWindowsAtLaunch`).
+        /// A yes or nothing, and never written yes by anything but the person's press. Global, not the
+        /// VM's: it starts whichever VM Winbar looks after, as the menu's Start does (see there for why).
+        static let startWindowsAtLaunch = "startWindowsAtLaunch"
+        /// Set Up Winbar's finished page has introduced Winbar's icon in the menu bar once on this
+        /// Mac, pointing at it or, where macOS isn't showing it, saying where to look
+        /// (`MenuBarIntro`). A yes or nothing: after it, only **Show Me** points again.
+        static let menuBarIconIntroduced = "menuBarIconIntroduced"
 
         static let all = [vmName, vmID, rdpHost, rdpUser, savedPCName, vmMAC, consoleEnabled, offeredAccessibility,
-                          bitLockerOn, bitLockerCheckedAt, savedPCHost, passwordCheckedFor, keepBitLocker, noVisualTweaks,
+                          bitLockerOn, bitLockerCheckedAt, savedPCHost, savedPCOtherAccountHost, savedPCOtherAccountName,
+                          savedPCOtherAccountUser, savedPCConnectedHost, passwordCheckedFor,
+                          keepBitLocker, noVisualTweaks,
                           declinedAutologon, declinedRemoteDesktop, declinedTuning,
                           sharedFolder, sharedFolderUTM, sharedFolderByWinbar, declinedSharedFolder, backupExclusionConfirmed, pendingUTMRestart,
-                          lastUpdateCheck, lastSeenVersion, recordedName, settingsMigrated, setupWizardShown, armieHidden]
+                          lastUpdateCheck, lastSeenVersion, recordedName, settingsMigrated, savedPCAccountsMigrated,
+                          setupWizardShown, armieHidden,
+                          declinedMoveToApplications, launchAtLoginDecided, startWindowsAtLaunch,
+                          menuBarIconIntroduced]
 
         /// Everything that describes one VM. Each VM has its own set, under `vm.<id>.<setting>`, so
         /// switching VMs changes which set is current and destroys none of them.
         static let perVM = [rdpHost, rdpUser, savedPCName, vmMAC, consoleEnabled, bitLockerOn, bitLockerCheckedAt,
-                            savedPCHost, keepBitLocker, noVisualTweaks,
+                            savedPCHost, savedPCOtherAccountHost, savedPCOtherAccountName, savedPCOtherAccountUser,
+                            savedPCConnectedHost,
+                            keepBitLocker, noVisualTweaks,
                             declinedAutologon, declinedRemoteDesktop, declinedTuning,
                             sharedFolder, sharedFolderUTM, sharedFolderByWinbar, declinedSharedFolder]
 
@@ -309,6 +429,8 @@ enum Config {
     private static let migration: Void = {
         VMSettings.migrate(name: defaults.string(forKey: Key.vmName),
                            id: defaults.string(forKey: Key.vmID), in: defaults)
+        // After the move above, so a 0.1.0 saved PC is in its VM's namespace by the time it's looked at.
+        VMSettings.migrateSavedPCAccounts(in: defaults)
     }()
 
     /// Switches to another VM.
@@ -440,6 +562,23 @@ enum Config {
         set { setString(newValue, Key.savedPCHost) }
     }
 
+    static var savedPCOtherAccountHost: String? {
+        get { string(Key.savedPCOtherAccountHost) }
+        set { setString(newValue, Key.savedPCOtherAccountHost) }
+    }
+
+    static var savedPCConnectedHost: String? {
+        get { string(Key.savedPCConnectedHost) }
+        set { setString(newValue, Key.savedPCConnectedHost) }
+    }
+
+    /// Everything remembered about the selected VM's saved PC, read and written as one. Nothing with
+    /// no VM chosen, like every per-VM setting.
+    static var savedPC: SavedPCMemory {
+        get { currentToken.map { VMSettings.savedPC(of: $0, in: defaults) } ?? SavedPCMemory() }
+        set { if let token = currentToken { VMSettings.setSavedPC(newValue, of: token, in: defaults) } }
+    }
+
     /// Oldest first. A single string is what 0.1.0 development builds stored. Not per-VM: the key
     /// names the guest (`COMPUTER\user`), so it applies to whichever VM that guest is.
     static var passwordCheckedFor: [String] {
@@ -564,6 +703,21 @@ enum Config {
     static var armieHidden: Bool {
         get { defaults.bool(forKey: Key.armieHidden) }
         set { if newValue { defaults.set(true, forKey: Key.armieHidden) } else { defaults.removeObject(forKey: Key.armieHidden) } }
+    }
+
+    static var declinedMoveToApplications: Bool {
+        get { defaults.bool(forKey: Key.declinedMoveToApplications) }
+        set { if newValue { defaults.set(true, forKey: Key.declinedMoveToApplications) } else { defaults.removeObject(forKey: Key.declinedMoveToApplications) } }
+    }
+
+    static var launchAtLoginDecided: Bool {
+        get { defaults.bool(forKey: Key.launchAtLoginDecided) }
+        set { if newValue { defaults.set(true, forKey: Key.launchAtLoginDecided) } else { defaults.removeObject(forKey: Key.launchAtLoginDecided) } }
+    }
+
+    static var menuBarIconIntroduced: Bool {
+        get { defaults.bool(forKey: Key.menuBarIconIntroduced) }
+        set { if newValue { defaults.set(true, forKey: Key.menuBarIconIntroduced) } else { defaults.removeObject(forKey: Key.menuBarIconIntroduced) } }
     }
 
     static var backupExclusionConfirmed: Bool {

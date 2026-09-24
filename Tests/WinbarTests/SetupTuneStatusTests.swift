@@ -83,18 +83,21 @@ struct SetupTuneStatusTests {
         #expect(counts.values.reduce(0, +) == SetupFlow.checks(in: .tune).count)
         #expect(counts[.pendingRestart] == 1 && counts[.skipped] == 1 && counts[.needsAttention] == 1)
         #expect(counts[.notChecked] == 1)
-        let text = SetupCopy.Tune.summary(counts)
-        #expect(text.contains("1 pending restart") && text.contains("1 skipped") && text.contains("1 not checked"))
-        #expect(SetupCopy.Tune.summary([.verified: 4]) == "4 verified")
-        #expect(SetupCopy.Tune.summary([.needsAttention: 2]) == "2 need attention")
+        // The page's groups keep the same apart: the row that needs Ben is open, the pending, skipped
+        // and information rows are settled, and only what passed is folded away.
+        let groups = SetupTuneGroups(facts)
+        #expect(groups.needsYou.map(\.id) == ["G3"])
+        #expect(Set(groups.others.map(\.id)) == ["G1", "G10", "H3"])
+        #expect(groups.verified.count == counts[.verified])
+        #expect(SetupTuneHeadline.of(facts) == .notAsked)
+        #expect(SetupCopy.Tune.alreadyRight(1) == "1 setting already right")
+        #expect(SetupCopy.Tune.alreadyRight(13) == "13 settings already right")
     }
 
     @Test("Results have distinct words and symbols, with no reliance on colour")
     func labels() {
         #expect(Set(SetupTuneStatus.allCases.map(SetupCopy.Tune.status)).count == SetupTuneStatus.allCases.count)
-        #expect(Set(SetupTuneStatus.allCases.map(\.symbol)).count == SetupTuneStatus.allCases.count)
         #expect(SetupCopy.Tune.status(.verified) == "Verified")
-        #expect(SetupCopy.Tune.body.contains("current setting"))
     }
 }
 
@@ -125,8 +128,10 @@ struct SetupTuneStatusSnapshots {
             try VNImageRequestHandler(data: png).perform([request])
             let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
             // OCR can read the adjacent icon as a letter (the warning triangle as A). Allow
-            // one small icon token, but not a sentence or the page's count summary.
-            let pattern = "^(?:\\S{1,2}\\s+)?" + NSRegularExpression.escapedPattern(for: SetupCopy.Tune.status(expected)) + "\\W*$"
+            // one small icon token, but not a sentence. A row that passed is folded into the group
+            // that says so, so what shows for it is the group's line.
+            let word = expected == .verified ? SetupCopy.Tune.alreadyRight(1) : SetupCopy.Tune.status(expected)
+            let pattern = "^(?:\\S{1,2}\\s+)?" + NSRegularExpression.escapedPattern(for: word) + "\\W*$"
             #expect(lines.contains { $0.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil },
                     "No visible result label for \(expected): \(lines)")
         }
@@ -134,6 +139,35 @@ struct SetupTuneStatusSnapshots {
 
     @Test("Completed and mixed results stay visible in every supported appearance")
     func pages() throws {
+        for appearance in Snapshot.Appearance.allCases {
+            for (name, state) in TuneStatusFixtures.screens {
+                let view = SetupScreen(state: state, art: nil, send: { _ in })
+                let png = try #require(Snapshot.png(view, size: CGSize(width: 600, height: 620), appearance: appearance))
+                try Snapshot.record(png, as: "tune-status-\(name)-\(appearance.rawValue)")
+                let full = try #require(Snapshot.png(view, size: CGSize(width: 600, height: 3400), scale: 1, appearance: appearance))
+                try Snapshot.record(full, as: "tune-status-full-\(name)-\(appearance.rawValue)")
+            }
+            let row = JourneyFixtures.row("G1", .fixable("Wrong power plan"))
+            let labels = SetupCard {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(SetupTuneStatus.allCases, id: \.self) { status in
+                        TuneRowHeader(mark: TuneRowHeader.mark(status, row), title: row.title,
+                                      trailing: SetupCopy.Tune.trailing(status, row))
+                            .padding(.vertical, TuneRowHeader.rowPadding)
+                    }
+                }
+            }.padding(20).setupHosted(SetupAppearance(palette: SetupStyle.palette(dark: appearance.isDark, increasedContrast: false),
+                                                       reduceTransparency: false, increasedContrast: false))
+            let png = try #require(Snapshot.png(labels, size: CGSize(width: 360, height: 400), appearance: appearance))
+            try Snapshot.record(png, as: "tune-status-labels-\(appearance.rawValue)")
+        }
+    }
+}
+
+/// The tune step's status renders (`tune-status-<name>`): every row verified, and a mix of every
+/// result a row can have, a restart pending among them.
+enum TuneStatusFixtures {
+    static var screens: [(String, SetupWindowState)] {
         var mixed = JourneyFixtures.facts
         mixed.pending.cpuCores = 6
         mixed.rows["H3"] = JourneyFixtures.row("H3", .fixable("4 vCPUs; recommended: 6"))
@@ -144,23 +178,10 @@ struct SetupTuneStatusSnapshots {
         mixed.rows["G3"] = JourneyFixtures.row("G3", .error("Windows did not answer"))
         mixed.rows["G4"] = JourneyFixtures.row("G4", .ok("Reduced"))
         mixed.rows["G10"] = JourneyFixtures.row("G10", .info("UTM Guest Tools installed"))
-        for appearance in Snapshot.Appearance.allCases {
-            for (name, facts) in [("verified", JourneyFixtures.facts), ("mixed", mixed)] {
-                var state = SetupFixtures.state(.tune, facts: facts)
-                state.answers = facts.answers
-                let view = SetupScreen(state: state, art: nil, send: { _ in })
-                let png = try #require(Snapshot.png(view, size: CGSize(width: 600, height: 620), appearance: appearance))
-                try Snapshot.record(png, as: "tune-status-\(name)-\(appearance.rawValue)")
-                let full = try #require(Snapshot.png(view, size: CGSize(width: 600, height: 3400), scale: 1, appearance: appearance))
-                try Snapshot.record(full, as: "tune-status-full-\(name)-\(appearance.rawValue)")
-            }
-            let labels = SetupCard {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(SetupTuneStatus.allCases, id: \.self) { SetupTuneStatusLabel(status: $0) }
-                }
-            }.padding(20)
-            let png = try #require(Snapshot.png(labels, size: CGSize(width: 360, height: 400), appearance: appearance))
-            try Snapshot.record(png, as: "tune-status-labels-\(appearance.rawValue)")
+        return [("verified", JourneyFixtures.facts), ("mixed", mixed)].map { name, facts in
+            var state = SetupFixtures.state(.tune, facts: facts)
+            state.answers = facts.answers
+            return (name, state)
         }
     }
 }
