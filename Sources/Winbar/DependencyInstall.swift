@@ -71,8 +71,8 @@ enum DependencyInstaller {
             }
             return verify(dependency, progress: progress)
 
-        case .download(let url):
-            return downloadAndInstall(dependency, from: url, progress: progress)
+        case .download(let url, let sha256):
+            return downloadAndInstall(dependency, from: url, sha256: sha256, progress: progress)
         }
     }
 
@@ -110,10 +110,21 @@ enum DependencyInstaller {
 
     // MARK: - The disk image (UTM, on a Mac without Homebrew)
 
+    /// Whether a downloaded file's SHA-256 is the one GitHub published for it. Both as hex, in either
+    /// case; a file that couldn't be read (`actual` nil) never matches. Pure.
+    static func digestMatches(_ actual: String?, expected: String) -> Bool {
+        guard let actual, let want = WindowsISO.normalizedSHA256(expected) else { return false }
+        return WindowsISO.normalizedSHA256(actual) == want
+    }
+
     /// Fetches the app's own disk image, checks Apple's notarization and the signing team **before**
     /// mounting it, copies the app to /Applications and detaches. No sudo: /Applications is writable
     /// by an administrator, and a Mac where it isn't gets told to drag the app across itself.
-    static func downloadAndInstall(_ dependency: Dependency, from url: String,
+    ///
+    /// `sha256` is GitHub's digest for that release's disk image, when the release was read
+    /// (`UTMChannels`): checked first, so a file that isn't the one GitHub published is deleted before
+    /// anything else looks at it.
+    static func downloadAndInstall(_ dependency: Dependency, from url: String, sha256: String? = nil,
                                    progress: @escaping (String) -> Void) -> Result<Outcome, WinbarError> {
         guard let source = URL(string: url) else { return .failure(WinbarError("\(url) isn't a URL")) }
         let work = FileManager.default.temporaryDirectory
@@ -135,6 +146,16 @@ enum DependencyInstaller {
             progress(DependencyCopy.downloadProgress(dependency, done: done, total: total))
         }) {
             return .failure(error)
+        }
+
+        if let sha256 {
+            progress(DependencyCopy.checkingDigest(dependency))
+            let actual = try? Digest.sha256(of: image)
+            guard DependencyInstaller.digestMatches(actual, expected: sha256) else {
+                return .failure(WinbarError("The \(dependency.name) download didn't match GitHub's checksum, so Winbar "
+                                                + "didn't open it",
+                                            DependencyCopy.digestFailed(dependency)))
+            }
         }
 
         // Before anything opens it. A file that isn't notarized, or that a different team signed,
@@ -309,7 +330,11 @@ enum DependencyCopy {
 
     /// The paragraph before the question. Everything the person needs to decide: what is fetched,
     /// how big, from whom, and who does the installing.
-    static func plan(_ dependency: Dependency, _ plan: InstallPlan) -> [String] {
+    ///
+    /// `utm` is which UTM a fresh install gets (`UTMChannels.pick`): its size when UTM's release said
+    /// one, and which release a download comes from. Only a UTM install reads it.
+    static func plan(_ dependency: Dependency, _ plan: InstallPlan, utm: UTMPick = .stable) -> [String] {
+        let megabytes = utm.megabytes.map { "about \($0) MB" }
         switch plan {
         case .brew(let brew, let cask):
             var lines = ["Homebrew is on this Mac (\(brew)), so Winbar can ask it to install \(dependency.name): "
@@ -318,8 +343,11 @@ enum DependencyCopy {
                             + "installs it. Winbar doesn't download or install it itself, and never uses sudo."]
             switch dependency {
             case .utm:
-                lines.append("That's about \(Dependency.utmDownloadMB) MB to download, and \(Dependency.utmInstalledGB) "
-                                + "once installed. It takes a few minutes; Homebrew's own output appears below as it goes.")
+                // The installed size was measured for the stable release only; a beta's isn't claimed.
+                let size = [megabytes.map { $0 + " to download" },
+                            utm.channel == .stable ? Dependency.utmInstalledGB + " once installed" : nil].compactMap { $0 }
+                lines.append((size.isEmpty ? "" : "That's " + size.joined(separator: ", and ") + ". ")
+                                + "It takes a few minutes; Homebrew's own output appears below as it goes.")
             case .windowsApp:
                 lines.append("That's about \(Dependency.windowsAppDownloadMB) MB. Microsoft ships Windows App as an "
                                 + "installer package, so Homebrew runs it with macOS's installer and macOS asks for your "
@@ -339,14 +367,21 @@ enum DependencyCopy {
             return ["Homebrew (\(brew)) installed this \(dependency.name), so Winbar can ask it to update it: "
                         + "\(shell(Homebrew.upgradeCommand(brew: brew, cask: cask))). Homebrew downloads the new version "
                         + "from \(dependency.vendor) and replaces the copy it installed." + quits + " Winbar never uses sudo."]
-        case .download:
+        case .download(_, let sha256):
+            // Which release: the beta's own, or the stable one getutm.app links to.
+            let release = utm.channel == .beta
+                ? "from UTM's \(utm.build.map { $0.version + " " } ?? "")beta release at github.com/utmapp/UTM"
+                : "from UTM's own release at github.com/utmapp/UTM — the download getutm.app links to"
+            let checks = sha256 == nil
+                ? "Before opening it, Winbar checks that Apple notarized it and that \(dependency.vendor) "
+                    + "(team \(dependency.teamID)) signed it; if either fails, nothing is opened and Winbar stops."
+                : "Before opening it, Winbar checks it against GitHub's checksum for that release, that Apple notarized "
+                    + "it and that \(dependency.vendor) (team \(dependency.teamID)) signed it; if any of them fails, "
+                    + "nothing is opened and Winbar stops."
             return ["Homebrew isn't on this Mac, and Winbar won't install a package manager for you.",
-                    "Winbar can fetch \(dependency.name) itself instead: UTM.dmg, about \(Dependency.utmDownloadMB) MB, "
-                        + "from UTM's own release at github.com/utmapp/UTM — the download getutm.app links to. Before "
-                        + "opening it, Winbar checks that Apple notarized it and that \(dependency.vendor) "
-                        + "(team \(dependency.teamID)) signed it; if either fails, nothing is opened and Winbar stops. "
-                        + "Then it copies \(dependency.name).app to your Applications folder and ejects the image. No "
-                        + "sudo, and nothing else on your Mac is touched."]
+                    "Winbar can fetch \(dependency.name) itself instead: UTM.dmg\(megabytes.map { ", " + $0 } ?? ""), "
+                        + release + ". " + checks + " Then it copies \(dependency.name).app to your Applications "
+                        + "folder and ejects the image. No sudo, and nothing else on your Mac is touched."]
         case .appStore:
             return ["Homebrew isn't on this Mac, and Winbar won't install a package manager for you.",
                     "Microsoft only ships \(dependency.name) through the Mac App Store, and nobody can install an App "
@@ -358,11 +393,12 @@ enum DependencyCopy {
     }
 
     /// The question itself, in the words of what it will do.
-    static func question(_ dependency: Dependency, _ plan: InstallPlan) -> String {
+    static func question(_ dependency: Dependency, _ plan: InstallPlan, utm: UTMPick = .stable) -> String {
         switch plan {
         case .brew: return "Ask Homebrew to install \(dependency.name) now?"
         case .brewUpgrade: return "Ask Homebrew to update \(dependency.name) now?"
-        case .download: return "Download \(dependency.name) (about \(Dependency.utmDownloadMB) MB) and install it?"
+        case .download:
+            return "Download \(dependency.name)\(utm.megabytes.map { " (about \($0) MB)" } ?? "") and install it?"
         case .appStore: return "Open \(dependency.name) in the App Store?"
         case .manual: return ""
         }
@@ -415,6 +451,15 @@ enum DependencyCopy {
     static func downloadProgress(_ dependency: Dependency, done: Int64, total: Int64) -> String {
         guard total > 0 else { return "\(dependency.name): \(done >> 20) MB" }
         return "\(dependency.name): \(done >> 20) of \(total >> 20) MB (\(Int(Double(done) / Double(total) * 100))%)"
+    }
+
+    static func checkingDigest(_ dependency: Dependency) -> String {
+        "Checking the download against GitHub's checksum for it…"
+    }
+
+    static func digestFailed(_ dependency: Dependency) -> String {
+        "It isn't the file GitHub published for that release. It was deleted and nothing was installed. Try again, or "
+            + "get \(dependency.name) yourself: " + byHand(dependency)
     }
 
     static func checkingDownload(_ dependency: Dependency) -> String {
@@ -554,16 +599,21 @@ enum UTMFirstUse {
 /// One dependency, at the terminal: where it stands, what Winbar would do, the question, and the
 /// verification. Shared by `winbar setup` and `winbar create`, so both ask in the same words.
 enum DependencySetup {
+    /// How `winbar setup` chooses which UTM a fresh install gets: `requested` is `--utm-channel`.
+    /// `winbar create` passes none, and installs stable as it always has.
+    struct ChannelChoice {
+        var requested: UTMChannel?
+    }
+
     /// Returns whether the app is installed and verified when this returns. `assumeYes` is `--yes`,
-    /// which only ever answers for Homebrew (see `mayProceedUnattended`).
+    /// which only ever answers for Homebrew (see `mayProceedUnattended`), and picks stable UTM.
+    /// `chooseUTM` offers the stable/beta choice when UTM is missing (`UTMChannelDecision`); never
+    /// for a UTM that's there, which is never switched.
     @discardableResult
-    static func offer(_ dependency: Dependency, assumeYes: Bool, indent: String = "   ") -> Bool {
+    static func offer(_ dependency: Dependency, assumeYes: Bool, indent: String = "   ",
+                      chooseUTM: ChannelChoice? = nil) -> Bool {
         let state = Dependencies.state(of: dependency)
         if case .installed = state { return true }
-        guard let plan = Dependencies.plan(for: dependency, state: state, brew: Homebrew.path,
-                                           brewHasCask: Homebrew.hasCask(dependency.cask, brew: Homebrew.path)) else {
-            return true
-        }
 
         func say(_ text: String) {
             print(indent + CreateCopy.wrap(text, width: CreateCopy.width - indent.count, indent: indent))
@@ -571,7 +621,18 @@ enum DependencySetup {
         print("")
         print(indent + CreateCopy.wrap(DependencyCopy.situation(dependency, state: state),
                                        width: CreateCopy.width - indent.count, indent: indent))
-        for line in DependencyCopy.plan(dependency, plan) { say(line) }
+
+        var utm = UTMPick.stable
+        if dependency == .utm, case .missing = state, let chooseUTM {
+            guard let picked = chooseChannel(chooseUTM, assumeYes: assumeYes, say: say, indent: indent) else { return false }
+            utm = picked
+        }
+        guard let plan = Dependencies.plan(for: dependency, state: state, brew: Homebrew.path,
+                                           brewCask: Homebrew.installedCask(dependency, brew: Homebrew.path),
+                                           utm: utm) else {
+            return true
+        }
+        for line in DependencyCopy.plan(dependency, plan, utm: utm) { say(line) }
 
         if case .manual = plan { return false }
         if assumeYes, !DependencyInstaller.mayProceedUnattended(plan) {
@@ -582,7 +643,8 @@ enum DependencySetup {
             say("No terminal to ask on, so nothing was installed. " + DependencyCopy.byHand(dependency))
             return false
         }
-        let agreed = Term.confirm(DependencyCopy.question(dependency, plan), assumeYes: assumeYes, defaultYes: true)
+        let agreed = Term.confirm(DependencyCopy.question(dependency, plan, utm: utm), assumeYes: assumeYes,
+                                  defaultYes: true)
         guard agreed else {
             say(DependencyCopy.nothingWithoutYes(dependency))
             return false
@@ -612,6 +674,47 @@ enum DependencySetup {
             print(indent + Term.paint("✓", .green) + " " + DependencyCopy.installed(dependency, version: version))
             if dependency == .utm { settleUTM(say: say, indent: indent) }
             return true
+        }
+    }
+
+    /// Which UTM to install: `--utm-channel` if given, stable for `--yes`, otherwise the question
+    /// when there's a beta to offer. GitHub is asked only when the answer could matter (`--yes` alone
+    /// is stable whatever it says). nil when nothing should be installed: `--utm-channel beta` with
+    /// no beta on offer.
+    private static func chooseChannel(_ choice: ChannelChoice, assumeYes: Bool, say: (String) -> Void,
+                                      indent: String) -> UTMPick? {
+        if choice.requested == nil, assumeYes { return .stable }
+        let brew = Homebrew.path
+        let offer = UTMChannels.current(brew: brew)
+        let channel: UTMChannel
+        switch UTMChannelDecision.decide(requested: choice.requested, assumeYes: assumeYes, offered: offer.offersChoice) {
+        case .betaUnavailable:
+            say(UTMChannelCopy.betaUnavailable(offer))
+            return nil
+        case .install(let chosen):
+            channel = chosen
+        case .ask:
+            channel = Term.stdinIsTTY ? askChannel(offer, indent: indent) : .stable
+        }
+        if offer.couldNotCheck { say(UTMChannelCopy.couldNotCheck) }
+        return UTMChannels.pick(channel, from: offer, homebrew: brew != nil)
+    }
+
+    /// The two options, then `[1] stable (recommended) [2] beta`, asked until it's answered.
+    private static func askChannel(_ offer: UTMChannels.Offer, indent: String) -> UTMChannel {
+        let width = CreateCopy.width - indent.count - 4
+        print("")
+        print(indent + Term.paint(UTMChannelCopy.heading, .bold))
+        let options = [(UTMChannelCopy.stableTitle(offer.stable), UTMChannelCopy.stableBody(offer.stable))]
+            + (offer.beta.map { [(UTMChannelCopy.betaTitle($0), UTMChannelCopy.betaBody($0))] } ?? [])
+        for (number, option) in options.enumerated() {
+            print(indent + "[\(number + 1)] " + CreateCopy.wrap(option.0 + ". " + option.1, width: width,
+                                                                indent: indent + "    "))
+        }
+        while true {
+            print(indent + UTMChannelCopy.prompt, terminator: "")
+            fflush(stdout)
+            if let channel = UTMChannelDecision.answer(readLine()) { return channel }
         }
     }
 

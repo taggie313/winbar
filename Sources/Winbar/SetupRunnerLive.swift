@@ -60,7 +60,10 @@ final class LiveSetupMachine: SetupMachine {
         var readings = SetupRunner.Readings()
         readings.utm = Dependencies.state(of: .utm)
         readings.homebrew = Homebrew.path
-        readings.utmFromHomebrew = Homebrew.hasCask(Dependency.utm.cask, brew: readings.homebrew)
+        readings.utmCask = Homebrew.installedCask(.utm, brew: readings.homebrew)
+        // Which UTM a fresh install may get: only while UTM is missing, which is the one time an
+        // install can happen and so the one time GitHub is asked (cached a day, silent on failure).
+        if readings.utm == .missing { readings.utmChannels = UTMChannels.current(brew: readings.homebrew) }
         readings.windowsApp = Dependencies.state(of: .windowsApp)
         readings.installRunning = CreateJob.current().map { !$0.isFinished } ?? false
         readings.pendingRestart = Config.pendingUTMRestart
@@ -177,7 +180,10 @@ final class LiveSetupMachine: SetupMachine {
             // survey for this (`forget(after:)`). A look never comes here (`SetupRunner.lookAgain`).
             return
         case .installUTM:
-            try install(.utm, job)
+            // The channel the card showed as chosen, from the offer it was drawn from: the same pick
+            // `LookAroundPage` named on the button.
+            try install(.utm, job, utm: UTMChannels.pick(facts.answers.utmChannel, from: facts.utmChannels,
+                                                         homebrew: Homebrew.path != nil))
             // LaunchServices can take a moment to notice an app that has just been copied in.
             waitUntil(timeout: 15, every: 1) { UTM.isInstalled }
         case .installWindowsApp:
@@ -190,7 +196,7 @@ final class LiveSetupMachine: SetupMachine {
             // vCPUs and memory staged for another VM are that VM's, and would restart this one.
             ctx.adoptSelection(name: name, id: Config.vmID)
         case .startVM(let name):
-            if case .failure(let error) = UTM.start(name, id: facts.chosen?.id) { throw error }
+            if case .failure(let error) = UTM.start(name, id: facts.chosen?.id, progress: job.say) { throw error }
             Setup.waitForWindows(name, note: job.say, cancelled: { job.isCancelled })
             // Stopped from the window: the start is ended as a cancel, and the fresh read after it
             // says where Windows has got to.
@@ -245,9 +251,9 @@ final class LiveSetupMachine: SetupMachine {
         facts.chosenVM != Config.vmName || facts.chosenID != Config.vmID
     }
 
-    private func install(_ dependency: Dependency, _ job: SetupRunner.Job) throws {
+    private func install(_ dependency: Dependency, _ job: SetupRunner.Job, utm: UTMPick = .stable) throws {
         let plan = Dependencies.windowPlan(for: dependency, state: Dependencies.state(of: dependency), brew: Homebrew.path,
-                                           brewHasCask: Homebrew.hasCask(dependency.cask, brew: Homebrew.path))
+                                           brewCask: Homebrew.installedCask(dependency, brew: Homebrew.path), utm: utm)
         guard let plan, SetupRunner.actionable(plan) else { return }
         // The press is the yes: the window's button is `DependencyCopy.question` for this plan.
         let result = DependencyInstaller.install(dependency, plan: plan, agreed: true, progress: job.say,

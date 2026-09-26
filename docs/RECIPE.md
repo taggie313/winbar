@@ -469,9 +469,12 @@ start it (`utmctl start "<VM>"`) and connect with Windows App. QEMU now runs wit
 Why quit first: UTM keeps a stopped VM's display window open and reuses it on the next start. After
 the display has been removed, that stale window looks up display #0 in an empty list and UTM crashes
 (a Swift bounds check, `EXC_BREAKPOINT`) about two seconds after the VM starts, taking the VM with
-it. This affects UTM 4.7.5 and the 5.0 pre-releases. A freshly launched UTM builds the right kind of
+it. This affects UTM 4.7.5 and 5.0.0 to 5.0.5. A freshly launched UTM builds the right kind of
 window, so quitting sidesteps it. Quitting UTM stops any *other* running VMs, so shut those down
-first. Winbar does all of this for you, and checks afterwards that UTM is still running.
+first. Winbar does all of this for you, and checks afterwards that UTM is still running. UTM 5.0.6
+fixed it (utmapp/UTM#7899) by closing the VM's window when `update configuration` runs, so there you
+can skip the quit; if UTM's own window is closed too, that can make UTM quit by itself, and the next
+`utmctl` call opens it again.
 
 To get the window back (to see a boot menu or a recovery screen, or to fix a VM that won't come up
 on the network), shut down, run the same script with this line in place of

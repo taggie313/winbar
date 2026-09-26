@@ -124,7 +124,7 @@ import Testing
 
     @Test func tooOldIsAnUpdate() {
         let old = DependencyState.tooOld(version: "4.6.4", minimum: "4.7")
-        #expect(Dependencies.plan(for: .utm, state: old, brew: brew, brewHasCask: true)
+        #expect(Dependencies.plan(for: .utm, state: old, brew: brew, brewCask: "utm")
                 == .brewUpgrade(brew: brew, cask: "utm"))
         // No Homebrew: Winbar doesn't replace a copy someone installed another way.
         guard case .manual(let advice)? = Dependencies.plan(for: .utm, state: old, brew: nil) else {
@@ -140,23 +140,23 @@ import Testing
     /// this copy — or not known to be — it's advice, as without Homebrew.
     @Test func homebrewUpdatesOnlyWhatItInstalled() {
         let old = DependencyState.tooOld(version: "4.6.4", minimum: "4.7")
-        for plan in [Dependencies.plan(for: .utm, state: old, brew: brew, brewHasCask: false),
+        for plan in [Dependencies.plan(for: .utm, state: old, brew: brew, brewCask: nil),
                      Dependencies.plan(for: .utm, state: old, brew: brew),
                      Dependencies.windowPlan(for: .utm, state: old, brew: brew)] {
             #expect(plan == .manual(DependencyCopy.updateByHand(.utm)))
         }
-        #expect(Dependencies.windowPlan(for: .utm, state: old, brew: brew, brewHasCask: true)
+        #expect(Dependencies.windowPlan(for: .utm, state: old, brew: brew, brewCask: "utm")
                 == .brewUpgrade(brew: brew, cask: "utm"))
         // Installing is still Homebrew's whether or not it has anything installed yet.
-        #expect(Dependencies.plan(for: .utm, state: .missing, brew: brew, brewHasCask: false) == .brew(brew: brew, cask: "utm"))
+        #expect(Dependencies.plan(for: .utm, state: .missing, brew: brew, brewCask: nil) == .brew(brew: brew, cask: "utm"))
     }
 
     /// Where Homebrew records a cask it installed, beside its own bin, for both standard prefixes.
     @Test func whereHomebrewKeepsItsCasks() {
         #expect(Homebrew.caskMetadata("utm", brew: "/opt/homebrew/bin/brew") == "/opt/homebrew/Caskroom/utm/.metadata")
         #expect(Homebrew.caskMetadata("utm", brew: "/usr/local/bin/brew") == "/usr/local/Caskroom/utm/.metadata")
-        #expect(!Homebrew.hasCask("utm", brew: nil))
-        #expect(!Homebrew.hasCask("utm", brew: "/nonexistent/winbar-tests/bin/brew"))
+        #expect(!Homebrew.hasCask(.utm, brew: nil))
+        #expect(!Homebrew.hasCask(.utm, brew: "/nonexistent/winbar-tests/bin/brew"))
     }
 
     /// The update's plan says whose copy it replaces and what quitting UTM does to a running VM.
@@ -446,10 +446,13 @@ import Testing
 
     /// H1 says which UTM this is, so a bug report carries it without anyone having to ask. The row
     /// stays `.ok` — this is a fact about the Mac, not a fault, and doctor still exits 0.
+    /// Against the list as it stood before any UTM 5 was tested, so the release step's flip of
+    /// `testedVersions` leaves this test as it is.
     @Test func h1SaysHowTestedThisUTMIs() {
-        #expect(Recipe.dependencyDetail(.utm, state: .installed(version: "4.7.6"))
+        let before = ["4.7.5"]
+        #expect(Recipe.dependencyDetail(.utm, state: .installed(version: "4.7.6"), tested: before)
                 == "UTM 4.7.6 (Winbar is tested against 4.7.5)")
-        #expect(Recipe.dependencyDetail(.utm, state: .installed(version: "5.0.5"))
+        #expect(Recipe.dependencyDetail(.utm, state: .installed(version: "5.0.5"), tested: before)
                 == "UTM 5.0.5 (a pre-release; Winbar is tested against 4.7.5)")
         // The tested version says nothing extra, and a UTM that won't give a version can't be
         // judged, so it says nothing either.
@@ -488,6 +491,12 @@ import Testing
         #expect(UTM.classifyCtl(status: 1, output: "-1743", timedOut: true, seconds: 20) == .denied)
         #expect(UTM.classifyCtl(status: 2, output: "Error: no such VM\n", timedOut: false, seconds: 20)
                 == .failed("Error: no such VM"))
+        // utmctl exits 0 on UTM's refusals and says so only on stderr (spike rows 12b, 14). Control:
+        // judge by the exit code alone and this reads as an answer.
+        let refused = "Error from event: The operation couldn’t be completed. (OSStatus error -2700.)"
+        #expect(UTM.classifyCtl(status: 0, output: refused, timedOut: false, seconds: 20) == .failed(refused))
+        // A VM whose name says Error is still a listing.
+        #expect(UTM.classifyCtl(status: 0, output: "Error Lab  stopped", timedOut: false, seconds: 20) == .answered)
     }
 
     /// The promise made as soon as UTM is installed: a prompt is coming, it can hide, and a Mac

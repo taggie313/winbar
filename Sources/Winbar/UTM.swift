@@ -10,9 +10,27 @@ enum UTM {
 
     static var isInstalled: Bool { appURL != nil }
 
+    /// Read from UTM's Info.plist on disk every time, not through `Bundle`: a `Bundle` is cached per
+    /// path for the life of the process, so the menu bar app would go on reporting the UTM it first
+    /// saw after UTM was replaced under it. That used to cost a wrong doctor row; now that the #7882
+    /// restart is gated on this (`UTMFixes`), a stale 5.0.6 after going back to 4.7.5 would skip a
+    /// restart 4.7.5 needs and crash it.
     static var version: String? {
         guard let url = appURL else { return nil }
-        return Bundle(url: url)?.infoDictionary?["CFBundleShortVersionString"] as? String
+        let plist = NSDictionary(contentsOf: url.appendingPathComponent("Contents/Info.plist"))
+        return plist?["CFBundleShortVersionString"] as? String
+    }
+
+    /// Whether a display change on this UTM owes the #7882 restart (`UTMFixes`). Traced, with UTM's
+    /// pids, because the UTM 5 spike reads this decision and "the pid didn't change" off
+    /// `WINBAR_DEBUG=1`; `caller` says which path asked.
+    static func displayChangeRestartsUTM(tracing caller: String) -> Bool {
+        let version = self.version
+        let restarts = UTMFixes.displayChangeRestartsUTM(version)
+        Debug.log("gate7882 (\(caller)): UTM \(version ?? "version unknown") -> "
+                  + (restarts ? "restart UTM after the display change" : "no UTM restart: this UTM has the #7882 fix (5.0.6+)")
+                  + "; UTM pids \(processIDs)")
+        return restarts
     }
 
     static var utmctl: String {
@@ -82,8 +100,9 @@ enum UTM {
     ///
     /// LaunchServices' list is topped up from the process table and from what a pending restart
     /// recorded: in the CLI that list only updates when the run loop turns, so it can miss a UTM
-    /// launched since.
-    static func quit(timeout: TimeInterval = 30) -> Result<Void, WinbarError> {
+    /// launched since. `progress` hears the one thing a person may have to do part way: close a UTM
+    /// window that refuses the quit (`UTMQuitSequence`).
+    static func quit(timeout: TimeInterval = 30, progress: (String) -> Void = { _ in }) -> Result<Void, WinbarError> {
         let recorded = Config.pendingUTMRestart?.stillRunning(isUTM: isUTMProcess) ?? []
         let pids = Set(runningPIDs).union(processIDs).union(recorded)
         Debug.log("quit: runningPIDs=\(runningPIDs) processIDs=\(processIDs) recorded=\(recorded) -> \(pids.sorted())")
@@ -91,21 +110,30 @@ enum UTM {
             Config.pendingUTMRestart = nil
             return .success(())
         }
-        // A normal quit first, addressed by bundle id: NSRunningApplication can't be relied on to find
-        // UTM (see isUTMProcess), but the Apple Event reaches it regardless.
-        for pid in pids { _ = NSRunningApplication(processIdentifier: pid)?.terminate() }
-        _ = Shell.run("/usr/bin/osascript", ["-e", "tell application id \"\(Config.utmBundleID)\" to quit"], timeout: 15)
-        var exited = waitUntil(timeout: timeout, every: 0.5) { pids.allSatisfy { kill($0, 0) != 0 } }
-        if !exited {
-            // Callers only quit UTM with no VM running (see otherRunningVMs), so a terminate signal
-            // can't stop anything but UTM itself.
-            Debug.log("quit: UTM ignored the quit request; sending SIGTERM to \(pids.sorted())")
-            for pid in pids where kill(pid, 0) == 0 { kill(pid, SIGTERM) }
-            exited = waitUntil(timeout: 10, every: 0.5) { pids.allSatisfy { kill($0, 0) != 0 } }
+        let result = UTMQuitSequence.run(
+            ask: {
+                // A normal quit first, addressed by bundle id: NSRunningApplication can't be relied on to
+                // find UTM (see isUTMProcess), but the Apple Event reaches it regardless, and its answer
+                // is what says a window refused.
+                for pid in pids { _ = NSRunningApplication(processIdentifier: pid)?.terminate() }
+                return Shell.run("/usr/bin/osascript", ["-e", "tell application id \"\(Config.utmBundleID)\" to quit"], timeout: 15)
+            },
+            exited: { limit in waitUntil(timeout: limit, every: 0.5) { pids.allSatisfy { kill($0, 0) != 0 } } },
+            forceQuit: {
+                // Callers only quit UTM with no VM running (see otherRunningVMs), so a terminate signal
+                // can't stop anything but UTM itself.
+                Debug.log("quit: UTM ignored the quit request; sending SIGTERM to \(pids.sorted())")
+                for pid in pids where kill(pid, 0) == 0 { kill(pid, SIGTERM) }
+            },
+            progress: { line in
+                Debug.log("quit: UTM refused the quit (-128): a window of its own is in the way")
+                progress(line)
+            },
+            timeout: timeout)
+        if case .success = result {
+            Config.pendingUTMRestart = nil   // whatever restart a display change owed has now happened
         }
-        guard exited else { return .failure(WinbarError("UTM didn't quit", "Quit UTM yourself, then try again.")) }
-        Config.pendingUTMRestart = nil   // whatever restart a display change owed has now happened
-        return .success(())
+        return result
     }
 
     /// Other VMs UTM is running right now: QEMU processes by name, plus whatever UTM's scripting
@@ -153,7 +181,7 @@ enum UTM {
 
     /// Quits UTM if a display change still owes it a restart, refusing if that would stop other
     /// VMs. Every start goes through here, so no path can start a VM in a UTM that would crash.
-    static func settlePendingRestart(before vm: String) -> Result<Void, WinbarError> {
+    static func settlePendingRestart(before vm: String, progress: (String) -> Void = { _ in }) -> Result<Void, WinbarError> {
         guard let pending = Config.pendingUTMRestart else {
             Debug.log("settle: no pending restart")
             return .success(())
@@ -176,7 +204,7 @@ enum UTM {
                                         owed + " Restarting it would stop \(others.joined(separator: ", ")). "
                                             + "Stop them (or quit UTM yourself), then try again."))
         case .success:
-            if case .failure(let error) = quit() {
+            if case .failure(let error) = quit(progress: progress) {
                 return .failure(WinbarError("UTM has to restart before \(vm) starts", owed + " " + error.detail))
             }
             // The UTM that just quit held the bookmark behind any scripted shared folder, so write it
@@ -185,6 +213,83 @@ enum UTM {
             _ = SharedFolder.reestablish(vm: vm)
             return .success(())
         }
+    }
+
+    // MARK: What UTM 5.0.6 does that older UTMs don't
+
+    /// After a script that sent `update configuration`: whether the UTM it went to has quit by itself
+    /// (`UTMFixes.mayQuitAfterUpdate`), and if it has, UTM launched again so that whatever asks next —
+    /// the read-back first — has something to answer it. `grace` is how long to give the quit to
+    /// finish: it can land a moment after the script's own error, or just after an answer. On a UTM
+    /// that never does this it returns straight away, so older UTMs pay nothing for it.
+    @discardableResult
+    static func relaunchIfQuitItself(after pidsBefore: [pid_t], sentChange: Bool, grace: TimeInterval) -> Bool {
+        let version = self.version
+        guard UTMFixes.mayQuitAfterUpdate(version), sentChange, !pidsBefore.isEmpty else { return false }
+        let gone = waitUntil(timeout: grace, every: 0.5) { pidsBefore.allSatisfy { !isUTMProcess($0) } }
+        guard UTMFixes.quitItselfAfterUpdate(version: version, sentChange: sentChange, utmGone: gone) else {
+            Debug.log("utmquit: UTM \(pidsBefore) still running after update configuration")
+            return false
+        }
+        Debug.log("utmquit: UTM \(version ?? "?") (pids \(pidsBefore)) quit by itself after update configuration; "
+                  + "launching it again before the read-back")
+        ensureRunning()
+        Debug.log("utmquit: UTM is running again as \(processIDs)")
+        return true
+    }
+
+    /// Runs `body` — a script that sends `update configuration` — with UTM told not to quit when its
+    /// last window closes, on a UTM that would otherwise quit mid-change and lose it
+    /// (`UTMFixes.mayQuitAfterUpdate`). UTM's own scripting has the switch: the application's
+    /// `auto terminate` property (UTM.sdef, the same in 4.7.5 and 5.0.6), which is its "keep
+    /// running after the last window closes" setting read the other way round. Winbar only ever
+    /// turns it off when it was on, and turns it back on straight after; a UTM older than 5.0.6 is
+    /// never asked anything, so 4.7.5 behaves exactly as before.
+    ///
+    /// Chosen over opening UTM's library window around the change: showing a window would put UTM
+    /// in front of whatever the person is doing, and closing it again afterwards has no scripting
+    /// verb at all.
+    static func keepingOpen<T>(_ body: () -> T) -> T {
+        UTMOpenHold.around(applies: UTMFixes.mayQuitAfterUpdate(version),
+                           pending: Config.utmHeldOpen, record: { Config.utmHeldOpen = $0 },
+                           hold: UTMScripting.holdOpen,
+                           release: { isAppRunning && UTMScripting.releaseHold() },
+                           body)
+    }
+
+    /// Waits while UTM 5.0.6+ reports this VM, which is off, as pausing or resuming: it is working on
+    /// the VM's disks (`UTMFixes.reportsBusyWhileOff`), and a start in that window fails after opening
+    /// a window. Bounded; past the bound it says UTM is busy, never that the VM is starting or
+    /// stopping. Asks nothing of an older UTM, so a start there costs no extra Apple Event. A listing
+    /// that fails says nothing about busy, and the caller carries on as it did before.
+    static func waitWhileBusy(_ vm: String, id: String? = nil, timeout: TimeInterval = 120) -> Result<Void, WinbarError> {
+        guard UTMFixes.reportsBusyWhileOff(version) else { return .success(()) }
+        var logged = false
+        let started = Date()
+        let stillBusy = UTMFixes.waitOutBusy(deadline: started.addingTimeInterval(timeout), every: 2) {
+            guard case .success(let list) = UTMScripting.listVMs(),
+                  let info = list.first(where: { info in
+                      if let id { return info.id.caseInsensitiveCompare(id) == .orderedSame }
+                      return info.name == vm
+                  }),
+                  info.busyWhileOff
+            else { return nil }
+            if !logged {
+                Debug.log("busy: UTM reports \(vm) as \(info.status) with no QEMU process (working on its disks); "
+                          + "waiting up to \(Int(timeout)) s")
+                logged = true
+            }
+            return info.status
+        }
+        guard let stillBusy else {
+            if logged { Debug.log("busy: \(vm) settled after \(Int(Date().timeIntervalSince(started))) s") }
+            return .success(())
+        }
+        Debug.log("busy: \(vm) still \(stillBusy) after \(Int(timeout)) s; giving up")
+        return .failure(WinbarError("UTM is busy with \(vm)",
+                                    "UTM reports \(vm) as \(stillBusy) although it's off: it is working on the VM's disk "
+                                        + "images, which UTM 5 does for snapshots and saved states. Winbar waited "
+                                        + "\(Int(timeout)) seconds. Try again once UTM has finished."))
     }
 
     /// Brings UTM forward, for the menu's "Open UTM".
@@ -218,12 +323,20 @@ enum UTM {
     }
 
     /// Pure, so every verdict can be told apart without UTM.
+    ///
+    /// Exit 0 alone isn't an answer: utmctl prints UTM's refusals as "Error from event: …" and still
+    /// exits 0 (UTMCtl.swift at 4.7.5 and 5.0.6 alike; the spike saw it for a failing exec, row 14,
+    /// and for UTM 5.0.6 refusing to save a GPU VM's state, row 12b). Only that prefix is looked for,
+    /// not "Error" anywhere, because a successful `list` prints VM names, which may contain the word.
     static func classifyCtl(status: Int32, output: String, timedOut: Bool, seconds: Int) -> CtlAnswer {
         if Automation.isDenied(output) { return .denied }
         if timedOut { return .silent(seconds: seconds) }
-        if status == 0 { return .answered }
+        if status == 0, !output.contains(utmctlEventError) { return .answered }
         return .failed(output.trimmingCharacters(in: .whitespacesAndNewlines))
     }
+
+    /// How utmctl starts a failure it reports on stderr while exiting 0.
+    static let utmctlEventError = "Error from event"
 
     /// Asks utmctl to list the VMs — which changes nothing — and says what came back. Blocking, and
     /// bounded, because the answer this exists for is "nothing at all".
@@ -253,9 +366,21 @@ enum UTM {
     /// `id` is the VM's UTM id when the caller knows it (`winbar create` always does). utmctl takes
     /// either, and the id is also how the running process is recognised: UTM strips punctuation from
     /// the name it gives QEMU, so a VM called "winbar-test" runs as `-name winbartest`.
-    static func start(_ vm: String, id: String? = nil, cacheSettings: Bool = true) -> Result<VMProcess, WinbarError> {
-        if let running = VMProcesses.find(vm, id: id) { return .success(running) }
-        if case .failure(let error) = settlePendingRestart(before: vm) { return .failure(error) }
+    /// `progress` reaches the person while an owed UTM restart is settled first: a What's New window
+    /// (4.7.5 has one too) makes UTM refuse that quit, and only the person can close it, so the line
+    /// saying so has to be on their screen during the wait, not just in the error after it. No
+    /// default, so a new caller has to decide where that line goes rather than drop it by omission.
+    static func start(_ vm: String, id: String? = nil, cacheSettings: Bool = true,
+                      progress: (String) -> Void) -> Result<VMProcess, WinbarError> {
+        if let running = VMProcesses.find(vm, id: id) {
+            // A paused VM has its process too: resume it rather than call it started.
+            if case .failure(let error) = resumeIfPaused(vm, id: id) { return .failure(error) }
+            return .success(running)
+        }
+        if case .failure(let error) = waitWhileBusy(vm, id: id) { return .failure(error) }
+        // Still asked on a UTM with the #7882 fix: a restart recorded under an older UTM whose
+        // process is still running is owed by that process, whatever is on disk now.
+        if case .failure(let error) = settlePendingRestart(before: vm, progress: progress) { return .failure(error) }
         let started = Date()
         let pidsBefore = Set(runningPIDs)
         let result = ctl(["start", id ?? vm], timeout: 60)
@@ -278,6 +403,55 @@ enum UTM {
         }
         if cacheSettings { VMProcesses.cache(settled, for: vm) }
         return .success(settled)
+    }
+
+    // MARK: Paused VMs
+
+    /// What `resumeIfPaused` found.
+    enum PausedOutcome: Equatable {
+        /// Not paused (or UTM couldn't say): whatever the caller was about to do still stands.
+        case notPaused
+        /// It was paused in UTM and is running again.
+        case resumed
+    }
+
+    /// Resumes the VM when UTM holds it paused. A paused VM keeps its QEMU process, so every "is it
+    /// running?" Winbar asks of the process table says yes, and `winbar start` answered "already
+    /// running" to a VM frozen in UTM (spike rows 12a, 12b) while Connect waited on a Windows that
+    /// couldn't answer. utmctl's `start` is UTM's resume for a paused VM, on 4.7.5 and 5.0.6 alike
+    /// (`UTMScriptingVirtualMachineImpl.start`: `.paused` → `vm.resume()` at both tags), so that is
+    /// what is sent. UTM's word is asked only once a process exists, so an ordinary start costs
+    /// nothing more; a UTM that can't be asked leaves the caller's path as it was.
+    static func resumeIfPaused(_ vm: String, id: String? = nil) -> Result<PausedOutcome, WinbarError> {
+        resumeIfPaused(vm, status: { status(of: vm, id: id) },
+                       resume: { ctl(["start", id ?? vm], timeout: 60) },
+                       wait: { waitUntil(timeout: 20, every: 1, $0) })
+    }
+
+    /// The decision, with UTM behind closures. utmctl exits 0 on most failures and says so only in
+    /// text (a refused resume included), so the command is judged by `ok`, and then by UTM saying
+    /// "started": a resume UTM accepted but didn't carry out still reads as a failure.
+    static func resumeIfPaused(_ vm: String, status: @escaping () -> String?, resume: () -> CommandResult,
+                               wait: (() -> Bool) -> Bool) -> Result<PausedOutcome, WinbarError> {
+        guard status() == "paused" else { return .success(.notPaused) }
+        Debug.log("resume: \(vm) is paused in UTM; resuming it")
+        let result = resume()
+        guard result.ok else {
+            return .failure(Automation.explain(result.output, else: WinbarError(
+                "Couldn't resume \(vm)", "UTM has it paused and didn't resume it: \(result.output)")))
+        }
+        guard wait({ status() == "started" }) else {
+            return .failure(WinbarError("\(vm) is still paused",
+                                        "UTM took the request to resume it but still shows it paused. Resume it in UTM's window."))
+        }
+        return .success(.resumed)
+    }
+
+    /// UTM's own word for the VM's state ("paused", "started", …), found by id when there is one and
+    /// by name otherwise; nil when UTM can't be asked.
+    static func status(of vm: String, id: String?) -> String? {
+        guard case .success(let list) = UTMScripting.listVMs() else { return nil }
+        return (list.first { id != nil && $0.id == id } ?? list.first { $0.name == vm })?.status
     }
 
     /// Whether a start may record what it saw (the MAC, the display state) in Winbar's per-VM
@@ -391,8 +565,49 @@ enum UTM {
 
     @discardableResult
     /// `cancelled` ends the wait early, false, the way the timeout does.
-    static func waitForGuestAgent(_ vm: String, timeout: TimeInterval = 180, cancelled: (() -> Bool)? = nil) -> Bool {
-        waitUntil(timeout: timeout, every: 5, cancelled: cancelled) { VMProcesses.isRunning(vm) && guestAgentAnswers(vm) }
+    ///
+    /// `vm` is the VM's **name**: the process table is searched by `-name`, which UTM cleans of
+    /// punctuation. `id`, when known, is UTM's id for it, matched against `-uuid` first and handed to
+    /// utmctl, which takes either. An id passed as the name matches no process at all, so the wait
+    /// runs its whole timeout against a Windows that answered long ago — the finish restart's false
+    /// "Windows didn't answer within three minutes" (W_SLOW_BOOT). `isRunning` and `answers` are the
+    /// two questions asked each round, so a test can hand in its own.
+    static func waitForGuestAgent(_ vm: String, id: String? = nil, timeout: TimeInterval = 180,
+                                  cancelled: (() -> Bool)? = nil,
+                                  isRunning: (String, String?) -> Bool = { VMProcesses.isRunning($0, id: $1) },
+                                  answers: (String) -> Bool = guestAgentAnswers) -> Bool {
+        waitUntil(timeout: timeout, every: 5, cancelled: cancelled) { isRunning(vm, id) && answers(id ?? vm) }
+    }
+}
+
+/// Turning UTM's `auto terminate` off around a change and back on afterwards (`UTM.keepingOpen`),
+/// with every UTM question passed in so the order of things is tested without a UTM.
+enum UTMOpenHold {
+    enum Answer: Equatable {
+        /// It was on; Winbar turned it off and must turn it back on.
+        case held
+        /// It was already off (the person keeps UTM running): nothing to put back.
+        case wasOff
+        /// UTM couldn't say. The change goes ahead anyway, as it did before this existed, and the
+        /// relaunch-and-resend in `UTMScripting.updateConfiguration` is what's left to catch a quit.
+        case failed
+    }
+
+    /// `pending` is a hold an earlier run recorded and never released (Winbar killed mid-change):
+    /// the setting is still off because of Winbar, so this run doesn't ask again and puts it back
+    /// at the end. The hold is recorded before `body` runs, so that can't be lost; a release that
+    /// doesn't happen (UTM not running to hear it) stays recorded for the next run.
+    static func around<T>(applies: Bool, pending: Bool, record: (Bool) -> Void,
+                          hold: () -> Answer, release: () -> Bool, _ body: () -> T) -> T {
+        guard applies else { return body() }
+        var held = pending
+        if !held, hold() == .held {
+            held = true
+            record(true)
+        }
+        let result = body()
+        if held, release() { record(false) }
+        return result
     }
 }
 
@@ -404,6 +619,10 @@ enum UTM {
 /// between sending the change and quitting UTM. So the obligation is written down first, as the pids
 /// of the UTM processes that got the change, and `UTM.start` settles it: once none of those pids is
 /// UTM any more, it's paid.
+///
+/// UTM 5.0.6 closes the window itself (utmapp/UTM#7899), so nothing new is written down there
+/// (`UTMFixes.displayChangeRestartsUTM`). Settling is not gated: a record left by an older UTM whose
+/// process is still running is owed by that process.
 struct UTMRestart: Equatable {
     var vm: String
     var pids: [pid_t]

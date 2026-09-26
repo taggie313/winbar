@@ -276,14 +276,15 @@ private func readyModel(_ given: CreateFormFacts = facts(), build: Int = 26200,
         #expect(tested.generalWarnings.isEmpty)
     }
 
-    /// A UTM 5 pre-release is a different sentence from a 4.x nobody has run, and the form shows
-    /// whichever one the preflight rule picked — the job's message and the form's caption are one
-    /// text, so this is the only place the form has to be right about it.
+    /// A UTM a major version ahead is a different sentence from a 4.x nobody has run, and the form
+    /// shows whichever one the preflight rule picked — the job's message and the form's caption are
+    /// one text, so this is the only place the form has to be right about it. A UTM 6, so the case
+    /// stays a major ahead once the release step adds a UTM 5 to `testedVersions`.
     @Test func aPreReleaseUTMGetsTheLongerSentence() {
-        let model = readyModel(facts(utmVersion: "5.0.5"))
+        let model = readyModel(facts(utmVersion: "6.0.0"))
         #expect(model.generalWarnings
-                == [CreateCopy.wUTMPrerelease(version: "5.0.5", tested: CreatePreflight.testedList())])
-        #expect(model.generalWarnings.first?.contains("pre-release") == true)
+                == [CreateCopy.wUTMPrerelease(version: "6.0.0", tested: CreatePreflight.testedList())])
+        #expect(model.generalWarnings.first != CreateCopy.wUTMUntested(version: "6.0.0", tested: CreatePreflight.testedList()))
         // It is a warning, never a block: create still goes ahead on an untested UTM.
         #expect(model.canCreate)
     }

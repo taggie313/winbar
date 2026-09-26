@@ -142,6 +142,10 @@ enum CreateScriptError: Error, Equatable {
 /// Source-checked against UTM v4.7.5 (048ca74), unchanged in v5.0.5 for everything used here:
 /// Scripting/UTMScriptingCreateCommand.swift:67-92, Scripting/UTMScriptingConfigImpl.swift:310-446,
 /// 558-612, Configuration/UTMQemuConfiguration+Arguments.swift:118-140, 252-340, 719-842, 887-903.
+/// Diffed again at v5.0.6 (968fef31, the current beta, 2026-09-25): the QEMU half of `make` is the
+/// same; `update configuration` now closes a stopped VM's window before it applies (PR #7899), which
+/// finish, run on a stopped VM, doesn't notice; and the network record gains five VLAN/isolation keys,
+/// which none of these scripts set or read. Read, not run: nothing here has been run on a UTM 5.
 /// Compiled against a stub carrying UTM 4.7.5's scripting dictionary, then run against UTM 4.7.5 for
 /// real: these scripts created, started, finished and deleted Windows VMs on macOS 27.
 enum CreateScripts {
@@ -182,9 +186,34 @@ enum CreateScripts {
     }
 
     /// Removes the two install CDs from the stopped VM and keeps its system disk by id. Idempotent.
+    ///
+    /// The one other `update configuration` Winbar sends, so it meets the same UTM 5.0.6+ behaviour
+    /// as `UTMScripting.updateConfiguration`: UTM can quit by itself mid-script, before it has saved
+    /// the change (`UTMFixes.mayQuitAfterUpdate`). Each run is made with UTM held open
+    /// (`UTM.keepingOpen`) so that doesn't happen. If it happens anyway, being idempotent is what
+    /// makes the recovery simple: once UTM is running again the script runs once more, finds the
+    /// CDs still there (the first run's change was never saved) and takes them off again, or finds
+    /// none, re-checks the system disk and reads everything back.
     static func finish(vmID: String, diskID: String) -> Result<FinishedDrives, CreateScriptError> {
-        UTM.ensureRunning()
-        return run(finishScript, [vmID, diskID], timeout: 150).flatMap { text in
+        func once() -> (Result<String, CreateScriptError>, [pid_t]) {
+            UTM.ensureRunning()
+            let utmBefore = UTM.processIDs
+            return (UTM.keepingOpen { run(finishScript, [vmID, diskID], timeout: 150) }, utmBefore)
+        }
+        var (result, utmBefore) = once()
+        switch result {
+        case .success:
+            UTM.relaunchIfQuitItself(after: utmBefore, sentChange: true, grace: 2)
+        case .failure(let error):
+            // Only `.other` can come from UTM going away; every numbered error is the script's own,
+            // raised with UTM answering, and 1101–1113 come before anything is sent.
+            if case .other = error, UTM.relaunchIfQuitItself(after: utmBefore, sentChange: true, grace: 10) {
+                Debug.log("utmquit: running finish again: UTM quit before saving it")
+                (result, utmBefore) = once()
+                if case .failure = result { UTM.relaunchIfQuitItself(after: utmBefore, sentChange: true, grace: 10) }
+            }
+        }
+        return result.flatMap { text in
             guard let done = parseFinish(text) else {
                 return .failure(.changedUnexpectedly("Winbar couldn't read UTM's answer (\(text))"))
             }
@@ -260,7 +289,7 @@ enum CreateScripts {
     ///   a Setup page that stops on a question is visible. Removed later by the display-off path.
     /// - One virtio-net-pci NIC in shared mode, as the wizard makes; Winbar's RDP probe needs shared.
     /// - `-rtc base=localtime`: what the wizard's (unscriptable) Windows RTC switch emits.
-    /// - Not scriptable in 4.7.5/5.0.5: TPM (hence the answer file's TPM/Secure Boot/RAM bypass),
+    /// - Not scriptable in 4.7.5 through 5.0.6: TPM (hence the answer file's TPM/Secure Boot/RAM bypass),
     ///   Secure Boot keys, sound. Machine "virt" is the wizard's value (stay stock).
     ///
     /// Everything after `make` sits in a `try`: any failure there still reports 1105 with the id, so

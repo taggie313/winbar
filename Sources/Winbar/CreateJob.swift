@@ -178,6 +178,106 @@ enum CreateJob {
         return try cancel(vmName: vmName, deleteVM: deleteVM)
     }
 
+    // MARK: - A cancel asked for by another process
+
+    /// The file `winbar create --cancel` leaves in the job's folder when another process holds the
+    /// lock (a `winbar create` still watching, or the menu bar app). That run can't be signalled into
+    /// cleaning up, and a second process stopping and deleting the VM under a live run would race
+    /// it, so the watcher is asked to do it itself at its next poll point (spike row 1: `--cancel`
+    /// used to refuse outright and tell the person to Ctrl-C first). `emptyFolder` removes it with
+    /// everything else.
+    static let cancelRequestFileName = "cancel-request"
+
+    /// Leaves the request. `deleteVM` as `CreateRun.cancel` means it.
+    static func askToCancel(in directory: URL, deleteVM: Bool) throws {
+        let file = directory.appendingPathComponent(cancelRequestFileName)
+        try? FileManager.default.removeItem(at: file)
+        try SetupMedia.writePrivate(Data((deleteVM ? "delete" : "keep").utf8), to: file)
+    }
+
+    /// The run's side: a pending request, taken (removed) so it is acted on once. Anything but
+    /// "keep" deletes the VM, because the only writer of this file is `--cancel`, which deletes.
+    static func takeCancelRequest(in directory: URL) -> Bool? {
+        let file = directory.appendingPathComponent(cancelRequestFileName)
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        try? FileManager.default.removeItem(at: file)
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) != "keep"
+    }
+
+    static func withdrawCancelRequest(in directory: URL) {
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent(cancelRequestFileName))
+    }
+
+    /// Whether the request is still waiting to be taken: gone means the watcher has it.
+    static func cancelRequestPending(in directory: URL) -> Bool {
+        FileManager.default.fileExists(atPath: directory.appendingPathComponent(cancelRequestFileName).path)
+    }
+
+    /// How a cancel handed to the watcher is going, as the asking process reads it.
+    enum OutsideCancel: Equatable {
+        /// The watcher did it and saved the job `.cancelled`, with what it did.
+        case done(CreateJobState)
+        /// The watcher took the request and the cancel itself failed; the job says why.
+        case failed(CreateFailure?)
+        /// Nobody holds the lock any more and the request wasn't taken (the watcher was stopped, or
+        /// ended for its own reasons first): the asking process can do the cancel itself.
+        case lockFreed
+    }
+
+    /// One look at the job while `--cancel` waits on the watcher. nil: keep waiting. Pure, so the
+    /// order of the checks — a finished cancel before a freed lock, a taken request before an
+    /// unrelated failure — is tested without two processes.
+    static func outsideCancelProgress(_ state: CreateJobState?, requestPending: Bool, lockFree: Bool,
+                                      askedAt: Date) -> OutsideCancel? {
+        if let state, state.outcome == .cancelled { return .done(state) }
+        if let state, !requestPending, state.outcome == .failed, state.updatedAt >= askedAt {
+            return .failed(state.failure)
+        }
+        // Untaken, or taken by a watcher that died mid-cancel: doing it from here is safe either way
+        // (cancel finds the VM by id and skips whatever is already gone).
+        return lockFree ? .lockFreed : nil
+    }
+
+    /// Waits for the watcher to carry out an `askToCancel`. `pickUp` bounds how long the request may
+    /// sit untaken (the install watch polls about once a second, but the stages before it only
+    /// between steps, and building the setup disk is the longest of those); `finish` bounds the cancel itself (a force stop and UTM's delete). nil when it
+    /// ran out of time, with the request withdrawn so it can't fire later by surprise.
+    static func waitForOutsideCancel(in directory: URL, askedAt: Date, pickUp: TimeInterval = 120,
+                                     finish: TimeInterval = 300) -> OutsideCancel? {
+        var takenAt: Date?
+        while true {
+            let pending = cancelRequestPending(in: directory)
+            if !pending, takenAt == nil { takenAt = Date() }
+            if let outcome = outsideCancelProgress(state(in: directory), requestPending: pending,
+                                                   lockFree: lockIsFree(), askedAt: askedAt) {
+                if outcome == .lockFreed { withdrawCancelRequest(in: directory) }
+                return outcome
+            }
+            let now = Date()
+            let expired = takenAt.map { now.timeIntervalSince($0) > finish } ?? (now.timeIntervalSince(askedAt) > pickUp)
+            if expired {
+                withdrawCancelRequest(in: directory)
+                return nil
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+    }
+
+    /// Takes a cancelled job's folder away once its ending has been read: `--cancel` used to leave
+    /// state.json and the marker for the sweep, which only runs on the next create or menu bar
+    /// launch, so a finished cancel still left `Create/create-*/` behind (spike row 1). `grace`
+    /// gives a front-end polling state.json once a second (the menu bar's follower) time to see
+    /// `.cancelled` before the file goes. Only a spent job with no setup disk goes: never one still
+    /// installing, and never a folder the answer ISO is still in.
+    @discardableResult
+    static func removeRecord(in directory: URL, base: URL = base, grace: TimeInterval = 2.5) -> Bool {
+        if grace > 0 { Thread.sleep(forTimeInterval: grace) }
+        guard let state = state(in: directory), state.isSpent, state.mediaDir == nil,
+              !FileManager.default.fileExists(atPath: directory.appendingPathComponent(SetupMedia.isoName).path)
+        else { return false }
+        return (try? SetupMedia.destroy(directory, base: base)) != nil
+    }
+
     /// The current job as it stands, read from state.json without taking the lock. nil when nothing
     /// is installing. Unfinished jobs win over finished ones, then the most recently updated.
     static func current() -> CreateJobState? {

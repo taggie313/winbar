@@ -576,9 +576,48 @@ enum CreateCLI {
                   + "\"\(state.plan.vmName)\" carries on with it.")
             return 0
         }
-        let done = try CreateJob.cancel(vmName: state.plan.vmName, deleteVM: true)
-        for line in cancelLines(done, name: state.plan.vmName) { print(line) }
+        let vmName = state.plan.vmName
+        let directory = CreateJob.directory(of: state)
+        let done: CreateCancelResult
+        do {
+            done = try CreateJob.cancel(vmName: vmName, deleteVM: true)
+        } catch let error as CreateJobError where error.failure.code == "E_BUSY" && state.watched {
+            // A `winbar create` (or the menu bar app) is watching this install and holds the lock.
+            // It does the cancel itself when asked, so this doesn't send the person off to Ctrl-C it.
+            // An unwatched job behind someone else's lock (another install) keeps the plain refusal:
+            // nobody would pick the request up.
+            done = try cancelThroughWatcher(state, directory: directory)
+        }
+        for line in cancelLines(done, name: vmName) { print(line) }
+        CreateJob.removeRecord(in: directory)
         return 0
+    }
+
+    /// Hands the cancel to the process watching the install and waits for it to say how it went.
+    private static func cancelThroughWatcher(_ state: CreateJobState, directory: URL) throws -> CreateCancelResult {
+        let name = state.plan.vmName
+        let askedAt = Date()
+        do {
+            try CreateJob.askToCancel(in: directory, deleteVM: true)
+        } catch {
+            throw CreateJobError.busy(name)
+        }
+        print("Asking the Winbar that is watching “\(name)” to stop it and delete it…")
+        switch CreateJob.waitForOutsideCancel(in: directory, askedAt: askedAt) {
+        case .done(let ended):
+            return CreateCancelResult(state: ended, steps: ended.cancelSteps ?? CancelSteps())
+        case .failed(let failure):
+            if let failure { throw CreateJobError(failure: failure, exit: 69) }
+            throw CreateJobError.unavailable("E_CANCEL", "Couldn't cancel the install")
+        case .lockFreed:
+            // The watcher stopped before it took the request (Ctrl-C, Quit): nothing holds the job now.
+            return try CreateJob.cancel(vmName: name, deleteVM: true)
+        case nil:
+            throw CreateJobError.unavailable("E_CANCEL_NO_ANSWER",
+                                             "The Winbar watching “\(name)” didn't answer, so nothing was stopped or deleted.",
+                                             nextStep: "Press Ctrl-C where winbar create is running (or quit Winbar's menu "
+                                                 + "bar app), then run: winbar create --cancel \"\(name)\"")
+        }
     }
 
     /// What a cancel says it did, from what it actually did rather than from what it usually does.

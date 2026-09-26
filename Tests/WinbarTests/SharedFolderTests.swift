@@ -393,10 +393,11 @@ import Testing
             .appendingPathComponent("winbar-marker-\(UUID().uuidString)").path
         defer { try? FileManager.default.removeItem(atPath: folder) }
         try SharedFolder.create(folder).get()
-        let token = try #require(SharedFolder.writeMarker(in: folder))
-        let file = (folder as NSString).appendingPathComponent(SharedFolder.markerName)
-        #expect(try String(contentsOfFile: file, encoding: .utf8) == token)
-        SharedFolder.removeMarker(in: folder)
+        let marker = try #require(SharedFolder.writeMarker(in: folder))
+        let file = (folder as NSString).appendingPathComponent(marker.name)
+        #expect(marker.name.hasPrefix("."))
+        #expect(try String(contentsOfFile: file, encoding: .utf8) == marker.token)
+        SharedFolder.removeMarker(in: folder, named: marker.name)
         #expect(!FileManager.default.fileExists(atPath: file))
         // A folder that has gone can't be proved either way, and isn't claimed to be.
         #expect(SharedFolder.writeMarker(in: folder + "/not/there") == nil)
@@ -404,8 +405,11 @@ import Testing
 
     /// Whatever the VM is doing, the copy says the same thing: a change needs the VM to restart.
     @Test func theRestartIsSaidPlainly() {
-        #expect(SharedFolder.restartCost.contains("restart"))
-        #expect(SharedFolder.restartCost.contains("two restarts"))
+        // By argument, not `restartCost`: that reads the UTM on this Mac, which a test mustn't.
+        #expect(SharedFolder.restartCost(firstStart: false).contains("restart"))
+        #expect(SharedFolder.restartCost(firstStart: false).contains("two restarts"))
+        // UTM 5.0.6 serves the folder at the first start; promising two there is what row 16s caught.
+        #expect(!SharedFolder.restartCost(firstStart: true).contains("two"))
         #expect(SharedFolder.worthKnowing.contains("spaces"))
         #expect(CLI.usage.contains("must have no spaces"))
     }
@@ -704,5 +708,41 @@ import Testing
         // Remapped and working again is a different sentence from remapped and still empty.
         #expect(SharedFolder.driveState(view("ok", remapped: true)) == .working)
         #expect(SharedFolder.driveState(view("empty", remapped: true)) == .stale)
+    }
+}
+
+/// UTM 5.0.6 stores a real bookmark for a folder Winbar writes with the VM stopped, and hands it to
+/// Windows at the first start (spike rows 10, 16s). Its shares must not go through 4.7.5's
+/// set-aside, write-again and two-start treatment, while a 4.7.5 one still must.
+@Suite("A shared folder written under UTM 5.0.6")
+struct DurableShareGates {
+    @Test("Only 5.0.6 and later write the durable kind and serve it at the first start")
+    func versionGate() {
+        for old in ["4.7.5", "5.0.5", nil] as [String?] {
+            #expect(!UTMFixes.scriptedShareDurable(old) && !UTMFixes.shareArrivesOnFirstStart(old))
+        }
+        #expect(UTMFixes.scriptedShareDurable("5.0.6") && UTMFixes.shareArrivesOnFirstStart("5.0.6"))
+    }
+
+    @Test("A durable share isn't written again after UTM restarts; a fragile one is")
+    func noRewriteWhenDurable() {
+        #expect(SharedFolder.rewritesAfterUTMRestart(read: "/Users/rosa/Shared", remembered: "/Users/rosa/Shared",
+                                                     wasOurs: true, durable: false))
+        #expect(!SharedFolder.rewritesAfterUTMRestart(read: "/Users/rosa/Shared", remembered: "/Users/rosa/Shared",
+                                                      wasOurs: true, durable: true))
+    }
+
+    @Test("A durable share isn't set aside for a configuration change")
+    func noParkWhenDurable() {
+        #expect(!Reconfigure.parksSharedFolder(requestedShare: nil, current: "/Users/rosa/Shared",
+                                               remembered: "/Users/rosa/Shared", wasOurs: true, durable: true))
+    }
+
+    /// 4.7.5 needs the second start; on 5.0.6 it would restart the person's VM for nothing.
+    @Test("The second start is only given where UTM serves the folder from the start before")
+    func secondStartOnlyOnOlderUTM() {
+        #expect(SharedFolder.takesSecondStart(.stale, firstStart: false))
+        #expect(!SharedFolder.takesSecondStart(.stale, firstStart: true))
+        #expect(!SharedFolder.takesSecondStart(.live, firstStart: false))
     }
 }

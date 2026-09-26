@@ -368,12 +368,14 @@ struct CreatePreflightTests {
     /// said the same vague sentence about both.
     @Test("Tested, a major ahead, or merely untested")
     func utmStanding() {
+        // The list before any UTM 5 was tested; the release step's flip mustn't change this test.
+        let before = ["4.7.5"]
         #expect(CreatePreflight.standing("4.7.5") == .tested)
         #expect(CreatePreflight.standing("4.7.6") == .untested)
-        #expect(CreatePreflight.standing("5.0.5") == .prerelease)
+        #expect(CreatePreflight.standing("5.0.5", tested: before) == .prerelease)
         // Nothing in the rule is about the number 5 in particular: no tested version shares the
         // major, so a UTM 6 lands in the same place.
-        #expect(CreatePreflight.standing("6.0.0") == .prerelease)
+        #expect(CreatePreflight.standing("6.0.0", tested: before) == .prerelease)
         // Below the floor is still a standing — utmVersionProblem has already refused it by then,
         // and doctor's row for it comes from .tooOld, not from here.
         #expect(CreatePreflight.standing("4.6.4") == .untested)
@@ -408,13 +410,15 @@ struct CreatePreflightTests {
     /// files it under W_UTM_PRERELEASE or W_UTM_UNTESTED, and the words are the copy deck's.
     @Test("Each standing's key and sentence")
     func utmVersionWarnings() {
-        let list = CreatePreflight.testedList()
-        let untested = CreatePreflight.utmVersionWarning("4.7.6")
+        // Against the list before any UTM 5 was tested, so flipping `testedVersions` leaves it be.
+        let before = ["4.7.5"]
+        let list = CreatePreflight.testedList(before)
+        let untested = CreatePreflight.utmVersionWarning("4.7.6", tested: before)
         #expect(untested?.code == "W_UTM_UNTESTED")
         #expect(untested?.message == CreateCopy.wUTMUntested(version: "4.7.6", tested: list))
         #expect(untested?.message.contains("4.7.6") == true)
 
-        let prerelease = CreatePreflight.utmVersionWarning("5.0.5")
+        let prerelease = CreatePreflight.utmVersionWarning("5.0.5", tested: before)
         #expect(prerelease?.code == "W_UTM_PRERELEASE")
         #expect(prerelease?.message == CreateCopy.wUTMPrerelease(version: "5.0.5", tested: list))
         #expect(prerelease?.message.contains("5.0.5") == true)
@@ -424,9 +428,9 @@ struct CreatePreflightTests {
         #expect(untested?.message
                 == "UTM 4.7.6 hasn't been tested with winbar create (tested: 4.7.5). Carrying on.")
         #expect(prerelease?.message
-                == "UTM 5.0.5 is a pre-release, and winbar create has only been run against 4.7.5. "
-                + "The parts Winbar uses are the same in UTM 5.0.5's source, but nothing has been run "
-                + "on a UTM 5. Carrying on.")
+                == "UTM 5.0.5 is a major version ahead of anything winbar create has been run against "
+                + "(tested: 4.7.5). The scripting it uses reads the same in UTM 5.0.6's source, but nothing "
+                + "has been run on a UTM 5. Carrying on.")
     }
 
     /// `{tested}` is prose, not an array literal, and it has to stay prose as the list grows: one
@@ -440,9 +444,8 @@ struct CreatePreflightTests {
                 == "4.7.5, 5.0.5, 5.1.0 and 6.0.0")
         // Nothing tested at all is not a sentence anyone should ever see, but it must not crash.
         #expect(CreatePreflight.testedList([]).isEmpty)
-        // Today's list, which is what every sentence above renders with.
-        #expect(CreatePreflight.testedList() == "4.7.5")
-        #expect(CreatePreflight.testedVersions == ["4.7.5"])
+        // Whatever else the release step adds after a live check, 4.7.5 stays: most people run it.
+        #expect(CreatePreflight.testedVersions.contains("4.7.5"))
     }
 
     @Test("Free space: under 40 GB refuses, under the disk size warns")
@@ -701,5 +704,41 @@ struct CreateLogTests {
         let arguments = [plan.vmName, plan.isoPath, "/tmp/x/WINBAR_SETUP.iso", String(plan.cores),
                          String(plan.memoryMiB), String(plan.diskGiB * 1024)]
         #expect(arguments.allSatisfy { !$0.lowercased().contains("password") })
+    }
+}
+
+@Suite("The wait after the finish restart")
+struct CreateRestartWaitTests {
+    /// An invented VM whose name has punctuation, so its QEMU process runs under UTM's cleaned
+    /// `-name` and only the `-uuid` identifies it exactly.
+    static let vmName = "lab-vm 7"
+    static let vmID = "0D5E1A2B-3C4D-4E5F-8A9B-0C1D2E3F4A5B"
+    static let process = VMProcess(pid: 4242, arguments: [
+        "/Applications/UTM.app/Contents/XPCServices/QEMUHelper.xpc/Contents/MacOS/QEMULauncher",
+        "/Applications/UTM.app/Contents/Frameworks/qemu-aarch64-softmmu.framework/Versions/A/qemu-aarch64-softmmu",
+        "-name", "labvm 7", "-uuid", vmID, "-m", "8192",
+    ])
+
+    /// The regression: the finish restart handed UTM's id to a wait that matches a VM by name, so it
+    /// never saw the running VM and recorded W_SLOW_BOOT after three minutes for a Windows that had
+    /// answered at once. With the name and the id each where they belong, the first round finds it.
+    /// Control: `windowsAnswersAfterRestart` passing `vmID` as the name (the old call) fails this.
+    @Test("The running VM is found by its name and id, so a Windows that answers ends the wait at once")
+    func findsTheRunningVM() {
+        var asked: [String] = []
+        let answered = CreateRun.windowsAnswersAfterRestart(
+            vmName: Self.vmName, vmID: Self.vmID, timeout: 0,
+            isRunning: { name, id in VMProcesses.find(in: [Self.process], vmName: name, id: id) != nil },
+            answers: { asked.append($0); return true })
+        #expect(answered)
+        // utmctl is asked about the VM by the id it takes, not a cleaned name it may not.
+        #expect(asked == [Self.vmID])
+    }
+
+    /// What the old call looked like to the matcher: an id where a name belongs finds nothing.
+    @Test("An id passed as a name matches no process")
+    func anIDIsNotAName() {
+        #expect(VMProcesses.find(in: [Self.process], vmName: Self.vmID, id: nil) == nil)
+        #expect(VMProcesses.find(in: [Self.process], vmName: Self.vmName, id: nil) == Self.process)
     }
 }

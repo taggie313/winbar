@@ -215,7 +215,11 @@ enum SetupFlow {
         var vmID: String?
         func forVM(_ id: String?) -> Answers {
             var result = self
-            if let vmID, vmID != id { result = Answers(); result.started = started }
+            if let vmID, vmID != id {
+                result = Answers()
+                result.started = started
+                result.utmChannel = utmChannel
+            }
             result.vmID = id
             return result
         }
@@ -233,6 +237,9 @@ enum SetupFlow {
         var connectionOpened = false
         /// The person's answer to "Did the Windows desktop appear?". Nothing can check this.
         var connected: Bool?
+        /// Which UTM a fresh install gets: stable unless the person chose the beta on step 1's card.
+        /// Not a VM's answer, so it outlives a change of VM (`forVM`).
+        var utmChannel: UTMChannel = .stable
         /// **Connect**, or its **Try Again**, was pressed in this run. From then on a read may probe the
         /// Remote Desktop port (`SetupRunner.ReadPlan.readiness`): the Connect card has predicted the
         /// Local Network prompt that probe can raise, and Connect's own wait for Windows probes the
@@ -263,10 +270,23 @@ enum SetupFlow {
     struct Facts: Equatable, Sendable {
         // Step 1 — look around.
         var utm: DependencyState = .missing
+
+        /// Whether a display change on this Mac's UTM is followed by quitting UTM (utmapp/UTM#7882,
+        /// `UTMFixes`), from the version H1 read. A UTM whose version wasn't read gets the restart,
+        /// as `Reconfigure` gives it: the step must never promise less than the change will do.
+        var displayChangeRestartsUTM: Bool {
+            guard case .installed(let version) = utm else { return true }
+            return UTMFixes.displayChangeRestartsUTM(version)
+        }
         /// Homebrew's path, which decides how UTM would be installed (brew or UTM's own download).
         var homebrew: String?
-        /// Homebrew installed this UTM (`Homebrew.hasCask`), so it can update a copy that's too old.
-        var utmFromHomebrew = false
+        /// The cask Homebrew installed this UTM with (`Homebrew.installedCask`), so it can update a
+        /// copy that's too old — through that cask, `utm` or `utm@beta`. nil when Homebrew didn't.
+        var utmCask: String?
+        var utmFromHomebrew: Bool { utmCask != nil }
+        /// Which UTM a fresh install may get (`UTMChannels.current`): read only while UTM is missing,
+        /// nil otherwise. Step 1 offers stable or the beta from it.
+        var utmChannels: UTMChannels.Offer?
         /// nil until utmctl has been asked. H9.
         var utmAnswers: UTM.CtlAnswer?
         /// Only read when utmctl hasn't answered: which of the two silences it is, for
@@ -862,7 +882,8 @@ enum SetupFlow {
     /// With other VMs running, the window *refuses* rather than offers. The spec named them and
     /// offered the button anyway, but `Reconfigure.apply` refuses any display change while another
     /// VM runs, so the offer would end the wizard's last step on a refusal (COHERENCE C2). And a UTM
-    /// that won't say is treated as "maybe", like the real guard.
+    /// that won't say is treated as "maybe", like the real guard. Before UTM 5.0.6 only: there the
+    /// change restarts just this VM and `Reconfigure.apply` doesn't refuse (`UTMFixes`).
     enum HeadlessOffer: Equatable, Sendable {
         case alreadyHeadless
         /// **Run in the Background** was pressed: it's in `pending`, waiting for the restart.
@@ -914,6 +935,10 @@ enum SetupFlow {
         guard connected else { return .notOffered }
         guard let h5 = facts.kind("H5") else { return .notChecked }
         guard h5 == .fixable else { return .notReady }
+        // Other VMs only stand in the way where the display change restarts UTM (COHERENCE C2):
+        // `Reconfigure.apply` refuses over them only there, so the window mustn't refuse more than
+        // it will. On UTM 5.0.6+ it stops nothing but this VM (`UTMFixes`).
+        guard facts.displayChangeRestartsUTM else { return facts.pending.display == .headless ? .staged : .offer }
         switch facts.otherVMs {
         case .notAsked: return .checkOtherVMs
         case .unconfirmed(let detail): return .couldNotConfirm(detail)

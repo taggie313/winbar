@@ -59,8 +59,15 @@ struct VMInfo: Equatable {
     var displayCount: Int?   // 0 = headless
     var mac: String?
     var networkMode = ""     // shared, bridged, host, emulated (first NIC)
+    /// Listed as pausing or resuming while it's off, because UTM 5.0.6+ is working on its disks
+    /// (`UTMFixes.busyWhileOff`). Set by `UTMScripting.listVMs`, which is where the process table is
+    /// asked; `status` keeps UTM's own word.
+    var busyWhileOff = false
 
     var isWindows: Bool { icon.lowercased().contains("windows") }
+    /// Anything but "stopped", busy-while-off included on purpose: those callers decide whether UTM
+    /// may be quit, and quitting UTM while it rewrites a VM's disk images is no better than quitting
+    /// it under a running VM.
     var isRunning: Bool { !status.isEmpty && status != "stopped" }
     var headless: Bool? { displayCount.map { $0 == 0 } }
 
@@ -86,7 +93,26 @@ enum UTMScripting {
     /// Every VM UTM knows about. Launches UTM hidden if it isn't running.
     static func listVMs() -> Result<[VMInfo], WinbarError> {
         UTM.ensureRunning()
-        return AppleScriptRunner.run(listScript).map(parseList)
+        return AppleScriptRunner.run(listScript).map(parseList).map { markBusyWhileOff($0) }
+    }
+
+    /// Sets `busyWhileOff` on the VMs it applies to. The version and the process table are only asked
+    /// when some VM says pausing or resuming, which is rare, so an ordinary listing costs nothing more.
+    ///
+    /// QEMU VMs only. "No QEMU process" is what tells an off VM from a running one, and an Apple
+    /// Virtualization VM never has one: one that is really being suspended or resumed would read as
+    /// off. The qemu-img work behind the busy state is QEMU-backend work anyway.
+    static func markBusyWhileOff(_ list: [VMInfo], version: () -> String? = { UTM.version },
+                                 hasProcess: (VMInfo) -> Bool = { VMProcesses.find($0.name, id: $0.id) != nil }) -> [VMInfo] {
+        guard list.contains(where: { $0.status == "pausing" || $0.status == "resuming" }) else { return list }
+        let version = version()
+        return list.map { info in
+            var info = info
+            if info.backend == "qemu", info.status == "pausing" || info.status == "resuming" {
+                info.busyWhileOff = UTMFixes.busyWhileOff(status: info.status, hasProcess: hasProcess(info), version: version)
+            }
+            return info
+        }
     }
 
     static func vm(named name: String) -> Result<VMInfo?, WinbarError> {
@@ -95,25 +121,174 @@ enum UTMScripting {
 
     enum DisplayMode: String { case headless, console }
 
-    struct Applied: Equatable { let cpuCores: Int?; let memoryMB: Int?; let displayCount: Int? }
+    struct Applied: Equatable {
+        let cpuCores: Int?
+        let memoryMB: Int?
+        let displayCount: Int?
+        /// The UTM that got the change quit by itself afterwards, and UTM is running again
+        /// (`UTM.relaunchIfQuitItself`). Whatever that UTM held is gone with it, a scripted shared
+        /// folder's bookmark included, just as when Winbar restarts UTM.
+        var utmQuitItself = false
+        /// UTM quit before saving the first send, and these values are the answer to sending it
+        /// once more to the relaunched UTM.
+        var sentAgain = false
+    }
+
+    /// Why `updateConfiguration` failed.
+    struct UpdateFailure: Error {
+        var error: WinbarError
+        /// UTM quit by itself after the change was sent, and the UTM launched in its place couldn't
+        /// say what it holds. That is not a refusal: what was applied is unknown, so it must never be
+        /// reported as "UTM didn't accept the change".
+        var utmQuitItself = false
+    }
+
+    /// One send of the change: the script's answer, and whether the UTM it went to quit by itself
+    /// afterwards (in which case UTM has already been launched again).
+    struct UpdateTry {
+        var answer: Result<String, WinbarError>
+        var utmQuitItself: Bool
+    }
 
     /// Changes a stopped VM's configuration and returns what UTM reports afterwards. Empty or nil
     /// values are left alone. UTM refuses while the VM runs, and so does the script, first.
     ///
     /// A display change replaces the whole display list (records without an `index` do that), and
-    /// afterwards UTM must be quit before the VM starts again; `Reconfigure` does both, don't call this
-    /// for displays on its own.
+    /// before UTM 5.0.6 UTM must then be quit before the VM starts again; `Reconfigure` does both,
+    /// don't call this for displays on its own.
+    ///
+    /// On 5.0.6+ the update can make UTM quit by itself before it has saved the change
+    /// (`UTMFixes.mayQuitAfterUpdate`). Each send is made with UTM held open (`UTM.keepingOpen`), so
+    /// that shouldn't happen; if it does anyway, UTM is launched again and the change sent once more
+    /// (`recover`), and only if that fails too is UTM simply asked what it holds. The caller compares
+    /// whatever comes back with what was asked, exactly as it would the script's own answer.
     static func updateConfiguration(vm name: String, cpuCores: Int?, memoryMB: Int?,
-                                    display: DisplayMode?) -> Result<Applied, WinbarError> {
-        UTM.ensureRunning()
+                                    display: DisplayMode?) -> Result<Applied, UpdateFailure> {
         let args = [name, cpuCores.map(String.init) ?? "", memoryMB.map(String.init) ?? "", display?.rawValue ?? "",
                     Tuning.consoleDisplayHardware]
-        return AppleScriptRunner.run(updateScript, arguments: args, timeout: 150).map { text in
-            let fields = text.split(separator: fieldSeparator, omittingEmptySubsequences: false).map(String.init)
-            func int(_ i: Int) -> Int? { i < fields.count ? Int(fields[i]) : nil }
-            return Applied(cpuCores: int(0), memoryMB: int(1), displayCount: int(2))
+        func send() -> UpdateTry {
+            UTM.ensureRunning()
+            let utmBefore = UTM.processIDs
+            let answer = UTM.keepingOpen { AppleScriptRunner.run(updateScript, arguments: args, timeout: 150) }
+            switch answer {
+            case .success:
+                // UTM answered, so the answer stands; it can still be on its way out, and the next
+                // thing Winbar asks mustn't land on a UTM that is quitting.
+                return UpdateTry(answer: answer,
+                                 utmQuitItself: UTM.relaunchIfQuitItself(after: utmBefore, sentChange: true, grace: 2))
+            case .failure(let error):
+                return UpdateTry(answer: answer,
+                                 utmQuitItself: UTM.relaunchIfQuitItself(after: utmBefore, sentChange: changeWasSent(error),
+                                                                         grace: 10))
+            }
+        }
+        return recover(first: send(), again: send, readBack: { vm(named: name) }, vm: name)
+    }
+
+    /// Whether a failed update script got as far as sending the change: 1001–1003 are the script's
+    /// own checks, raised before `update configuration` is sent, and a denial sent nothing at all.
+    static func changeWasSent(_ error: WinbarError) -> Bool {
+        let refusedFirst = AppleScriptRunner.errorNumber(in: error.detail).map { (1001...1003).contains($0) } ?? false
+        return !error.automationDenied && !refusedFirst
+    }
+
+    /// What one send, and at most one more, add up to. Pure apart from the two closures, so the
+    /// recovery is tested without UTM.
+    ///
+    /// - UTM answered: that answer stands, even if it quit a moment later (it had saved by then).
+    /// - It failed and UTM is still there: a refusal, said as one.
+    /// - It failed because UTM quit by itself: on 5.0.6 that means the change was never saved, so a
+    ///   read-back alone would only report the loss (spike rows 16b, 17). The change is sent once
+    ///   more to the relaunched UTM, whose answer is then the answer. If that send is refused, the
+    ///   refusal is said with what led up to it; if UTM quits again, the relaunched UTM is asked
+    ///   what it holds, and the caller reports whatever that is.
+    static func recover(first: UpdateTry, again: () -> UpdateTry, readBack: () -> Result<VMInfo?, WinbarError>,
+                        vm name: String) -> Result<Applied, UpdateFailure> {
+        switch first.answer {
+        case .success(let text):
+            return .success(applied(text, utmQuitItself: first.utmQuitItself, sentAgain: false))
+        case .failure(let error) where !first.utmQuitItself:
+            return .failure(UpdateFailure(error: error))
+        case .failure:
+            break
+        }
+        Debug.log("utmquit: UTM quit before saving \(name)'s change; sending it again to the relaunched UTM")
+        let second = again()
+        switch second.answer {
+        case .success(let text):
+            return .success(applied(text, utmQuitItself: true, sentAgain: true))
+        case .failure(let error) where !second.utmQuitItself:
+            return .failure(UpdateFailure(error: WinbarError("UTM quit by itself before saving the change, and refused it "
+                                                             + "when Winbar sent it again", error.description),
+                                          utmQuitItself: true))
+        case .failure:
+            break
+        }
+        let unread = "UTM quit by itself twice while changing \(name), and Winbar couldn't ask it afterwards what it applied"
+        switch readBack() {
+        case .success(let info?):
+            Debug.log("utmquit: read back \(name) after the relaunch: cores=\(info.cpuCores.map(String.init) ?? "?") "
+                      + "memory=\(info.memoryMB.map(String.init) ?? "?") displays=\(info.displayCount.map(String.init) ?? "?")")
+            return .success(Applied(cpuCores: info.cpuCores, memoryMB: info.memoryMB, displayCount: info.displayCount,
+                                    utmQuitItself: true, sentAgain: true))
+        case .success(nil):
+            return .failure(UpdateFailure(error: WinbarError(unread, "UTM no longer lists a VM named \(name)."),
+                                          utmQuitItself: true))
+        case .failure(let readError):
+            return .failure(UpdateFailure(error: WinbarError(unread, readError.description), utmQuitItself: true))
         }
     }
+
+    private static func applied(_ text: String, utmQuitItself: Bool, sentAgain: Bool) -> Applied {
+        let fields = text.split(separator: fieldSeparator, omittingEmptySubsequences: false).map(String.init)
+        func int(_ i: Int) -> Int? { i < fields.count ? Int(fields[i]) : nil }
+        return Applied(cpuCores: int(0), memoryMB: int(1), displayCount: int(2), utmQuitItself: utmQuitItself,
+                       sentAgain: sentAgain)
+    }
+
+    // MARK: Holding UTM open (5.0.6+)
+
+    /// Turns UTM's `auto terminate` off if it is on, and says which it was. See `UTM.keepingOpen`.
+    static func holdOpen() -> UTMOpenHold.Answer {
+        switch AppleScriptRunner.run(holdScript, timeout: 30) {
+        case .success("held"): return .held
+        case .success: return .wasOff
+        case .failure(let error):
+            Debug.log("hold: couldn't turn UTM's auto terminate off: \(error.description)")
+            return .failed
+        }
+    }
+
+    /// Turns it back on. True once UTM has confirmed it.
+    static func releaseHold() -> Bool {
+        switch AppleScriptRunner.run(releaseScript, timeout: 30) {
+        case .success: return true
+        case .failure(let error):
+            Debug.log("hold: couldn't turn UTM's auto terminate back on: \(error.description)")
+            return false
+        }
+    }
+
+    static let holdScript = #"""
+with timeout of 20 seconds
+	tell application id "com.utmapp.UTM"
+		if auto terminate then
+			set auto terminate to false
+			return "held"
+		end if
+		return "off"
+	end tell
+end timeout
+"""#
+
+    static let releaseScript = #"""
+with timeout of 20 seconds
+	tell application id "com.utmapp.UTM"
+		set auto terminate to true
+		return "ok"
+	end tell
+end timeout
+"""#
 
     /// The script percent-escapes the free-text fields (name, icon), so a separator inside a name
     /// can't shift the columns: exactly twelve fields per record.

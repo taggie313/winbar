@@ -160,7 +160,13 @@ enum VMProcesses {
     /// isn't running at all — which is what made the first `winbar create` call its own successful
     /// start a failure.
     static func find(_ vmName: String?, id: String? = nil) -> VMProcess? {
-        let processes = all()
+        find(in: all(), vmName: vmName, id: id)
+    }
+
+    /// `find`'s matching, over a process list handed in, so the rule can be held to invented
+    /// processes: a VM named with punctuation, found by its id, and not found by an id passed where a
+    /// name belongs (the finish restart's false W_SLOW_BOOT). Pure.
+    static func find(in processes: [VMProcess], vmName: String?, id: String? = nil) -> VMProcess? {
         if let id, let byID = processes.first(where: { $0.uuid?.caseInsensitiveCompare(id) == .orderedSame }) {
             return byID
         }

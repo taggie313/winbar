@@ -594,9 +594,9 @@ enum SetupCopy {
         /// out (a copy signed by someone else, or too old and not Homebrew's to update) has none: its
         /// advice is Terminal's, ending in commands, and the window says what to do with the Finder and
         /// this window instead, in the card's one sentence (`summary`).
-        static func plan(_ plan: InstallPlan, state: DependencyState) -> [String] {
+        static func plan(_ plan: InstallPlan, state: DependencyState, utm: UTMPick = .stable) -> [String] {
             if case .manual = plan { return [] }
-            return DependencyCopy.plan(.utm, plan)
+            return DependencyCopy.plan(.utm, plan, utm: utm)
         }
 
         /// A Homebrew failure's detail in the window: its "try it again yourself: brew …" is the Try
@@ -634,8 +634,9 @@ enum SetupCopy {
         /// the button that does it. The plan's particulars — Homebrew's command, the team ID, the
         /// notarization check, the GitHub address, what Homebrew's update may make macOS ask — are
         /// `details`, behind **Show Details**: about 160 words stood between the heading and the button.
-        /// Markdown. Pure.
-        static func summary(_ plan: InstallPlan?, state: DependencyState, host: String = "Winbar") -> String {
+        /// Markdown. Pure. `utm` is the UTM a fresh install gets (`UTMChannels.pick`), for its size.
+        static func summary(_ plan: InstallPlan?, state: DependencyState, host: String = "Winbar",
+                            utm: UTMPick = .stable) -> String {
             let what = "UTM is the free app Windows runs in."
             let button = plan.flatMap { bInstall(.utm, $0) }.map { "Choose **\($0)**" }
             switch (state, plan) {
@@ -651,10 +652,12 @@ enum SetupCopy {
                 return "Winbar needs UTM \(minimum) or later. Update UTM the way you installed it: its own Check for "
                     + "Updates, the Mac App Store, or getutm.app. " + comeBack
             case (_, .brew?):
-                return what + " \(button ?? ""): about \(Dependency.utmDownloadMB) MB, and a few minutes."
+                // A beta's size when GitHub said it; with only Homebrew's word for the version, no size.
+                return what + " \(button ?? ""): " + (utm.megabytes.map { "about \($0) MB, and a few minutes." }
+                                                      ?? "it takes a few minutes.")
             case (_, .download?):
-                return what + " \(button ?? ""): about \(Dependency.utmDownloadMB) MB from UTM's own site, checked "
-                    + "before it's opened."
+                return what + " \(button ?? ""): " + (utm.megabytes.map { "about \($0) MB " } ?? "")
+                    + "from UTM's own site, checked before it's opened."
             case (_, .manual?), (_, .appStore?), (_, .brewUpgrade?), (_, nil):
                 // Never UTM's plan for a copy that's missing (`Dependencies.plan`): Homebrew or the
                 // download. A manual plan's advice is Terminal's, so it isn't said here either way.
@@ -665,7 +668,8 @@ enum SetupCopy {
         /// What's under **Show Details** on that card: the lead and the plan's paragraphs the card used
         /// to open with, minus what the summary already says. Plain text, since the plan's are shared
         /// with Terminal. Pure.
-        static func details(_ plan: InstallPlan?, state: DependencyState, host: String = "Winbar") -> [String] {
+        static func details(_ plan: InstallPlan?, state: DependencyState, host: String = "Winbar",
+                            utm: UTMPick = .stable) -> [String] {
             switch state {
             case .wrongSignature(let detail):
                 // What's wrong with the copy that's there; the plan's advice is the summary.
@@ -674,7 +678,7 @@ enum SetupCopy {
                 guard let plan, case .brewUpgrade = plan else { return [] }
                 return self.plan(plan, state: state) + [updateMayAsk(host: host)]
             case .missing, .installed:
-                return plan.map { self.plan($0, state: state) } ?? []
+                return plan.map { self.plan($0, state: state, utm: utm) } ?? []
             }
         }
 
@@ -701,6 +705,7 @@ enum SetupCopy {
             let url = URL(string: "https://example.invalid/UTM.dmg")!
             let starts = [DependencyCopy.downloading(utm, from: url).replacingOccurrences(of: "example.invalid", with: marker),
                           DependencyCopy.copying(utm, to: marker), DependencyCopy.checkingDownload(utm),
+                          DependencyCopy.checkingDigest(utm),
                           DependencyCopy.checking(utm),
                           DependencyCopy.downloadTrusted(utm, assessment: .init(accepted: true, source: nil, origin: marker))]
                 .map { $0.components(separatedBy: marker)[0] }
@@ -781,7 +786,12 @@ enum SetupCopy {
         }
 
         /// UTM's status words (`VMInfo.status`), in the ones a Mac uses for a machine.
+        ///
+        /// UTM 5.0.6+ says pausing or resuming about a VM that is off while it works on the VM's disks
+        /// (`VMInfo.busyWhileOff`). "Starting" or "Stopping" would be wrong about it, so it gets its
+        /// own word first.
         static func state(_ vm: VMInfo) -> String? {
+            if vm.busyWhileOff { return busyWhileOff }
             switch vm.status {
             case "started": return "Running"
             case "stopped": return "Stopped"
@@ -791,6 +801,7 @@ enum SetupCopy {
             default: return nil
             }
         }
+        static let busyWhileOff = "Off, UTM is busy with it"
 
         /// Step 2 with no VM list from UTM, which step 1 exists to get. The way on is the way back.
         static let unlistedHeading = "Check UTM first"
@@ -1710,9 +1721,17 @@ enum SetupCopy {
         /// calls it: "Winbar's menu can switch it back later" left the owner asking for a way to give the
         /// VM its screen back, which the menu already had. It doesn't say "at any time", since the way
         /// back has the same rule.
-        static let choiceRule = "Switching either way restarts UTM, which stops every VM it's running, so Winbar "
-            + "only does it while this is the only one. If you choose the background, **\(MenuCopy.bringBackScreen)** "
-            + "in Winbar's menu switches it back later, the same way."
+        ///
+        /// On UTM 5.0.6+ there is no UTM restart and so no rule about other VMs
+        /// (`SetupFlow.Facts.displayChangeRestartsUTM`); the sentence says only what is still true,
+        /// that this VM restarts, and keeps the way back.
+        static func choiceRule(restartsUTM: Bool) -> String {
+            let back = "If you choose the background, **\(MenuCopy.bringBackScreen)** in Winbar's menu switches it back "
+                + "later, the same way."
+            guard restartsUTM else { return "Switching either way restarts this VM, and nothing else. " + back }
+            return "Switching either way restarts UTM, which stops every VM it's running, so Winbar only does it "
+                + "while this is the only one. " + back
+        }
 
         /// In place of the choice when another VM is running, or UTM wouldn't say (COHERENCE C2), and
         /// under the refusal itself: `otherVMsRefusal`'s title where the heading goes and its detail

@@ -57,11 +57,16 @@ enum CLI {
 
         commands:
           setup [--vm NAME] [--yes] [--no-visual-tweaks] [--keep-bitlocker] [--headless | --console]
+                [--utm-channel stable|beta]
                         check everything, fix what can be fixed, walk through the rest
                         --yes answers the y/N questions yes; it never types passwords for you,
                         never decrypts BitLocker unless it sees the VM's disk on an encrypted
                         volume, and never goes headless unasked. --no-visual-tweaks and
-                        --keep-bitlocker are remembered for the VM (undo with winbar config)
+                        --keep-bitlocker are remembered for the VM (undo with winbar config).
+                        While UTM's next version is a beta and UTM isn't installed, setup asks
+                        which UTM to install: [1] stable (recommended) or [2] the beta. --yes
+                        picks stable; --utm-channel chooses outright. An installed UTM is
+                        never switched
           setup --window
                         open Winbar's Set Up Winbar window (Set Up Winbar… in its menu) and leave
                         this terminal free. It guides dependency installation, Windows creation or
@@ -88,9 +93,9 @@ enum CLI {
                         show the UTM console window, or run headless (restarts the VM)
           share [FOLDER | --off]
                         show the folder this VM shares with Windows, share one (offering
-                        to create it), or stop sharing. A change needs the VM to restart —
-                        sometimes twice, which Winbar checks for — and the folder's path
-                        must have no spaces in it
+                        to create it), or stop sharing. A change needs the VM to restart
+                        (on UTM 4.x sometimes twice, which Winbar checks for), and the
+                        folder's path must have no spaces in it
           connect       open the VM in Windows App, starting it if needed
           config [--vm NAME] [--forget NAME] [--host HOST] [--user USER] [--saved-pc NAME]
                  [--keep-bitlocker yes|no] [--no-visual-tweaks yes|no] [--autologon yes|no]
@@ -144,13 +149,20 @@ enum CLI {
             if rest.contains("--window") { return SetupHandOff.run(rest) }
             // The terminal route is complete, but someone typing it may have wanted the window.
             if Term.stdoutIsTTY { Term.note(SetupCopy.HandOff.windowTip) }
-            return withOptions(rest, values: ["--vm"],
+            return withOptions(rest, values: ["--vm", "--utm-channel"],
                                switches: ["--yes", "-y", "--no-visual-tweaks", "--keep-bitlocker", "--headless", "--console"]) { parsed in
                 if parsed.has("--headless") && parsed.has("--console") {
                     Term.error("winbar setup: --headless and --console contradict each other")
                     return 64
                 }
                 var options = Context.Options(vmOverride: parsed.values["--vm"])
+                if let value = parsed.values["--utm-channel"] {
+                    guard let channel = UTMChannel(argument: value) else {
+                        Term.error("winbar setup: --utm-channel takes stable or beta")
+                        return 64
+                    }
+                    options.utmChannel = channel
+                }
                 options.assumeYes = parsed.has("--yes") || parsed.has("-y")
                 options.noVisualTweaks = parsed.has("--no-visual-tweaks")
                 options.keepBitLocker = parsed.has("--keep-bitlocker")
@@ -272,13 +284,23 @@ enum CLI {
 
     private static func start(_ vm: String) -> Int32 {
         if VMProcesses.isRunning(vm) {
-            print("\(vm) is already running.")
-            return 0
-        }
-        Term.note("Starting \(vm)…")
-        if case .failure(let error) = UTM.start(vm) {
-            Term.error("\(error)")
-            return 1
+            // Paused in UTM still has its process, so "already running" was said to a frozen VM.
+            switch UTM.resumeIfPaused(vm) {
+            case .failure(let error):
+                Term.error("\(error)")
+                return 1
+            case .success(.notPaused):
+                print("\(vm) is already running.")
+                return 0
+            case .success(.resumed):
+                Term.note("\(vm) was paused in UTM; resumed it.")
+            }
+        } else {
+            Term.note("Starting \(vm)…")
+            if case .failure(let error) = UTM.start(vm, progress: { Term.note($0) }) {
+                Term.error("\(error)")
+                return 1
+            }
         }
         Term.note("Waiting for Remote Desktop…")
         switch Connection.waitForRemoteDesktop(vm: vm, timeout: 180) {
@@ -325,9 +347,11 @@ enum CLI {
             return 0
         case .success(let done):
             print(mode == .headless ? "\(vm) is headless: reach it with winbar connect." : "\(vm)'s console window is on.")
-            // The display change restarted UTM, which kills a shared folder set by script; Reconfigure
-            // wrote it again on the way through, so say so and check Windows really got it. The
-            // display change itself succeeded either way, so it decides the exit code.
+            // UTM restarted for the display change (before 5.0.6), or quit by itself after it (5.0.6+),
+            // or the folder was set aside for it: each leaves a shared folder set by script to be
+            // written again, which Reconfigure did on the way through, so say so and check Windows
+            // really got it. With none of those, `sharedFolder` is nil and there's nothing to say.
+            // The display change itself succeeded either way, so it decides the exit code.
             guard let folder = done.sharedFolder else { return 0 }
             _ = finishShare(vm, folder, name: folder.path.map { SharedFolder.abbreviate($0) }, reestablished: true)
             return 0
@@ -427,8 +451,10 @@ enum CLI {
         guard VMProcesses.isRunning(vm) else {
             // It was off and stays off, so there is nobody to ask. The lag is still worth saying.
             print(name.map { "UTM will share \($0) with \(vm)." } ?? "UTM will share nothing with \(vm).")
-            print("Windows is given the folder UTM held at the start before, so it may take two starts. "
-                  + "Run winbar share once it's up and Winbar will check and finish the job.")
+            print(SharedFolder.arrivesOnFirstStart
+                  ? "Windows is given it when \(vm) starts. Run winbar share once it's up and Winbar will check."
+                  : "Windows is given the folder UTM held at the start before, so it may take two starts. "
+                    + "Run winbar share once it's up and Winbar will check and finish the job.")
             return 0
         }
         return finishShare(vm, wanted, name: name, reestablished: broken && name != nil)
@@ -458,16 +484,17 @@ enum CLI {
                       + SharedFolder.worthKnowing)
                 reportUserDrive(checked)
                 return 0
-            case .stale where reestablished:
+            case .stale where reestablished && !Config.sharedFolderDurable:
                 // The restart this command did is what emptied it, so say that rather than blaming
-                // the two-start rule.
+                // the two-start rule. A durable share (written under UTM 5.0.6+) outlives a UTM
+                // restart, so that one is never blamed on it.
                 Term.error("\(vm)'s shared folder is empty in Windows now: " + SharedFolder.diedWhenUTMRestarted
                            + " Run: winbar share \(name ?? "<folder>")")
                 Term.error(SharedFolder.durableAdvice)
                 return 1
             case .stale:
-                Term.error("UTM has the change, but Windows is still serving what it had before. "
-                           + "Restart \(vm) once more (winbar restart), then run winbar share to check.")
+                Term.error("UTM has the change, but Windows isn't serving it yet. "
+                           + SharedFolder.notArrivedYet(vm: vm, firstStart: SharedFolder.arrivesOnFirstStart))
                 return 1
             case .unknown(let why):
                 print("UTM has the change, but Winbar couldn't check it from inside Windows (\(why)). "
@@ -610,6 +637,11 @@ enum CLI {
                 print("Windows has a drive for it\(view.drive.map { " (\($0))" } ?? "") with nothing behind it: "
                       + (brokenByUTMRestart ? SharedFolder.diedWhenUTMRestarted
                                             : "whatever UTM stored for this folder can't be opened any more."))
+            case .stale where SharedFolder.arrivesOnFirstStart:
+                // UTM 5.0.6 hands Windows the folder at the first start, so "the start before" isn't
+                // the reason here (spike row 16s, where saying it was the bug).
+                print("Windows isn't serving this folder yet" + (view.drive.map { " (\($0))" } ?? "")
+                      + ". Restart \(vm) (winbar restart) and it appears.")
             case .stale:
                 print("Windows is still serving what it had at the start before this one"
                       + (view.drive.map { " (\($0))" } ?? "") + ". Restart \(vm) (winbar restart) and this folder appears.")
@@ -658,13 +690,12 @@ enum CLI {
     /// Windows is up, and the name needs its guest agent, which starts later than QEMU.
     private static func connectHere(_ vm: String, cancelled: () -> Bool) -> Int32 {
         let stop = "Cancelled: the winbar command that asked for this connection has ended."
-        if !VMProcesses.isRunning(vm) {
-            guard !cancelled() else { print(stop); return 130 }
-            print("Starting \(vm)…")
-            if case .failure(let error) = UTM.start(vm) {
-                print("\(error)")
-                return 1
-            }
+        guard !cancelled() else { print(stop); return 130 }
+        if !VMProcesses.isRunning(vm) { print("Starting \(vm)…") }
+        // Also resumes a VM paused in UTM, which has its process but can't answer Remote Desktop.
+        if case .failure(let error) = UTM.start(vm, progress: { print($0) }) {
+            print("\(error)")
+            return 1
         }
         print("Waiting for Remote Desktop…")
         let readiness = Connection.waitForRemoteDesktop(vm: vm, timeout: 180, cancelled: cancelled)
@@ -680,9 +711,16 @@ enum CLI {
         }
         guard !cancelled() else { print(stop); return 130 }
         if WindowsApp.accessibilityTrusted {
-            if WindowsApp.openSavedPC(host: host) {
+            switch WindowsApp.pressSavedPC(host: host) {
+            case .newWindow:
                 print("Opened the saved PC in Windows App.")
                 return 0
+            case .pressedNoNewWindow:
+                print("Asked Windows App to open the saved PC \(host), but no new window has appeared. If its desktop "
+                      + "doesn't show up, double-click \(host) in Windows App.")
+                return 0
+            case .notPressed:
+                break
             }
             print("No saved PC for \(host) in Windows App, so opening a one-off connection (it asks for the password).")
         } else {

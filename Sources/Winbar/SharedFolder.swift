@@ -16,14 +16,23 @@ import Foundation
 ///   change is never enough (see `settle`). Winbar proves what Windows ended up with instead of
 ///   counting restarts.
 /// - A working share dies as soon as UTM itself restarts, with nothing re-set: Z: comes back empty
-///   and every write fails. Winbar restarts UTM for every display change (utmapp/UTM#7882), so it
-///   writes the folder again on its way through and checks the result (see `reestablish`).
+///   and every write fails. Before UTM 5.0.6 Winbar restarts UTM for every display change
+///   (utmapp/UTM#7882), so it writes the folder again on its way through and checks the result
+///   (see `reestablish`).
 ///
 /// UTM's own source says why: `update registry` (UTMScriptingRegistryEntryImpl) resolves the path
 /// into a *remote* bookmark inside a helper process — with the VM stopped, a throwaway `UTMProcess()`
 /// — and stores that. It is not the durable security-scoped bookmark UTM's own file picker makes,
 /// which is why it survives neither the start it was written for nor a relaunch of UTM. Anyone who
 /// wants a folder that simply stays should pick it in UTM itself; `durableAdvice` says so.
+///
+/// UTM 5.0.6 changed both (`UTMFixes.scriptedShareDurable`, `UTMFixes.shareArrivesOnFirstStart`):
+/// with the VM stopped it stores a real security-scoped bookmark, and the spike found the folder in
+/// Windows after one start, still there after UTM quit and relaunched and after six display changes
+/// (docs/internal/UTM5-SPIKE-RESEARCH.md §4 item 4; spike rows 10, 16s). So a share Winbar wrote
+/// under 5.0.6 (`Config.sharedFolderDurable`, recorded per write) is never set aside, written again
+/// or blamed on a UTM restart, and a change there costs one start. A share written under 4.7.5
+/// keeps the old treatment until Winbar next writes it, even after UTM is updated.
 ///
 /// And the path must have no space in it: see `hasSpace`.
 ///
@@ -157,7 +166,16 @@ enum SharedFolder {
     /// UTM survives UTM restarting, which is the whole of this problem.
     static func brokenByUTMRestart(vm: String) -> Bool {
         guard vm == Config.vmName, Config.sharedFolderByWinbar, Config.sharedFolder != nil else { return false }
-        return brokenByUTMRestart(seenUnder: Config.sharedFolderUTM, utmNow: UTM.processIDs.map(Int.init))
+        return !Config.sharedFolderDurable
+            && brokenByUTMRestart(seenUnder: Config.sharedFolderUTM, utmNow: UTM.processIDs.map(Int.init))
+    }
+
+    /// Whether a folder UTM reports has to be written again now that UTM has restarted (or quit by
+    /// itself): only one Winbar wrote, and only the fragile kind. A durable one (written under UTM
+    /// 5.0.6+) survived the restart, and writing it again would only cost a registry write and a
+    /// "writing it again" line for nothing. Pure.
+    static func rewritesAfterUTMRestart(read: String?, remembered: String?, wasOurs: Bool, durable: Bool) -> Bool {
+        !durable && stillOurs(read: read, remembered: remembered, wasOurs: wasOurs)
     }
 
     // MARK: - The Mac folder
@@ -351,11 +369,41 @@ enum SharedFolder {
         GuestAgent.run(vm: vm, GuestScripts.sharedFolder(user: user), timeout: 120).map(guestView)
     }
 
-    /// What `winbar share` prints, and the menu shows, about the restart a change costs. UTM serves
-    /// the folder its registry held at the previous start, so a change needs the VM to start twice.
-    static let restartCost = "Windows only picks up a shared folder when the VM starts, and UTM hands it the folder from "
-        + "the start before that, so this can take two restarts. Winbar checks from inside Windows and does the second "
-        + "one only if it is needed."
+    /// Whether the UTM on this Mac gives Windows a changed folder at the first start after the
+    /// change (5.0.6+), or at the one after that (4.x). Read from disk each time, like `UTM.version`.
+    static var arrivesOnFirstStart: Bool { UTMFixes.shareArrivesOnFirstStart(UTM.version) }
+
+    /// What `winbar share` prints, and the menu shows, about the restart a change costs.
+    static var restartCost: String { restartCost(firstStart: arrivesOnFirstStart) }
+
+    /// 4.x serves the folder its registry held at the previous start, so a change needs the VM to
+    /// start twice; 5.0.6 serves the one it holds.
+    static func restartCost(firstStart: Bool) -> String {
+        firstStart
+            ? "Windows only picks up a shared folder when the VM starts, so this restarts it once. Winbar checks from "
+                + "inside Windows that it arrived."
+            : "Windows only picks up a shared folder when the VM starts, and UTM hands it the folder from the start "
+                + "before that, so this can take two restarts. Winbar checks from inside Windows and does the second "
+                + "one only if it is needed."
+    }
+
+    /// When a folder set while the VM is off reaches Windows: "at its next start", or, on 4.x,
+    /// "over the next start or two".
+    static func arrivalWhenOff(firstStart: Bool) -> String {
+        firstStart ? "at its next start" : "over the next start or two"
+    }
+
+    /// What to do when UTM has the folder and Windows doesn't serve it yet. The two-start rule is
+    /// said only where it is true: on 5.0.6 it isn't (spike row 16s, where saying it was the bug).
+    static func notArrivedYet(vm: String, firstStart: Bool) -> String {
+        firstStart
+            ? "Windows is given the shared folder when the VM starts, and hasn't got this one yet. Restart \(vm) "
+                + "(winbar restart, or Restart in the menu); winbar share checks from inside Windows and says when it "
+                + "has really arrived."
+            : "Windows is given the folder UTM held at the start before this one, so a change needs a second start. "
+                + "Restart \(vm) (winbar restart, or Restart in the menu); winbar share checks from inside Windows and "
+                + "says when it has really arrived."
+    }
 
     /// Why a share that was working is suddenly empty, and what to do about it.
     static let diedWhenUTMRestarted = "UTM restarted, and a shared folder set by script doesn't survive that: what UTM "
@@ -383,7 +431,8 @@ enum SharedFolder {
     }
 
     /// Written into the shared folder for a moment so Windows can be asked to find it. Hidden, and
-    /// removed again whatever happens.
+    /// removed again whatever happens. This is the start of its name; each check adds a part of its
+    /// own (`writeMarker`).
     static let markerName = ".winbar-share-check"
     /// The marker a problem report's survey uses (`Context.surveyTraces`). A name of its own, because
     /// a report may run while a set-up step checks the same folder with `markerName`, and each writes
@@ -391,14 +440,49 @@ enum SharedFolder {
     /// token as "Windows is serving an old folder", or delete the other's marker mid-check.
     static let reportMarkerName = ".winbar-report-check"
 
-    static func writeMarker(in folder: String, named name: String = markerName) -> String? {
-        let token = UUID().uuidString
-        let path = (folder as NSString).appendingPathComponent(name)
-        guard (try? token.write(toFile: path, atomically: true, encoding: .utf8)) != nil else { return nil }
-        return token
+    /// One check's marker: the file's name in the shared folder, and the token written into it.
+    struct Marker: Equatable {
+        var name: String
+        var token: String
     }
 
-    static func removeMarker(in folder: String, named name: String = markerName) {
+    /// The file's name for one check: the prefix and a part of the token, so no two checks ever use
+    /// the same name. One name used every time had Windows answer with the token of a check made
+    /// minutes earlier: its WebDAV redirector hands back a file it has read before from its own
+    /// cache, even after the Mac has deleted and written that file afresh. Seen on UTM 5.0.6 (spike
+    /// rows 10, 11a, 16s: setup's check said "Windows has it", doctor's check a moment later, same
+    /// folder, read setup's token and said Windows was still serving the folder it had before —
+    /// while the person's own session found the new file by name). A name Windows has never seen
+    /// can't come out of its cache. Pure.
+    static func markerFile(_ prefix: String, token: String) -> String {
+        prefix + "-" + token.prefix(8)
+    }
+
+    static func writeMarker(in folder: String, named prefix: String = markerName) -> Marker? {
+        sweepMarkers(in: folder, prefix: prefix)
+        let token = UUID().uuidString
+        let name = markerFile(prefix, token: token)
+        let path = (folder as NSString).appendingPathComponent(name)
+        guard (try? token.write(toFile: path, atomically: true, encoding: .utf8)) != nil else { return nil }
+        return Marker(name: name, token: token)
+    }
+
+    /// Markers a check never got to remove (Winbar killed mid-check) would otherwise pile up in the
+    /// person's folder now that each has a name of its own. Only ones old enough that no check can
+    /// still be reading them: a report's survey and a set-up step can run side by side.
+    static func sweepMarkers(in folder: String, prefix: String, olderThan age: TimeInterval = 600, now: Date = Date()) {
+        let manager = FileManager.default
+        for name in (try? manager.contentsOfDirectory(atPath: folder)) ?? []
+        where name == prefix || name.hasPrefix(prefix + "-") {
+            let path = (folder as NSString).appendingPathComponent(name)
+            guard let modified = (try? manager.attributesOfItem(atPath: path))?[.modificationDate] as? Date,
+                  now.timeIntervalSince(modified) > age else { continue }
+            try? manager.removeItem(atPath: path)
+        }
+    }
+
+    /// `name` is the marker's whole file name, as `writeMarker` gave it.
+    static func removeMarker(in folder: String, named name: String) {
         try? FileManager.default.removeItem(atPath: (folder as NSString).appendingPathComponent(name))
     }
 
@@ -444,20 +528,20 @@ enum SharedFolder {
                 .map { Checked(verification: judge(setting, view: $0, token: nil), view: $0) }
         }
         guard inspect(path) == .folder else { return .success(.unknown("\(abbreviate(path)) isn't on this Mac any more")) }
-        let token = writeMarker(in: path)
-        defer { removeMarker(in: path) }
-        return ask(vm: vm, user: user, remap: remapDrive).map { view in
-            let verification = judge(setting, view: view, token: token)
+        let marker = writeMarker(in: path)
+        defer { if let marker { removeMarker(in: path, named: marker.name) } }
+        return ask(vm: vm, user: user, marker: marker?.name ?? "", remap: remapDrive).map { view in
+            let verification = judge(setting, view: view, token: marker?.token)
             // Which UTM it was working under is the only way to know later that a relaunch killed it.
             if verification == .live { Config.rememberSharedFolderWorking(under: UTM.processIDs.map(Int.init), for: vm) }
             return Checked(verification: verification, view: view)
         }
     }
 
-    private static func ask(vm: String, user: String?, remap: Bool = false) -> Result<GuestView, WinbarError> {
+    private static func ask(vm: String, user: String?, marker: String = "", remap: Bool = false) -> Result<GuestView, WinbarError> {
         // The part that runs in the person's own session is a file of its own; put it there first.
         GuestAgent.push(vm: vm, path: GuestScripts.userDrivePath, text: GuestScripts.userDriveChild)
-        let script = GuestScripts.sharedFolder(user: user, marker: markerName, userDrive: true, remap: remap)
+        let script = GuestScripts.sharedFolder(user: user, marker: marker, userDrive: true, remap: remap)
         defer { GuestAgent.remove(vm: vm, path: GuestScripts.userDrivePath) }
         return GuestAgent.run(vm: vm, script, timeout: 210).map { out in
             // The session-crossing half is the part that can quietly do nothing, so it is the part
@@ -499,8 +583,9 @@ enum SharedFolder {
     static func reestablish(vm: String, progress: (String) -> Void = { _ in }) -> String? {
         guard case .success(let folder?) = current(vm: vm) else { return nil }
         guard vm == Config.vmName,
-              stillOurs(read: folder, remembered: Config.sharedFolder, wasOurs: Config.sharedFolderByWinbar)
-        else { return folder }   // not Winbar's to rewrite; the caller still checks it
+              rewritesAfterUTMRestart(read: folder, remembered: Config.sharedFolder,
+                                      wasOurs: Config.sharedFolderByWinbar, durable: Config.sharedFolderDurable)
+        else { return folder }   // not Winbar's to rewrite, or it outlived UTM; the caller still checks it
         progress("Writing \(vm)'s shared folder again: restarting UTM invalidates it…")
         guard case .success = setWhileStopped(.folder(folder), vm: vm) else { return folder }
         Config.rememberSharedFolderWritten(folder, for: vm)
@@ -515,7 +600,8 @@ enum SharedFolder {
     /// start → A; stop, set B, start → still A; stop, set C, start → B; restart unchanged → C. So one
     /// start after a change is never enough, and the second start needs no further `update registry`.
     /// The check is what decides, not the count: if some UTM stops doing this, nobody pays for a
-    /// restart they don't need. Blocking.
+    /// restart they don't need. UTM 5.0.6 did stop (`takesSecondStart`), so there a stale answer
+    /// is reported rather than answered with a second start. Blocking.
     static func settle(_ setting: Setting, vm: String, user: String?,
                        _ interaction: Interaction) -> Result<Checked, WinbarError> {
         guard VMProcesses.isRunning(vm) else { return .success(.unknown("\(vm) isn't running, so Windows can't be asked")) }
@@ -523,16 +609,24 @@ enum SharedFolder {
         guard UTM.waitForGuestAgent(vm, timeout: 240) else { return .success(.unknown("Windows didn't answer in time")) }
         switch verify(setting, vm: vm, user: user) {
         case .failure(let error): return .failure(error)
-        case .success(let checked) where checked.verification != .stale:
+        case .success(let checked) where !takesSecondStart(checked.verification, firstStart: arrivesOnFirstStart):
             return .success(fixUserDrive(checked, vm: vm, user: user, setting, interaction))
         case .success: break
         }
         interaction.progress("Windows is still serving the folder it had before; restarting \(vm) once more…")
         if case .failure(let error) = UTM.shutDown(vm, offerForce: interaction.offerForceStop) { return .failure(error) }
-        if case .failure(let error) = UTM.start(vm) { return .failure(error) }
+        if case .failure(let error) = UTM.start(vm, progress: interaction.progress) { return .failure(error) }
         interaction.progress("Waiting for Windows…")
         guard UTM.waitForGuestAgent(vm, timeout: 240) else { return .success(.unknown("Windows didn't answer in time")) }
         return verify(setting, vm: vm, user: user).map { fixUserDrive($0, vm: vm, user: user, setting, interaction) }
+    }
+
+    /// Whether `settle` gives the VM a second start: only for a stale answer, and only on a UTM that
+    /// hands Windows the folder from the start before (4.x). On 5.0.6 the first start brought it
+    /// (spike row 10 (a)), so a second one would cost the person a restart that changes nothing;
+    /// the stale answer is reported as it is. Pure.
+    static func takesSecondStart(_ verification: Verification, firstStart: Bool) -> Bool {
+        verification == .stale && !firstStart
     }
 
     /// The last step, and the one the person actually experiences: their own drive letter. It can be

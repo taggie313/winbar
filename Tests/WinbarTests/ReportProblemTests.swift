@@ -163,11 +163,28 @@ struct ReportProblemReadOnlyTests {
         defer { try? FileManager.default.removeItem(at: folder) }
         let step = try #require(SharedFolder.writeMarker(in: folder.path))
         let report = try #require(SharedFolder.writeMarker(in: folder.path, named: SharedFolder.reportMarkerName))
-        SharedFolder.removeMarker(in: folder.path, named: SharedFolder.reportMarkerName)
+        SharedFolder.removeMarker(in: folder.path, named: report.name)
         // The step's marker, and its token, are exactly as the step left them.
-        let left = try String(contentsOf: folder.appendingPathComponent(SharedFolder.markerName), encoding: .utf8)
-        #expect(left == step && step != report)
-        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(SharedFolder.reportMarkerName).path))
+        let left = try String(contentsOf: folder.appendingPathComponent(step.name), encoding: .utf8)
+        #expect(left == step.token && step.token != report.token)
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(report.name).path))
+    }
+
+    /// Windows' WebDAV redirector answered a check with the token of an earlier one from its cache
+    /// when every check used the same file name (spike rows 11a, 16s), and Winbar then said Windows
+    /// was serving an old folder. Two checks in a row must never share a name.
+    @Test("Every check writes a file Windows hasn't seen before")
+    func freshNameEachCheck() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("winbar-marker-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let first = try #require(SharedFolder.writeMarker(in: folder.path))
+        SharedFolder.removeMarker(in: folder.path, named: first.name)
+        let second = try #require(SharedFolder.writeMarker(in: folder.path))
+        #expect(first.name != second.name)
+        #expect(first.name.hasPrefix(SharedFolder.markerName) && second.name.hasPrefix(SharedFolder.markerName))
+        let read = try String(contentsOf: folder.appendingPathComponent(second.name), encoding: .utf8)
+        #expect(read == second.token)
     }
 
     /// The comment that says why the report may run beside a step has to say what is true.

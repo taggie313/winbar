@@ -490,14 +490,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let vm = vmName else { return }
         guard running else { startVM(thenConnect: true); return }
         guard begin("Waiting for Windows…") else { return }
-        background({ () -> (String?, RDP.Readiness) in
+        background({ () -> Result<(String?, RDP.Readiness), WinbarError> in
+            // Paused in UTM still counts as running by its process, and a paused Windows never answers.
+            if case .failure(let error) = UTM.resumeIfPaused(vm) { return .failure(error) }
             // The VM may have been started from UTM moments ago, so give its guest agent time to answer.
             let host = Connection.resolveHost(vm: vm, timeout: 120)
-            return (host, host == nil ? .notReady : Connection.waitForRemoteDesktop(vm: vm, timeout: 120))
+            return .success((host, host == nil ? .notReady : Connection.waitForRemoteDesktop(vm: vm, timeout: 120)))
         }) { [weak self] result in
             guard let self else { return }
-            let (host, readiness) = result
             self.end()
+            let host: String?, readiness: RDP.Readiness
+            switch result {
+            case .failure(let error):
+                self.fail(error.title, error.detail)
+                return
+            case .success(let found):
+                (host, readiness) = found
+            }
             guard let host else {
                 self.fail(MenuCopy.noHostTitle(vm: vm), MenuCopy.noHostDetail)
                 return
@@ -531,7 +540,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let vm = vmName else { return }
         guard begin("Starting…") else { return }
         background({ () -> Result<RDP.Readiness, WinbarError> in
-            switch UTM.start(vm) {
+            switch UTM.start(vm, progress: { self.step($0) }) {
             case .failure(let error): return .failure(error)
             case .success:
                 self.step("Waiting for Windows…")
@@ -584,8 +593,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleConsole() {
         guard let vm = vmName else { return }
         let showing = consoleEnabled
-        guard confirm(MenuCopy.confirmTitle(vm: vm, screenOn: showing), MenuCopy.confirmBody(vm: vm, screenOn: showing),
-                      button: MenuCopy.bRestart) else { return }
+        // Whether UTM restarts too depends on which UTM this is (`UTMFixes`), and the question says so.
+        let body = MenuCopy.confirmBody(vm: vm, screenOn: showing,
+                                        restartsUTM: UTMFixes.displayChangeRestartsUTM(UTM.version))
+        guard confirm(MenuCopy.confirmTitle(vm: vm, screenOn: showing), body, button: MenuCopy.bRestart) else { return }
         guard begin(MenuCopy.working(screenOn: showing)) else { return }
         let interaction = Interaction(
             progress: { [weak self] in self?.step($0) },
@@ -595,8 +606,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             offerForceStop: offerForceStop)
         background({ () -> (Result<ConfigChanges, WinbarError>, SharedFolder.Checked?) in
             let result = Reconfigure.apply(ConfigChanges(display: showing ? .headless : .console), to: vm, interaction)
-            // A display change restarts UTM, which kills a shared folder set by script. Reconfigure
-            // wrote it again on the way through; this is where Windows is asked whether it took.
+            // A display change restarts UTM before 5.0.6 (and 5.0.6+ can quit by itself after it),
+            // which kills a shared folder set by script. Reconfigure wrote it again on the way
+            // through; this is where Windows is asked whether it took.
             guard case .success(let done) = result, let folder = done.sharedFolder else { return (result, nil) }
             return (result, try? SharedFolder.settle(folder, vm: vm, user: Config.rdpUser, interaction).get())
         }) { [weak self] result in
@@ -616,6 +628,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Silent when the folder came back: the display change is what was asked for. Said when
             // it didn't, because the alternative is a dead Z: and no message.
             guard let checked = result.1, checked.verification != .live else { return }
+            // A share written under UTM 5.0.6+ outlives UTM restarting, so that isn't the reason there.
+            guard !Config.sharedFolderDurable else {
+                self.inform("\(vm)'s shared folder isn't in Windows yet",
+                            SharedFolder.notArrivedYet(vm: vm, firstStart: SharedFolder.arrivesOnFirstStart))
+                return
+            }
             self.inform("\(vm)'s shared folder is empty in Windows now",
                         SharedFolder.diedWhenUTMRestarted + " Choose the folder again from this menu, or run winbar "
                             + "share in Terminal. " + SharedFolder.durableAdvice)
@@ -660,7 +678,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let worth = "Windows sees it as the \(SharedFolder.defaultDrive) drive. " + SharedFolder.worthKnowing
         guard confirm("Share “\(name)” with \(vm)?",
                       running ? SharedFolder.restartCost + "\n\n" + worth
-                              : "\(vm) is off, so nothing restarts now; Windows picks it up over the next start or two. " + worth,
+                              : "\(vm) is off, so nothing restarts now; Windows picks it up "
+                                + SharedFolder.arrivalWhenOff(firstStart: SharedFolder.arrivesOnFirstStart) + ". " + worth,
                       button: running ? "Restart" : "Share") else { return }
         guard begin("Sharing \(name)…") else { return }
         let interaction = Interaction(
@@ -691,11 +710,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                 case .stale:
                     self.fail("\(vm) is set to share \(name), but Windows hasn't got it yet",
-                              "Windows is given the folder UTM held at the start before this one. Restart \(vm) once more "
-                                  + "and it appears.")
+                              SharedFolder.notArrivedYet(vm: vm, firstStart: SharedFolder.arrivesOnFirstStart))
                 case .unknown(let why):
                     self.inform("\(vm) is set to share \(name)",
-                                "Winbar couldn't check from inside Windows (\(why)). It appears over the next start or two.")
+                                "Winbar couldn't check from inside Windows (\(why)). It appears "
+                                    + SharedFolder.arrivalWhenOff(firstStart: SharedFolder.arrivesOnFirstStart) + ".")
                 }
             }
         }

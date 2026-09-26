@@ -38,6 +38,16 @@ struct CreateStatusRecord: Codable, Equatable, Sendable {
     var plaintextSecret: Bool
 }
 
+/// The steps a cancel carried out, as `CreateCancelResult` reports them.
+struct CancelSteps: Codable, Equatable, Sendable {
+    var vmGone = false
+    var stopped = false
+    var deletedVM = false
+    var removedInstallDisks = false
+    var deletedSetupDisk = false
+    var deletedSavedPC = false
+}
+
 struct CreateJobState: Codable, Equatable, Sendable {
     /// The VM's UTM id once it exists; before that, a temporary id. It names the job's folder.
     var id: String
@@ -101,6 +111,9 @@ struct CreateJobState: Codable, Equatable, Sendable {
     /// What `status.txt` said, kept so that a resume which can't read it again (the VM is shut down,
     /// the guest agent is gone) doesn't report a failed install as a clean success.
     var status: CreateStatusRecord?
+    /// What a cancel did, written with the `.cancelled` ending, so a `winbar create --cancel` that
+    /// asked the watching process to do it can say the truth about it rather than assume.
+    var cancelSteps: CancelSteps?
 
     /// Whether this run wrote the saved PC in Windows App itself. Read from the note the job
     /// raised, not from `savedPCID`, because that is cleared again when a cancel takes the PC back

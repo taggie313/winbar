@@ -13,8 +13,15 @@ enum Setup {
         print("Winbar \(AppBundle.version) setup")
 
         // UTM first: every other row asks something of a VM, and without UTM there is none. Winbar
-        // offers to install it rather than handing out a command to go and type (H1).
-        if !Dependencies.state(of: .utm).isInstalled, DependencySetup.offer(.utm, assumeYes: options.assumeYes) {
+        // offers to install it rather than handing out a command to go and type (H1), and for a
+        // fresh install, which UTM: stable or, while UTM's next version is a beta, the beta.
+        let utmState = Dependencies.state(of: .utm)
+        if options.utmChannel != nil, utmState != .missing {
+            Term.note(UTMChannelCopy.notSwitching(version: UTM.version))
+        }
+        if !utmState.isInstalled,
+           DependencySetup.offer(.utm, assumeYes: options.assumeYes,
+                                 chooseUTM: DependencySetup.ChannelChoice(requested: options.utmChannel)) {
             // Everything below asks LaunchServices where UTM is, and it can take a moment to notice
             // an app that has just been copied in.
             waitUntil(timeout: 15, every: 1) { UTM.isInstalled }
@@ -31,7 +38,7 @@ enum Setup {
         if !VMProcesses.isRunning(vm) {
             if Term.confirm("\(vm) is stopped. Start it so Windows can be checked and tuned?", assumeYes: options.assumeYes) {
                 Term.note("Starting \(vm)…")
-                switch UTM.start(vm) {
+                switch UTM.start(vm, progress: { Term.note($0) }) {
                 case .failure(let error):
                     Term.error("\(error)")
                 case .success:
@@ -551,9 +558,10 @@ enum Setup {
         ctx.pending.sharedFolder = .folder(path)
     }
 
-    /// Windows is given the folder UTM held at the start before, so the restart that set it isn't
-    /// enough on its own. Setup checks from inside Windows and gives it the second start, rather than
-    /// ending with a folder that looks set and isn't (see `SharedFolder.settle`).
+    /// On 4.x Windows is given the folder UTM held at the start before, so the restart that set it
+    /// isn't enough on its own. Setup checks from inside Windows and gives it the second start where
+    /// that UTM needs one, rather than ending with a folder that looks set and isn't (see
+    /// `SharedFolder.settle`).
     private static func settleSharedFolder(_ folder: SharedFolder.Setting, vm: String) {
         let interaction = Interaction(
             progress: { Term.note($0) },
@@ -568,8 +576,8 @@ enum Setup {
             case .live:
                 print("   " + Term.paint("✓", .green) + " Windows has it: \(checked.drive ?? SharedFolder.defaultDrive)")
             case .stale:
-                print("   " + Term.paint("✗", .red) + " Windows is still serving the folder it had before. "
-                      + "Restart \(vm) once more (winbar restart), then winbar share to check.")
+                print("   " + Term.paint("✗", .red) + " "
+                      + SharedFolder.notArrivedYet(vm: vm, firstStart: SharedFolder.arrivesOnFirstStart))
                 print("   " + SharedFolder.durableAdvice)
             case .unknown(let why):
                 print("   · Set, but Winbar couldn't check it from inside Windows (\(why)). Run winbar share once Windows is up.")

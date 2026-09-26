@@ -361,8 +361,8 @@ enum MenuShape {
 ///
 /// The way back is **Bring Back Windows' Screen…**, not **Show Windows' Screen…**: the Saved PC
 /// step already has a **Show Windows' Screen** that brings UTM's window forward, and this one
-/// restarts the VM and UTM to give a VM its screen at all. One name for two actions would be worse
-/// than the jargon it replaced.
+/// restarts the VM (and, before UTM 5.0.6, UTM) to give a VM its screen at all. One name for two
+/// actions would be worse than the jargon it replaced.
 enum MenuCopy {
     static let runInBackground = "Run in the Background…"
     static let bringBackScreen = "Bring Back Windows' Screen…"
@@ -370,14 +370,16 @@ enum MenuCopy {
     /// The toggle's title for a VM that has its screen (`consoleEnabled`) or doesn't.
     static func displayToggle(screenOn: Bool) -> String { screenOn ? runInBackground : bringBackScreen }
 
-    /// The question before the restart, what it costs, and its button. Both ways restart the VM and UTM.
+    /// The question before the restart, what it costs, and its button. Both ways restart the VM, and
+    /// UTM too where the #7882 restart is owed (`UTMFixes.displayChangeRestartsUTM`): the person is
+    /// told what will stop, and on UTM 5.0.6+ that is no longer UTM, so it isn't said.
     /// "Far less power" became Finish's "a little less": both are a small fraction of one core
     /// (README, measured), and the window and the menu say the same thing about it.
     static func confirmTitle(vm: String, screenOn: Bool) -> String {
         screenOn ? "Run \(vm) in the background?" : "Bring back \(vm)'s screen?"
     }
-    static func confirmBody(vm: String, screenOn: Bool) -> String {
-        "This restarts \(vm) and UTM. " + (screenOn
+    static func confirmBody(vm: String, screenOn: Bool, restartsUTM: Bool) -> String {
+        (restartsUTM ? "This restarts \(vm) and UTM. " : "This restarts \(vm). ") + (screenOn
             ? "Afterwards Windows has no window of its own: you open it with Windows App, and it uses a little less "
                 + "of your Mac's power."
             : "UTM then shows Windows' screen in a window, which helps with boot menus or when Remote Desktop won't "

@@ -253,7 +253,8 @@ private let windowMarkdown: [String] = {
             SetupCopy.Connecting.waiting, SetupCopy.Connecting.didItAppearHeading,
             SetupCopy.Connecting.didItAppear(savedPC: true), SetupCopy.Connecting.didItAppear(savedPC: false)]
     all += [SetupCopy.Finish.choiceHeading, SetupCopy.Finish.backgroundBody, SetupCopy.Finish.keepBody,
-            SetupCopy.Finish.choiceRule, SetupCopy.Finish.afterRefusal, SetupCopy.Finish.couldNotConfirm,
+            SetupCopy.Finish.choiceRule(restartsUTM: true), SetupCopy.Finish.choiceRule(restartsUTM: false),
+            SetupCopy.Finish.afterRefusal, SetupCopy.Finish.couldNotConfirm,
             SetupCopy.Finish.notOffering, SetupCopy.Finish.alreadyInBackground, SetupCopy.Finish.notReady,
             SetupCopy.Finish.checking, SetupCopy.Finish.restartStopped, SetupCopy.Finish.readyHeading,
             SetupCopy.Finish.almostHeading]
@@ -414,7 +415,7 @@ struct SetupWindowCopy {
     func headlessOffer() {
         #expect(SetupCopy.Finish.backgroundBody.contains("It uses a little less of your Mac's power."))
         #expect(!SetupCopy.Finish.backgroundBody.contains("two thirds"))
-        #expect(SetupCopy.Finish.choiceRule.contains("only does it while this is the only one"))
+        #expect(SetupCopy.Finish.choiceRule(restartsUTM: true).contains("only does it while this is the only one"))
         #expect(SetupCopy.Finish.notOffering.contains("hasn't worked yet"))
     }
 
@@ -425,7 +426,8 @@ struct SetupWindowCopy {
     func plainWords() {
         let changes = ConfigChanges(cpuCores: 6, memoryMB: 12288, display: .headless)
         var words = [SetupCopy.Finish.choiceHeading, SetupCopy.Finish.bBackground, SetupCopy.Finish.bKeepScreen,
-                     SetupCopy.Finish.backgroundBody, SetupCopy.Finish.keepBody, SetupCopy.Finish.choiceRule,
+                     SetupCopy.Finish.backgroundBody, SetupCopy.Finish.keepBody,
+                     SetupCopy.Finish.choiceRule(restartsUTM: true), SetupCopy.Finish.choiceRule(restartsUTM: false),
                      SetupCopy.Finish.afterRefusal, SetupCopy.Finish.notOffering, SetupCopy.Finish.alreadyInBackground,
                      SetupCopy.Finish.notReady, SetupCopy.Finish.checking, SetupCopy.Finish.restartStopped,
                      SetupCopy.Finish.restartLine(vm: "winlab01", changes)]

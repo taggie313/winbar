@@ -207,7 +207,7 @@ struct FinishChoiceView: View {
                             send(.chooseBackground(false))
                         }
                     }
-                    Text(SetupCopy.markdown(SetupCopy.Finish.choiceRule))
+                    Text(SetupCopy.markdown(SetupCopy.Finish.choiceRule(restartsUTM: facts.displayChangeRestartsUTM)))
                         .font(.system(size: SetupStyle.smallestText))
                         .foregroundStyle(look.mutedText)
                         .setupProse()

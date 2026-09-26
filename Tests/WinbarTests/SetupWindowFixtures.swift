@@ -18,14 +18,14 @@ enum SetupFixtures {
         var facts = SetupFlow.Facts()
         facts.utm = utm
         facts.homebrew = brew
-        facts.utmFromHomebrew = fromHomebrew
+        facts.utmCask = fromHomebrew ? "utm" : nil
         facts.utmAnswers = answers
         facts.utmConsent = consent
         facts.utmQuarantined = quarantined
         facts.vms = vms
         facts.windowsApp = windowsApp
         facts.rows["H1"] = SetupFlow.Row(Recipe.check("H1")!, SetupRunner.dependencyRow(.utm, state: utm, brew: brew,
-                                                                                         brewHasCask: fromHomebrew))
+                                                                                         brewCask: fromHomebrew ? "utm" : nil))
         facts.rows["C1"] = SetupFlow.Row(Recipe.check("C1")!,
                                          SetupRunner.dependencyRow(.windowsApp, state: windowsApp, brew: brew))
         if let answers {
@@ -37,6 +37,18 @@ enum SetupFixtures {
     }
 
     static let installed = DependencyState.installed(version: "4.7.5")
+
+    /// An invented pair of UTM releases: a stable 4.x and a 5.x beta, each with its disk image's size.
+    static let channels = UTMChannels.Offer(
+        stable: UTMBuild(version: "4.9.3", tag: "v4.9.3", bytes: 198_765_432, sha256: String(repeating: "b2", count: 32)),
+        beta: UTMBuild(version: "5.2.1", tag: "v5.2.1", bytes: 287_654_321, sha256: String(repeating: "a1", count: 32)))
+
+    /// `facts` with the channel check's answer in it, as a read of a Mac without UTM has.
+    static func offering(_ facts: SetupFlow.Facts, _ offer: UTMChannels.Offer = channels) -> SetupFlow.Facts {
+        var facts = facts
+        facts.utmChannels = offer
+        return facts
+    }
     static let twoVMs: SetupFlow.VMListing = .listed([
         VMInfo(id: "5A1E0C3D-0000-4000-8000-00000000000D", name: "winlab01", backend: "qemu", icon: "windows"),
         VMInfo(id: "5A1E0C3D-0000-4000-8000-00000000000A", name: "atelier", backend: "qemu", icon: "linux"),
@@ -123,6 +135,11 @@ enum SetupFixtures {
             ("reading", state(inFlight: flight(.checkAgain(.lookAround)))),
             ("needs-utm-download", state(facts: facts(utm: .missing))),
             ("needs-utm-homebrew", state(facts: facts(utm: .missing, brew: brew))),
+            // While UTM's next major version is a beta: stable or the beta, stable chosen.
+            ("needs-utm-choice", state(facts: offering(facts(utm: .missing, brew: brew)))),
+            // Neither GitHub nor Homebrew could say: stable, and the one line that says so.
+            ("needs-utm-unchecked", state(facts: offering(facts(utm: .missing),
+                                                           UTMChannels.Offer(stable: nil, beta: nil, couldNotCheck: true)))),
             ("rereading", state(facts: facts(utm: .missing), inFlight: flight(.checkAgain(.lookAround)))),
             ("needs-utm-update", state(facts: facts(utm: old, brew: brew, fromHomebrew: true))),
             ("needs-utm-update-by-hand", state(facts: facts(utm: old, brew: brew))),

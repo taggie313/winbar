@@ -530,9 +530,13 @@ struct FinishWayBackTests {
 
     @Test("The choice's rule and the background note name the menu item exactly")
     func words() {
-        #expect(read(SetupCopy.Finish.choiceRule).contains(MenuCopy.bringBackScreen))
-        #expect(read(SetupCopy.Finish.choiceRule).contains("only does it while this is the only one"))
-        #expect(!SetupCopy.Finish.choiceRule.contains("can switch it back later"))
+        // Both ways, with a UTM restart (before UTM 5.0.6) and without one.
+        for restartsUTM in [true, false] {
+            let rule = SetupCopy.Finish.choiceRule(restartsUTM: restartsUTM)
+            #expect(read(rule).contains(MenuCopy.bringBackScreen))
+            #expect(!rule.contains("can switch it back later"))
+        }
+        #expect(read(SetupCopy.Finish.choiceRule(restartsUTM: true)).contains("only does it while this is the only one"))
         #expect(read(SetupCopy.Finish.inBackground).contains(MenuCopy.bringBackScreen))
         #expect(boldRuns(SetupCopy.markdown(SetupCopy.Finish.inBackground)) == [MenuCopy.bringBackScreen])
     }

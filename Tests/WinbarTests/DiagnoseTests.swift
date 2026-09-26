@@ -1542,7 +1542,12 @@ struct DiagnoseSettings {
         #expect(Diagnose.describe(["a", "b"]) == "a, b")
         #expect(Diagnose.describe([]) == "(empty list)")
         #expect(Diagnose.describe(nil) == "(not set)")
-        #expect(Diagnose.describe(Date(timeIntervalSince1970: 0)).hasPrefix("1970-01-01"))
+        // The date is written in this Mac's time zone, with its offset, so the day depends on where the
+        // test runs: midnight UTC was 1969 anywhere west of Greenwich, and this line failed in New
+        // York. Midday UTC is the same day from UTC-11 to UTC+11, and the shape is what's asserted.
+        let written = Diagnose.describe(Date(timeIntervalSince1970: 12 * 3600))
+        #expect(written.wholeMatch(of: #/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} (Z|[+-]\d{2}:\d{2})/#) != nil, "\(written)")
+        if abs(TimeZone.current.secondsFromGMT()) < 11 * 3600 { #expect(written.hasPrefix("1970-01-01")) }
     }
 
     @Test("A VM whose record predates its UTM id is filed under its name, and reads that way")

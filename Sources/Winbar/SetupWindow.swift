@@ -594,6 +594,39 @@ enum LookAroundPage {
         /// The default button: Return presses it.
         var primary: Button?
         var secondary: Button?
+        /// "Which UTM?" on the card for a UTM that's missing: stable or the beta, and which is chosen.
+        /// nil everywhere else, and for a missing UTM with nothing to choose and nothing to say.
+        var channels: ChannelPicker? = nil
+    }
+
+    /// The choice between UTM's stable release and its beta, for a fresh install only: an installed
+    /// UTM is never switched. Two options while a beta is on offer (`UTMChannels.Offer`), stable
+    /// chosen until the person picks the other; none, with the one honest line, when nothing could be
+    /// checked.
+    struct ChannelPicker: Equatable {
+        struct Option: Equatable {
+            var channel: UTMChannel
+            var title: String
+            var body: String
+        }
+        var options: [Option]
+        var selected: UTMChannel
+        /// `UTMChannelCopy.couldNotCheck`, when neither GitHub nor Homebrew could say.
+        var note: String?
+
+        /// The picker for a snapshot: nil when there is neither a choice nor a note. Pure.
+        static func from(_ offer: UTMChannels.Offer?, selected: UTMChannel) -> ChannelPicker? {
+            guard let offer else { return nil }
+            if let beta = offer.beta {
+                return ChannelPicker(options: [
+                    Option(channel: .stable, title: UTMChannelCopy.stableTitle(offer.stable),
+                           body: UTMChannelCopy.stableBody(offer.stable)),
+                    Option(channel: .beta, title: UTMChannelCopy.betaTitle(beta), body: UTMChannelCopy.betaBody(beta)),
+                ], selected: selected, note: nil)
+            }
+            return offer.couldNotCheck ? ChannelPicker(options: [], selected: .stable, note: UTMChannelCopy.couldNotCheck)
+                                       : nil
+        }
     }
 
     /// Who macOS names in the Automation prompt. The window only ever runs as Winbar.app.
@@ -619,6 +652,7 @@ enum LookAroundPage {
             if !state.refreshing, page.card != .none {
                 if case .installFailed = page.card {} else {
                     page.card = .none
+                    page.channels = nil
                     page.title = SetupCopy.LookAround.checkingTitle
                     page.note = SetupCopy.LookAround.checkingNote
                     page.primary = nil
@@ -681,14 +715,17 @@ enum LookAroundPage {
                             primary: Button(title: SetupCopy.bTryAgain, action: .run(.installUTM), enabled: idle))
             }
             let plan = utmPlan(facts)
+            let pick = utmPick(facts)
             let actionable = SetupRunner.actionable(plan)
             let mark: CreateProgress.Mark
             if case .wrongSignature = dependencyState { mark = .failed } else { mark = .attention }
             // The row is only its mark: "not installed; setup can download it…" said the title's news
             // in the terminal's words, and "setup" read as the command.
             let card = Card.needsUTM(heading: SetupCopy.LookAround.needsHeading(dependencyState),
-                                     summary: SetupCopy.LookAround.summary(plan, state: dependencyState, host: host.name),
-                                     details: SetupCopy.LookAround.details(plan, state: dependencyState, host: host.name))
+                                     summary: SetupCopy.LookAround.summary(plan, state: dependencyState, host: host.name,
+                                                                           utm: pick),
+                                     details: SetupCopy.LookAround.details(plan, state: dependencyState, host: host.name,
+                                                                           utm: pick))
             if case .wrongSignature = dependencyState {
                 // The fix is in the Finder, so that's the button; Check Again is for after it (and the
                 // window looks again by itself when it becomes key, `SetupJourneyActions.returnRead`).
@@ -696,8 +733,13 @@ enum LookAroundPage {
                             primary: Button(title: SetupCopy.LookAround.bShowInFinder, action: .showUTMInFinder),
                             secondary: checkAgain)
             }
-            return page(Row(mark: mark, title: utmTitle), pendingVMs, windowsApp, card: card,
-                        primary: actionable ? installButton(facts, enabled: idle) : checkAgain)
+            var needs = page(Row(mark: mark, title: utmTitle), pendingVMs, windowsApp, card: card,
+                             primary: actionable ? installButton(facts, enabled: idle) : checkAgain)
+            // Which UTM, for a fresh install only (`facts.utmChannels` is read only while UTM is missing).
+            if dependencyState == .missing, actionable {
+                needs.channels = ChannelPicker.from(facts.utmChannels, selected: pick.channel)
+            }
+            return needs
         case .askUTM:
             // Found, and nothing wrong with it: a tick, with its version. It sat at the pending circle
             // beside "UTM 4.7.5", found but drawn as not looked at yet.
@@ -758,7 +800,15 @@ enum LookAroundPage {
     /// The plan the window carries out for UTM, from the snapshot: the same one the runner judges the
     /// press against and the machine carries out.
     private static func utmPlan(_ facts: SetupFlow.Facts) -> InstallPlan? {
-        Dependencies.windowPlan(for: .utm, state: facts.utm, brew: facts.homebrew, brewHasCask: facts.utmFromHomebrew)
+        Dependencies.windowPlan(for: .utm, state: facts.utm, brew: facts.homebrew, brewCask: facts.utmCask,
+                                utm: utmPick(facts))
+    }
+
+    /// Which UTM a fresh install gets: the channel the person chose on the card, while it's on offer;
+    /// stable otherwise. The machine picks with the same call (`LiveSetupMachine.perform`), so the
+    /// button's words and what it does can't part. Pure.
+    static func utmPick(_ facts: SetupFlow.Facts) -> UTMPick {
+        UTMChannels.pick(facts.answers.utmChannel, from: facts.utmChannels, homebrew: facts.homebrew != nil)
     }
 
     /// The button that installs UTM, in the words of the plan the window will carry out.
@@ -842,6 +892,8 @@ enum SetupCommand: Equatable {
     /// The placeholder's **New Windows VM…**: the create window, as the menu item opens it.
     case newWindowsVM
     case pickVM(String)
+    /// Step 1's "Which UTM?": an answer, not work, which goes with **Install**'s press.
+    case chooseUTMChannel(UTMChannel)
     case useVM(name: String, id: String)
     case startVM(String)
     case continueFromVM
@@ -1283,7 +1335,7 @@ final class SetupWindowController: NSObject, ObservableObject, NSWindowDelegate 
         // it is refused too (`run`). Not for ticking a VM in the list, hiding Armie or asking for help,
         // which answer nothing the refusal said.
         switch command {
-        case .pickVM, .hideArmie, .sendReport: break
+        case .pickVM, .chooseUTMChannel, .hideArmie, .sendReport: break
         default: state.refusal = nil
         }
         switch command {
@@ -1313,6 +1365,11 @@ final class SetupWindowController: NSObject, ObservableObject, NSWindowDelegate 
             if let url = UTM.appURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
         case .perform(.next):
             state.step = .vm
+        case .chooseUTMChannel(let channel):
+            // Not once the install has started: it's already fetching the one chosen before.
+            guard state.inFlight?.work != .installUTM else { return }
+            state.answers.utmChannel = channel
+            syncAnswers()
         case .hideArmie:
             settings.hideArmie()
             state.armieHidden = true
@@ -2041,6 +2098,9 @@ struct LookAroundView: View {
             } else {
                 drawnCard
             }
+            if let channels = page.channels {
+                UTMChannelPickerView(picker: channels) { send(.chooseUTMChannel($0)) }
+            }
             let details = LookAroundPage.details(page.card)
             if !details.isEmpty {
                 DetailsDisclosure {
@@ -2086,6 +2146,75 @@ struct LookAroundView: View {
         default:
             EmptyView()
         }
+    }
+}
+
+/// Step 1's "Which UTM?" for a fresh install: the two options as radio rows, drawn as the VM list's
+/// are (`VMChoiceList`), with stable chosen until the person picks the beta; or, when nothing could
+/// be checked, the one honest line on its own.
+struct UTMChannelPickerView: View {
+    let picker: LookAroundPage.ChannelPicker
+    let choose: (UTMChannel) -> Void
+
+    var body: some View {
+        withSetupAppearance { look in
+            VStack(alignment: .leading, spacing: 8) {
+                if !picker.options.isEmpty {
+                    Text(UTMChannelCopy.heading).fontWeight(.semibold).accessibilityAddTraits(.isHeader)
+                    let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    VStack(spacing: 0) {
+                        ForEach(Array(picker.options.enumerated()), id: \.offset) { index, option in
+                            if index > 0 { Rectangle().fill(look.stroke).frame(height: 1).padding(.leading, 40) }
+                            UTMChannelRow(option: option, selected: option.channel == picker.selected) {
+                                choose(option.channel)
+                            }
+                        }
+                    }
+                    .clipShape(shape)
+                    .overlay { shape.strokeBorder(look.stroke, lineWidth: look.increasedContrast ? 1.5 : 1) }
+                    .frame(maxWidth: SetupStyle.textWidth, alignment: .leading)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel(UTMChannelCopy.heading)
+                }
+                if let note = picker.note { QuietText(AttributedString(note)).setupProse() }
+            }
+        }
+    }
+}
+
+/// One option in `UTMChannelPickerView`: the whole row is the button, its name over what it is.
+struct UTMChannelRow: View {
+    let option: LookAroundPage.ChannelPicker.Option
+    let selected: Bool
+    let press: () -> Void
+    @Environment(\.quietText) private var quiet
+
+    var body: some View {
+        Button(action: press) {
+            withSetupAppearance { look in
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                        .font(.system(size: 16))
+                        .foregroundStyle(selected ? look.accentText : quiet)
+                        .frame(width: 16)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(option.title).fontWeight(.semibold)
+                        Text(option.body).font(.system(size: SetupStyle.smallestText)).foregroundStyle(quiet)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+                .background(selected ? look.accentText.opacity(0.08) : Color.clear)
+            }
+        }
+        .buttonStyle(.plain)
+        // The ring is drawn, not read: VoiceOver says which option is chosen as a selected button.
+        .accessibilityLabel(option.title + ". " + option.body)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 }
 

@@ -248,6 +248,7 @@ struct ArmiePlacementTests {
         "installing-armie-hidden": .absent,
         // UTM to install is the ordinary way through, not trouble.
         "needs-utm-download": .silent, "needs-utm-homebrew": .silent, "needs-utm-update": .silent,
+        "needs-utm-choice": .silent, "needs-utm-unchecked": .silent,
         "needs-utm-update-by-hand": .silent,
         // Trouble: a copy that isn't the real UTM, an install that failed, UTM answering with an error,
         // a list that failed.

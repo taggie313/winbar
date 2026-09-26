@@ -32,7 +32,8 @@ winbar setup
 2. Open **Winbar**. The first time, on a Mac where it hasn't been set up, the **Set Up Winbar**
    window opens by itself; after that it's **Set Up Winbar…** in Winbar's menu, whenever you like.
 3. The window takes it one step at a time, and says before each macOS permission prompt what it's for:
-   - **Look around** — checks for UTM, and installs it if it's missing.
+   - **Look around** — checks for UTM, and installs it if it's missing: the stable release, or
+     UTM's beta if you choose it ([Which UTM](#which-utm)).
    - **The VM** — uses a Windows VM you already have, or makes a new one and installs Windows 11 in
      it (you'll need a Windows 11 ARM64 ISO from Microsoft).
    - **Tune** — checks Windows' settings, fixes what it can, and shows the result of each.
@@ -108,7 +109,9 @@ the size of it did not.
   and `winbar create` offer to install it for you — through Homebrew if you have it, otherwise
   from UTM's own download, which Winbar checks is notarized by Apple and signed by UTM's
   developer before it opens it. By hand: `brew install --cask utm`, the Mac App Store or
-  [getutm.app](https://mac.getutm.app).
+  [getutm.app](https://mac.getutm.app). Winbar works with **UTM 4.7.5**, the stable release, and
+  with **UTM 5.0.6**, the beta (see [Which UTM](#which-utm) for what differs); `winbar doctor`
+  names any UTM Winbar hasn't been tested with.
 - A **Windows 11 ARM64** VM in UTM, using UTM's default **Shared Network** mode, with the
   **UTM Guest Tools** installed inside Windows (Winbar talks to Windows through them). No VM yet?
   `winbar create` makes one and installs Windows for you; you'll need a Windows 11 ARM64 ISO from
@@ -185,7 +188,48 @@ brew install --cask utm windows-app      # skip any you already have
 
 Winbar asks GitHub once a day whether there is a newer release, and adds one menu item when there
 is. It never downloads or installs an update by itself, and says nothing at all when it can't
-reach GitHub. `winbar --version --check` asks on demand.
+reach GitHub. `winbar --version --check` asks on demand. The only other time it asks GitHub
+anything is when setup finds UTM isn't installed, before it offers to install it
+([Which UTM](#which-utm)).
+
+### Which UTM
+
+While UTM's next major version is still a beta (UTM 5, as of September 2026), Set Up Winbar and
+`winbar setup` offer a choice when they install UTM: **stable (recommended)**, which is what Winbar
+is tested with, or **the beta**, with what it changes and what it costs said beside it, and whether
+Winbar has been tested with it yet. The window shows the two with stable already chosen;
+`winbar setup` asks `[1] stable (recommended) [2] beta`, and Return is stable. (`winbar create`
+installs stable without asking.) `--yes` always picks stable, and
+`--utm-channel stable` or `--utm-channel beta` chooses without asking. With Homebrew, the beta comes
+from Homebrew's `utm@beta` cask; without it, from the beta's own release on GitHub, checked against
+GitHub's checksum for it as well as Apple's notarization and UTM's signature.
+
+It's for a fresh install only. A UTM that's already installed is never switched: both are the same
+app with one library of VMs, and a VM suspended under one may not resume under the other. An update
+Winbar offers for a UTM that's too old goes through whichever cask installed it. The day UTM's next
+version ships as stable, the choice goes away by itself.
+
+What changes with UTM 5.0.6, which Winbar takes care of:
+
+- Turning Windows' screen off or on no longer restarts UTM, so other VMs in UTM don't stand in the
+  way ([What happens](#what-happens)).
+- A shared folder reaches Windows at the first start and survives UTM restarting
+  ([A shared folder](#a-shared-folder)).
+- UTM 5.0.6 quits by itself if a settings change closes its last window, before it has saved the
+  change. Winbar tells UTM to keep running while it makes the change, so you don't have to keep
+  UTM's window open; if UTM quits anyway, Winbar opens it again and sends the change once more.
+- The first time it runs after an update, UTM 5 shows a What's New window, and while that's open
+  UTM won't quit. Winbar asks you to close it when it needs UTM to quit.
+- UTM 5.0.6 can't suspend a VM with GPU acceleration to disk, and Winbar's VMs have it. Winbar
+  never suspends a VM; shut Windows down (**Shut Down** or `winbar stop`) as you would with 4.7.5.
+
+To offer it, Winbar asks GitHub which UTM releases there are as soon as setup finds UTM isn't
+installed, before it offers to install it (so opening Set Up Winbar, or running `winbar setup` without `--yes`,
+on a Mac without UTM asks even if you then install nothing). It's one request with no account; a good
+answer is remembered for a day. While Winbar's app stays open a failed check is retried at most every
+ten minutes; each `winbar setup` run asks afresh. If GitHub can't be reached it uses what it heard in
+the last week, or what Homebrew's own casks say; failing both, it says it couldn't check and installs
+the stable UTM.
 
 ## Creating a new Windows VM
 
@@ -286,12 +330,13 @@ any key to boot from CD" prompt for you, and watches Windows Setup through the f
 console. When Windows is up it installs the Guest Tools, applies your choices, shuts it down,
 detaches the install disks from UTM and starts it again — in the background, with no screen of its
 own (the command line calls this headless), unless you gave `--console`, Remote Desktop can't be
-reached, or another VM is running in UTM. Taking the screen away restarts UTM while the VM is shut
-down, which would stop any other VM it's running, so with one of those up the install ends with the
-screen still on instead. If another VM starts while Winbar is finishing, it leaves UTM alone and leaves
-your VM stopped, and says to close the other VMs and run `winbar start`. You can close the window
-or press Ctrl-C at any point: the install carries on, and `winbar create --resume` picks it back
-up.
+reached, or (before UTM 5.0.6) another VM is running in UTM. Before 5.0.6, taking the screen away
+restarts UTM while the VM is shut down, which would stop any other VM it's running, so with one of
+those up the install ends with the screen still on instead. If another VM starts while Winbar is
+finishing, it leaves UTM alone and leaves your VM stopped, and says to close the other VMs and run
+`winbar start`. UTM 5.0.6 fixed the crash that restart avoids, so there other VMs don't stand in the
+way. You can close the window or press Ctrl-C at any point: the install carries on, and `winbar
+create --resume` picks it back up.
 
 What's left for you afterwards is what `winbar setup` walks through below: trusting the VM's
 certificate and allowing Accessibility. The PC is already saved in Windows App — `create` does that
@@ -411,6 +456,7 @@ You'll meet these in this order. Winbar opens the right window for each one.
 | `--no-visual-tweaks` | Leave Windows' animations and transparency alone (remembered for this VM; `winbar config --no-visual-tweaks no` undoes it) |
 | `--keep-bitlocker` | Don't decrypt BitLocker (remembered for this VM; `winbar config --keep-bitlocker no` undoes it) |
 | `--headless` / `--console` | Choose the display mode now instead of being asked |
+| `--utm-channel stable\|beta` | Which UTM to install when it isn't installed yet, instead of being asked (see [Which UTM](#which-utm)). An installed UTM is never switched |
 
 ## The menu
 
@@ -467,20 +513,23 @@ the folder and the drive. Nobody needs one — doctor treats having none as a pl
 
 Three things are worth knowing, and Winbar says all three rather than leaving you to find out:
 
-- **The VM has to restart.** UTM hands the shared folder to Windows only at start-up, and it hands
-  over the one it had at the *previous* start — so a change can take two restarts. Winbar asks
-  before restarting, then checks from inside Windows and restarts a second time only if Windows is
-  still serving the old folder. It never reports the folder as there without having looked.
+- **The VM has to restart.** UTM hands the shared folder to Windows only at start-up. Before UTM
+  5.0.6 it hands over the one it had at the *previous* start, so a change can take two restarts;
+  with 5.0.6 one is enough. Winbar asks before restarting, then checks from inside Windows and, on
+  an older UTM, restarts a second time only if Windows is still serving the old folder. It never
+  reports the folder as there without having looked.
 - **No spaces in the path.** `~/Shared with Windows` mounts as an empty drive and every write fails
   with "A device attached to the system is not functioning"; the same files at
   `~/Shared-with-Windows` work in both directions. Winbar refuses a path with a space and suggests
   the hyphenated name.
-- **A folder set this way doesn't survive UTM restarting.** Setting it by script is all Winbar can
-  automate, and what UTM stores for it is a bookmark that lives only as long as the UTM that made
-  it: relaunch UTM and the drive comes back empty. Winbar restarts UTM for every display change, so
-  it writes the folder again on the way through, checks from inside Windows, and tells you when it
-  couldn't. **If you want one that simply stays, pick it in UTM itself:** shut the VM down and
-  choose a Shared Directory on its details screen. That one is a proper bookmark: it survives UTM
+- **Before UTM 5.0.6, a folder set this way doesn't survive UTM restarting.** Setting it by script
+  is all Winbar can automate, and what UTM 4.x stores for it is a bookmark that lives only as long
+  as the UTM that made it: relaunch UTM and the drive comes back empty. Winbar restarts that UTM for
+  every display change, so it writes the folder again on the way through, checks from inside
+  Windows, and tells you when it couldn't. UTM 5.0.6 stores a proper bookmark instead, so a folder
+  Winbar sets there stays put (one set under 4.x gets the old treatment until Winbar next sets it).
+  **If you want one that simply stays on any UTM, pick it in UTM itself:** shut the VM down and choose a
+  Shared Directory on its details screen. That one is a proper bookmark: it survives UTM
   restarting, and Windows has it from the very next start rather than the one after. Winbar never
   overwrites it — when a folder it didn't write stops working, `winbar share` says so and *offers*
   to write it again, explaining that its rewrite is the weaker kind.
@@ -655,10 +704,24 @@ Privacy & Security > Automation*. To get the prompt back instead:
 `tccutil reset AppleEvents net.elusive.winbar` (for the `winbar` command, use your terminal's
 bundle id, such as `com.apple.Terminal`).
 
-**Winbar says UTM has to restart before the VM starts.** UTM only picks up a display change once it
-restarts, and starting the VM from the old UTM crashes UTM along with every VM it runs. Winbar
-restarts UTM itself when nothing else is running in it; otherwise stop your other VMs (or quit
-UTM yourself) and start again.
+**Winbar says UTM has to restart before the VM starts.** Before 5.0.6, UTM only picks up a display
+change once it restarts, and starting the VM from the old UTM crashes UTM along with every VM it
+runs (utmapp/UTM#7882). Winbar restarts UTM itself when nothing else is running in it; otherwise stop
+your other VMs (or quit UTM yourself) and start again. UTM 5.0.6 fixed the crash, so there a display
+change doesn't need the restart.
+
+**Winbar says UTM is showing a window that stops it quitting.** UTM won't quit while one of its
+windows has a question or sheet up: with UTM 5, usually its What's New window, the first time it
+runs after an update. Close that window in UTM. Winbar asks UTM to quit once more after 30 seconds;
+if it still refuses, run the command again once the window is closed.
+
+**`winbar connect` asked Windows App to open the saved PC, but no desktop appeared.** Winbar presses
+the saved PC in Windows App for you and says "Opened" only when a new window follows. If none does,
+double-click the PC in Windows App; that's the same saved PC and password.
+
+**Winbar says UTM is busy with a VM that's off.** UTM 5.0.6 works on a stopped VM's disks for
+snapshots and saved states, and while it does it calls the VM "pausing" or "resuming" and won't start
+it. Winbar waits up to two minutes; if it's still busy, let UTM finish and try again.
 
 **You use Tailscale (or another VPN) with an exit node.** An exit node can route the VM's
 private addresses into the tunnel. Winbar's status check is pinned to the VM's network, so it

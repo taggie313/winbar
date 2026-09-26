@@ -1254,7 +1254,8 @@ struct SetupRunnerSnapshot {
         var mac = SetupRunner.Readings()
         mac.utm = .tooOld(version: "4.0.9", minimum: "4.5")
         mac.homebrew = "/opt/homebrew/bin/brew"
-        mac.utmFromHomebrew = true
+        mac.utmCask = "utm@beta"
+        mac.utmChannels = UTMChannels.Offer(stable: UTMBuild(version: "4.9.1"), beta: UTMBuild(version: "5.2.0"))
         mac.utmAnswers = .silent(seconds: 20)
         mac.utmConsent = .wouldPrompt
         mac.utmQuarantined = true
@@ -1281,7 +1282,8 @@ struct SetupRunnerSnapshot {
         var expected = SetupFlow.Facts()
         expected.utm = .tooOld(version: "4.0.9", minimum: "4.5")
         expected.homebrew = "/opt/homebrew/bin/brew"
-        expected.utmFromHomebrew = true
+        expected.utmCask = "utm@beta"
+        expected.utmChannels = UTMChannels.Offer(stable: UTMBuild(version: "4.9.1"), beta: UTMBuild(version: "5.2.0"))
         expected.utmAnswers = .silent(seconds: 20)
         expected.utmConsent = .wouldPrompt
         expected.utmQuarantined = true
@@ -1328,12 +1330,10 @@ struct SetupRunnerSnapshot {
     /// else. The `Mirror` check keeps the list whole: a flag added to `Readings` fails here until it
     /// is added to the arguments too.
     @Test("Each flag read lands in its own field and no other",
-          arguments: ["utmFromHomebrew", "utmQuarantined", "guestAnswers", "installRunning", "keepBitLocker",
-                      "windowsAppRunning"])
+          arguments: ["utmQuarantined", "guestAnswers", "installRunning", "keepBitLocker", "windowsAppRunning"])
     func eachFlagAlone(_ field: String) {
         var mac = SetupRunner.Readings()
         switch field {
-        case "utmFromHomebrew": mac.utmFromHomebrew = true
         case "utmQuarantined": mac.utmQuarantined = true
         case "guestAnswers": mac.guestAnswers = true
         case "installRunning": mac.installRunning = true
@@ -1352,8 +1352,7 @@ struct SetupRunnerSnapshot {
     @Test("The flags above are every flag Readings has")
     func everyFlagListed() {
         let flags = Mirror(reflecting: SetupRunner.Readings()).children.filter { $0.value is Bool }.compactMap(\.label)
-        #expect(Set(flags) == ["utmFromHomebrew", "utmQuarantined", "guestAnswers", "installRunning", "keepBitLocker",
-                               "windowsAppRunning"])
+        #expect(Set(flags) == ["utmQuarantined", "guestAnswers", "installRunning", "keepBitLocker", "windowsAppRunning"])
     }
 
     /// The names of a value's `Bool` fields that are true: its own flags, not those of the structs

@@ -469,7 +469,8 @@ enum Recipe {
                   }
                   return sharedFolderStatus(folder: folder, guest: ctx.guestOutput.map(SharedFolder.guestView),
                                             running: ctx.process != nil, token: ctx.sharedFolderMarker,
-                                            utmRestarted: SharedFolder.brokenByUTMRestart(vm: ctx.vmName ?? ""))
+                                            utmRestarted: SharedFolder.brokenByUTMRestart(vm: ctx.vmName ?? ""),
+                                            firstStart: SharedFolder.arrivesOnFirstStart)
               },
               apply: { ctx in
                   guard let vm = ctx.vmName else { return .failure(WinbarError("No VM chosen")) }
@@ -574,16 +575,16 @@ enum Recipe {
     /// signed download, or opens the App Store and waits); manual means only the person can.
     static func dependencyStatus(_ dependency: Dependency) -> Status {
         dependencyStatus(dependency, state: Dependencies.state(of: dependency), brew: Homebrew.path,
-                         brewHasCask: Homebrew.hasCask(dependency.cask, brew: Homebrew.path))
+                         brewCask: Homebrew.installedCask(dependency, brew: Homebrew.path))
     }
 
     /// The same row from a state already read. `Dependencies.state` runs `codesign` twice, a second
     /// or so on UTM's bundle, so the setup window, which reads the state for its snapshot anyway,
     /// builds H1 and C1 from that rather than asking again.
     static func dependencyStatus(_ dependency: Dependency, state: DependencyState, brew: String?,
-                                 brewHasCask: Bool = false) -> Status {
+                                 brewCask: String? = nil) -> Status {
         dependencyStatus(dependency, state: state,
-                         plan: Dependencies.plan(for: dependency, state: state, brew: brew, brewHasCask: brewHasCask))
+                         plan: Dependencies.plan(for: dependency, state: state, brew: brew, brewCask: brewCask))
     }
 
     /// The same row, saying what `plan` would do. The terminal passes its own plan; the setup window
@@ -624,11 +625,12 @@ enum Recipe {
     }
 
     /// The row's own words for a dependency's state. Pure.
-    static func dependencyDetail(_ dependency: Dependency, state: DependencyState) -> String {
+    static func dependencyDetail(_ dependency: Dependency, state: DependencyState,
+                                 tested: [String] = CreatePreflight.testedVersions) -> String {
         switch state {
         case .installed(let version):
             let row = "\(dependency.name) \(version ?? "(unknown version)")"
-            guard dependency == .utm, let version, let note = utmVersionNote(version) else { return row }
+            guard dependency == .utm, let version, let note = utmVersionNote(version, tested: tested) else { return row }
             return "\(row) (\(note))"
         case .missing:
             return "not installed"
@@ -644,9 +646,9 @@ enum Recipe {
     /// doctor` still exits 0: which UTM this Mac has is a fact, not a fault. The point is that a
     /// bug report says which UTM it came from without anyone having to ask
     /// (docs/internal/specs/utm5-support.md §3.2). Windows App's C1 row never gets this.
-    private static func utmVersionNote(_ version: String) -> String? {
-        let tested = "Winbar is tested against \(CreatePreflight.testedList())"
-        switch CreatePreflight.standing(version) {
+    private static func utmVersionNote(_ version: String, tested versions: [String]) -> String? {
+        let tested = "Winbar is tested against \(CreatePreflight.testedList(versions))"
+        switch CreatePreflight.standing(version, tested: versions) {
         case .tested, nil: return nil
         case .untested: return tested
         case .prerelease: return "a pre-release; \(tested)"
@@ -666,7 +668,7 @@ enum Recipe {
     /// Sharing nothing is informational, never a failure: most people never want a shared folder, and
     /// doctor must still exit 0 for them.
     static func sharedFolderStatus(folder: String?, guest: SharedFolder.GuestView?, running: Bool,
-                                   token: String? = nil, utmRestarted: Bool = false) -> Status {
+                                   token: String? = nil, utmRestarted: Bool = false, firstStart: Bool = false) -> Status {
         guard let folder else {
             return .info("nothing shared (winbar share <folder> sets one up)")
         }
@@ -689,9 +691,7 @@ enum Recipe {
         }
         if guest.seesPlaceholder {
             return .manual("\(name) is set, but Windows is still showing UTM's placeholder",
-                           how: "Windows is given the folder UTM held at the start before this one, so a change needs a "
-                               + "second start. Restart the VM (winbar restart, or Restart in the menu); winbar share "
-                               + "checks from inside Windows and says when it has really arrived.")
+                           how: SharedFolder.notArrivedYet(vm: "the VM", firstStart: firstStart))
         }
         if !guest.webdavdRunning {
             return .manual("\(name) is shared, but Windows' spice-webdavd isn't running (\(guest.webdavd))",
@@ -716,10 +716,11 @@ enum Recipe {
                                + "kind and dies at the next UTM restart too. " + SharedFolder.durableAdvice)
         }
         if let token, guest.marker != token {
-            return .manual("\(name) is set, but Windows is still serving the folder it had before",
-                           how: "Windows is given the folder UTM held at the start before this one, so a change needs a "
-                               + "second start. Restart the VM (winbar restart, or Restart in the menu); winbar share "
-                               + "checks from inside Windows and says when it has really arrived.")
+            // "The folder it had before" is 4.x's two-start rule; UTM 5.0.6 serves the folder at the
+            // first start, so there it would be untrue (spike rows 11d, 16s).
+            return .manual(firstStart ? "\(name) is set, but Windows isn't serving it yet"
+                                      : "\(name) is set, but Windows is still serving the folder it had before",
+                           how: SharedFolder.notArrivedYet(vm: "the VM", firstStart: firstStart))
         }
         // A probe that couldn't read the share is worth saying, but it isn't a failure: the guest
         // agent runs as SYSTEM, which doesn't always get to walk another session's WebDAV mount.

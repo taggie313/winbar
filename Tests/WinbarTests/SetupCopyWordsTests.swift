@@ -54,7 +54,8 @@ private let seen: [String] = {
     passed.answers.leftAlone = ["H7", "C2"]
     all += [WizardStep.certificate, .savedPC, .connect].compactMap { SetupCopy.passedOver($0, passed) }
     all += [SetupCopy.Finish.passedOverHeading, SetupCopy.goBackTo(.certificate), SetupCopy.goBackTo(.savedPC),
-            SetupCopy.Finish.choiceRule, SetupCopy.Finish.inBackground]
+            SetupCopy.Finish.choiceRule(restartsUTM: true), SetupCopy.Finish.choiceRule(restartsUTM: false),
+            SetupCopy.Finish.inBackground]
     for id in SetupFlow.checks(in: .tune) {
         let recipe = Recipe.check(id)!
         all += [SetupCopy.Tune.title(id, recipe: recipe.title), SetupCopy.Tune.why(id) ?? recipe.why]
@@ -100,7 +101,8 @@ private let seen: [String] = {
         }
     }
     all += [SetupCopy.Finish.choiceHeading, SetupCopy.Finish.backgroundBody, SetupCopy.Finish.keepBody,
-            SetupCopy.Finish.choiceRule, SetupCopy.Finish.afterRefusal, SetupCopy.Finish.notOffering,
+            SetupCopy.Finish.choiceRule(restartsUTM: true), SetupCopy.Finish.choiceRule(restartsUTM: false),
+            SetupCopy.Finish.afterRefusal, SetupCopy.Finish.notOffering,
             SetupCopy.Finish.alreadyInBackground, SetupCopy.Finish.notReady, SetupCopy.Finish.checking,
             SetupCopy.Finish.restartStopped, SetupCopy.Finish.restartLine(vm: "winlab01", ConfigChanges(cpuCores: 6, display: .headless))]
     for outcome in [SetupCopy.Finish.Outcome.connected, .notConnected, .notTried, .windowsAppSkipped] {
@@ -127,8 +129,9 @@ private let seen: [String] = {
             MenuCopy.notReady(vm: "winlab01"), MenuCopy.notReadyTitle(vm: "winlab01"), MenuCopy.noHostTitle(vm: "winlab01"),
             MenuCopy.startedNotReadyTitle(vm: "winlab01")]
     for screenOn in [true, false] {
-        all += [MenuCopy.confirmTitle(vm: "winlab01", screenOn: screenOn), MenuCopy.confirmBody(vm: "winlab01", screenOn: screenOn),
+        all += [MenuCopy.confirmTitle(vm: "winlab01", screenOn: screenOn),
                 MenuCopy.working(screenOn: screenOn), MenuCopy.already(vm: "winlab01", screenOn: screenOn)]
+        all += [true, false].map { MenuCopy.confirmBody(vm: "winlab01", screenOn: screenOn, restartsUTM: $0) }
     }
     return all
 }()

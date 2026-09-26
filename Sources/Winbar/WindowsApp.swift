@@ -54,13 +54,31 @@ enum WindowsApp {
     }
 
     /// Blocking; call off the main thread in the app. False means the tile couldn't be found or pressed.
-    static func openSavedPC(host: String) -> Bool {
+    static func openSavedPC(host: String) -> Bool { pressSavedPC(host: host) != .notPressed }
+
+    /// What pressing the saved PC's tile is known to have done.
+    enum Press: Equatable {
+        case notPressed
+        /// Windows App has a window it didn't have before the press: the session, or its own word on
+        /// why there isn't one. Either way the person has something in front of them.
+        case newWindow
+        /// The press landed, and no new window followed within a few seconds. Live (spike row 16s,
+        /// Windows App already running from an earlier connect), `winbar connect` said "Opened" here
+        /// and no session appeared until the owner double-clicked the PC himself. Why isn't clear from
+        /// Winbar's side: the press is reported as accepted, and Windows App may also have brought an
+        /// existing session window forward, which adds no window. So nothing is claimed.
+        case pressedNoNewWindow
+    }
+
+    /// `openSavedPC`, saying whether a window followed the press, for a caller that tells the person
+    /// what happened (`winbar connect`).
+    static func pressSavedPC(host: String) -> Press {
         let names = tileNames(host: host)
         guard !names.isEmpty else {
             NSLog("Winbar: the saved PC for \(host) signs in as another account; not pressing it")
-            return false
+            return .notPressed
         }
-        guard accessibilityTrusted, let appURL else { return false }
+        guard accessibilityTrusted, let appURL else { return .notPressed }
 
         // A stuck `--script` copy shares the app's bundle id; it is neither the app to search nor one
         // to hand the connection to (WindowsAppProcesses).
@@ -77,7 +95,7 @@ enum WindowsApp {
             }
             _ = launched.wait(timeout: .now() + 15)
         }
-        guard let app = running else { return false }
+        guard let app = running else { return .notPressed }
         let element = AXUIElementCreateApplication(app.processIdentifier)
 
         var target = waitFor(seconds: 6) { findTile(in: element, names: names, selectDevices: false) }
@@ -90,7 +108,7 @@ enum WindowsApp {
         }
         guard let target else {
             NSLog("Winbar: saved PC \(names.joined(separator: " / ")) not found in Windows App")
-            return false
+            return .notPressed
         }
         // Finding the tile no longer writes `Config.savedPCHost`. A tile is only a name, and may be a
         // stale PC that signs in as nobody; C2 then called it "your word" when nobody had said a thing.
@@ -98,14 +116,23 @@ enum WindowsApp {
 
         AXUIElementSetAttributeValue(target.window, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
         onMain { _ = app.hide() }
+        // Counted before the press: a minimized chooser stays in the list, so only the press adds one.
+        let windowsBefore = windowCount(element)
         let pressed = AXUIElementPerformAction(target.tile, kAXPressAction as CFString) == .success
         NSLog("Winbar: pressed saved PC \(host): \(pressed)")
-        guard pressed else { return false }
+        guard pressed else { return .notPressed }
         // Pressing unhides Windows App but doesn't activate it, so an existing full-screen session stays
         // on its own Space. Activating switches to it; it doesn't restore the minimized chooser.
         pause(0.5)
         onMain { _ = app.activate() }
-        return true
+        let appeared = waitUntil(timeout: 5, every: 0.3) { windowCount(element) > windowsBefore }
+        NSLog("Winbar: after pressing \(host): Windows App had \(windowsBefore) window(s), has \(windowCount(element)); "
+              + "new window: \(appeared)")
+        return appeared ? .newWindow : .pressedNoNewWindow
+    }
+
+    private static func windowCount(_ app: AXUIElement) -> Int {
+        (attribute(app, kAXWindowsAttribute) as [AXUIElement]?)?.count ?? 0
     }
 
     private static func findTile(in app: AXUIElement, names: [String], selectDevices: Bool) -> Target? {

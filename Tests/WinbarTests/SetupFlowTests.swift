@@ -1014,6 +1014,29 @@ struct SetupFlowScreens {
         #expect(SetupFlow.headlessOffer(Given.done) == .alreadyHeadless)
     }
 
+    /// On UTM 5.0.6+ the display change restarts only this VM (`UTMFixes`), and `Reconfigure.apply`
+    /// no longer refuses over other VMs there, so neither does the window. 5.0.5 and a UTM whose
+    /// version wasn't read keep the refusal: promising less than the change does would stop them.
+    @Test("Finish: other VMs stand in the way only where the display change restarts UTM")
+    func headlessOfferByUTMVersion() {
+        var facts = Given.done(with: "H5", .fixable("console window on; headless cuts idle host CPU"))
+        facts.otherVMs = .running(["Debian"])
+        facts.utm = .installed(version: "5.0.6")
+        #expect(SetupFlow.headlessOffer(facts) == .offer)
+        // Not asked yet (or couldn't be) is no reason to wait either.
+        facts.otherVMs = .notAsked
+        #expect(SetupFlow.headlessOffer(facts) == .offer)
+        facts.pending.display = .headless
+        #expect(SetupFlow.headlessOffer(facts) == .staged)
+
+        facts.pending.display = nil
+        facts.otherVMs = .running(["Debian"])
+        for older in [DependencyState.installed(version: "5.0.5"), .installed(version: nil), .missing] {
+            facts.utm = older
+            #expect(SetupFlow.headlessOffer(facts) == .otherVMsRunning(["Debian"]), "\(older)")
+        }
+    }
+
     @Test("Finish: Go Headless and Keep the Screen")
     func headlessAnswered() {
         var facts = Given.done(with: "H5", .fixable("console window on; headless cuts idle host CPU"))

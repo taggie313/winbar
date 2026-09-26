@@ -48,11 +48,20 @@ enum Dependency: String, CaseIterable {
         }
     }
 
-    /// The Homebrew cask that installs it.
+    /// The Homebrew cask that installs it: UTM's stable one (`UTMChannel`).
     var cask: String {
         switch self {
-        case .utm: return "utm"
+        case .utm: return UTMChannel.stable.cask
         case .windowsApp: return "windows-app"
+        }
+    }
+
+    /// Every cask that installs this app. UTM has two, stable and beta, which conflict with each other
+    /// (both put UTM.app in /Applications), so whichever one Homebrew has is the one that installed it.
+    var casks: [String] {
+        switch self {
+        case .utm: return UTMChannel.allCases.map(\.cask)
+        case .windowsApp: return [cask]
         }
     }
 
@@ -86,10 +95,14 @@ enum Dependency: String, CaseIterable {
         minimumVersion.map { "\($0.major).\($0.minor)" }
     }
 
-    /// UTM's own disk image, from the release getutm.app links to. Winbar checks Apple's
-    /// notarization and the signing team before it opens it.
+    /// UTM's own disk image, from the release getutm.app links to: `/releases/latest`, which
+    /// redirects to the newest stable release and never to a beta. What a fresh install fetches when
+    /// UTM's releases couldn't be read; otherwise it fetches the stable release by its tag
+    /// (`UTMPick.dmgURL`) and checks GitHub's digest too. Winbar checks Apple's notarization and the
+    /// signing team before it opens either.
     static let utmDownloadURL = "https://github.com/utmapp/UTM/releases/latest/download/UTM.dmg"
-    /// About that: UTM 4.7.5's UTM.dmg is 250 MB, and the app is 1.1 GB once installed.
+    /// About that: UTM 4.7.5's UTM.dmg is 250 MB, and the app is 1.1 GB once installed. What the copy
+    /// says when UTM's releases couldn't be read; otherwise the release's own size is said.
     static let utmDownloadMB = 250
     static let utmInstalledGB = "1.1 GB"
     /// Microsoft ships Windows App through the Mac App Store, and Homebrew from the same installer
@@ -237,11 +250,20 @@ enum Homebrew {
             .appendingPathComponent("Caskroom").appendingPathComponent(cask).appendingPathComponent(".metadata").path
     }
 
-    /// Whether Homebrew installed `cask`, so it can update it. One file-system check; false without
-    /// Homebrew.
-    static func hasCask(_ cask: String, brew: String?) -> Bool {
-        guard let brew else { return false }
-        return FileManager.default.fileExists(atPath: caskMetadata(cask, brew: brew))
+    /// The cask Homebrew installed this app with, so it can update it — by that cask, since UTM's two
+    /// conflict and `brew upgrade --cask utm` refuses a UTM that `utm@beta` installed. A file-system
+    /// check per cask; nil without Homebrew, or when Homebrew didn't install it. `exists` is the file
+    /// system's, so a test can say which Caskroom entries there are.
+    static func installedCask(_ dependency: Dependency, brew: String?,
+                              exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }) -> String? {
+        guard let brew else { return nil }
+        return dependency.casks.first { exists(caskMetadata($0, brew: brew)) }
+    }
+
+    /// Whether Homebrew installed this app, under any of its casks (UTM's beta one too).
+    static func hasCask(_ dependency: Dependency, brew: String?,
+                        exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }) -> Bool {
+        installedCask(dependency, brew: brew, exists: exists) != nil
     }
 
     /// `brew --prefix` through the login shell's PATH. `/usr/bin/env` because the path is exactly
@@ -280,7 +302,8 @@ enum InstallPlan: Equatable {
     /// Ask Homebrew to update a copy that's too old for Winbar.
     case brewUpgrade(brew: String, cask: String)
     /// No Homebrew: fetch UTM's own signed, notarized disk image and copy the app out of it.
-    case download(url: String)
+    /// `sha256`, when GitHub gave one for that release's disk image, is checked before anything else.
+    case download(url: String, sha256: String? = nil)
     /// No Homebrew, and the App Store is the only way in: open the app's page and leave the button
     /// to the person. Nobody can install a Mac App Store app for someone else.
     case appStore(id: String)
@@ -308,12 +331,18 @@ extension Dependencies {
     /// The decision table: state × Homebrew → what to offer. Pure. nil means there is nothing to
     /// offer, which for `.installed` is the point.
     ///
-    /// `brewHasCask`: Homebrew installed this copy (`Homebrew.hasCask`). Only an update asks: Homebrew
-    /// updates only what it installed, and a UTM from its own download or the App Store makes
-    /// `brew upgrade --cask` stop with "not installed", which the person would then be told to run
-    /// again themselves. Unknown counts as no, so the default offers nothing that can't work.
+    /// `brewCask`: the cask Homebrew installed this copy with (`Homebrew.installedCask`), nil when it
+    /// didn't. Only an update asks: Homebrew updates only what it installed, and a UTM from its own
+    /// download or the App Store makes `brew upgrade --cask` stop with "not installed", which the
+    /// person would then be told to run again themselves. The update goes through that same cask, so
+    /// a UTM from `utm@beta` is updated by `utm@beta`. Unknown counts as not Homebrew's, so the
+    /// default offers nothing that can't work.
+    ///
+    /// `utm`: which UTM a fresh install gets (`UTMChannels.pick`): its cask with Homebrew, its disk
+    /// image and digest without. Stable, from `/releases/latest`, unless something chose otherwise.
+    /// Nothing but a missing UTM reads it: an installed copy is never switched.
     static func plan(for dependency: Dependency, state: DependencyState, brew: String?,
-                     brewHasCask: Bool = false) -> InstallPlan? {
+                     brewCask: String? = nil, utm: UTMPick = .stable) -> InstallPlan? {
         switch state {
         case .installed:
             return nil
@@ -322,13 +351,22 @@ extension Dependencies {
             // built themselves, and deleting either would be its own kind of damage.
             return .manual(DependencyCopy.wrongSignatureAdvice(dependency))
         case .tooOld:
-            guard let brew, brewHasCask else { return .manual(DependencyCopy.updateByHand(dependency)) }
-            return .brewUpgrade(brew: brew, cask: dependency.cask)
+            guard let brew, let brewCask, dependency.casks.contains(brewCask) else {
+                return .manual(DependencyCopy.updateByHand(dependency))
+            }
+            return .brewUpgrade(brew: brew, cask: brewCask)
         case .missing:
-            if let brew { return .brew(brew: brew, cask: dependency.cask) }
             switch dependency {
-            case .utm: return .download(url: Dependency.utmDownloadURL)
-            case .windowsApp: return .appStore(id: Dependency.windowsAppStoreID)
+            case .utm:
+                if let brew { return .brew(brew: brew, cask: utm.channel.cask) }
+                // A beta with no tagged release to fetch is never picked (`UTMChannels.pick`); stable
+                // always has one, `/releases/latest` at worst.
+                // GitHub's digest belongs to that release's own disk image, never to /latest.
+                return .download(url: utm.dmgURL ?? Dependency.utmDownloadURL,
+                                 sha256: utm.build?.dmgURL == nil ? nil : utm.build?.sha256)
+            case .windowsApp:
+                if let brew { return .brew(brew: brew, cask: dependency.cask) }
+                return .appStore(id: Dependency.windowsAppStoreID)
             }
         }
     }
@@ -336,7 +374,7 @@ extension Dependencies {
     /// The same, asking the Mac where things stand. Blocking.
     static func plan(for dependency: Dependency) -> InstallPlan? {
         plan(for: dependency, state: state(of: dependency), brew: Homebrew.path,
-             brewHasCask: Homebrew.hasCask(dependency.cask, brew: Homebrew.path))
+             brewCask: Homebrew.installedCask(dependency, brew: Homebrew.path))
     }
 
     /// What the setup window may carry out, which is narrower than the CLI's (gui-wizard.md §3.6).
@@ -356,10 +394,10 @@ extension Dependencies {
     /// still offers Homebrew to anyone who wants it. A copy that isn't Microsoft's is never replaced,
     /// as everywhere else.
     static func windowPlan(for dependency: Dependency, state: DependencyState, brew: String?,
-                           brewHasCask: Bool = false) -> InstallPlan? {
+                           brewCask: String? = nil, utm: UTMPick = .stable) -> InstallPlan? {
         switch dependency {
         case .utm:
-            return plan(for: dependency, state: state, brew: brew, brewHasCask: brewHasCask)
+            return plan(for: dependency, state: state, brew: brew, brewCask: brewCask, utm: utm)
         case .windowsApp:
             switch state {
             case .installed: return nil

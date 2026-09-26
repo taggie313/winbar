@@ -116,20 +116,27 @@ enum Reconfigure {
         }
         guard !changes.isEmpty else {
             // An earlier display change that failed half way may still owe UTM its restart. The VM is
-            // off and the person asked for a display change, which always restarts UTM, so pay it now
-            // rather than at the next start.
+            // off and the person asked for a display change, which is when that restart is expected,
+            // so pay it now rather than at the next start. Not gated on the version: a record that
+            // exists was written under a UTM without the fix, and is owed while that UTM runs.
             if requested.display != nil, !VMProcesses.isRunning(vm), let pending = Config.pendingUTMRestart {
                 if !pending.stillRunning(isUTM: UTM.isUTMProcess).isEmpty {
                     progress("Restarting UTM, which an earlier display change still needs…")
                 }
-                if case .failure(let error) = UTM.settlePendingRestart(before: vm) { return .failure(error) }
+                if case .failure(let error) = UTM.settlePendingRestart(before: vm, progress: progress) { return .failure(error) }
             }
             return .success(changes)
         }
 
+        // Asked once, because it decides three things below: whether other VMs stand in the way,
+        // whether the restart is written down before the change is sent, and whether UTM is quit
+        // after it. UTM 5.0.6 closes the stale window itself (utmapp/UTM#7899), so there a display
+        // change is just a configuration change.
+        let restartsUTM = changes.display != nil && UTM.displayChangeRestartsUTM(tracing: "Reconfigure \(vm)")
+
         // A display change ends with quitting UTM (see below), which would stop every other VM it runs.
         // Refuse before anything has happened rather than after this VM is already shut down.
-        if changes.display != nil, let refusal = otherVMsRefusal(vm, changed: false) { return .failure(refusal) }
+        if restartsUTM, let refusal = otherVMsRefusal(vm, changed: false) { return .failure(refusal) }
 
         let wasRunning = VMProcesses.isRunning(vm)
 
@@ -150,7 +157,7 @@ enum Reconfigure {
                     : .unknown("The guest agent isn't answering, so Winbar can't check BitLocker.")
             } else {
                 progress("Starting \(vm) to check BitLocker…")
-                if case .failure(let error) = UTM.start(vm) { return .failure(error) }
+                if case .failure(let error) = UTM.start(vm, progress: progress) { return .failure(error) }
                 bootedForGuard = true
                 progress("Waiting for Windows…")
                 guardResult = UTM.waitForGuestAgent(vm, timeout: 240)
@@ -172,9 +179,17 @@ enum Reconfigure {
             if case .failure(let error) = UTM.shutDown(vm, offerForce: interaction.offerForceStop) { return .failure(error) }
         }
         // UTM can report "stopping" for a moment after QEMU exits, and refuses updates until "stopped".
-        let settled = waitUntil(timeout: 30, every: 2) {
+        func isStopped() -> Bool {
             if case .success(let info?) = UTMScripting.vm(named: vm) { return info.status == "stopped" }
             return false
+        }
+        var settled = waitUntil(timeout: 30, every: 2, isStopped)
+        // UTM 5.0.6+ can go on saying pausing or resuming about a VM that is off while it works on the
+        // VM's disks. That is neither running nor stopped, so wait it out (bounded) and, if it doesn't
+        // end, say UTM is busy rather than that the VM is still running.
+        if !settled, case .success(let info?) = UTMScripting.vm(named: vm), info.busyWhileOff {
+            if case .failure(let busy) = UTM.waitWhileBusy(vm) { return .failure(busy) }
+            settled = isStopped()
         }
         guard settled else { return .failure(WinbarError("UTM still reports \(vm) as running")) }
 
@@ -183,7 +198,7 @@ enum Reconfigure {
         func startAgain(after error: WinbarError) -> WinbarError {
             guard wasRunning else { return error }
             progress("Starting \(vm) again…")
-            if case .failure(let startError) = UTM.start(vm) {
+            if case .failure(let startError) = UTM.start(vm, progress: progress) {
                 return WinbarError(error.title, error.detail + " \(vm) is off, and starting it again failed too: \(startError)")
             }
             return WinbarError(error.title, error.detail + " \(vm) was started again.")
@@ -207,7 +222,7 @@ enum Reconfigure {
         }
 
         var restartBefore: UTMRestart?
-        if changes.display != nil {
+        if restartsUTM {
             // Again, just before anything changes: the guard and the shutdown take minutes, and a VM
             // started meanwhile would be stopped by the UTM restart.
             if let refusal = otherVMsRefusal(vm, changed: false) { return .failure(startAgain(after: refusal)) }
@@ -239,7 +254,8 @@ enum Reconfigure {
         if changes.changesHardware, changes.sharedFolder == nil, vm == Config.vmName,
            case .success(let shared) = SharedFolder.current(vm: vm),
            parksSharedFolder(requestedShare: changes.sharedFolder, current: shared,
-                             remembered: Config.sharedFolder, wasOurs: Config.sharedFolderByWinbar) {
+                             remembered: Config.sharedFolder, wasOurs: Config.sharedFolderByWinbar,
+                             durable: Config.sharedFolderDurable) {
             progress("Setting \(vm)'s shared folder aside for the change…")
             if case .success = SharedFolder.setWhileStopped(.off, vm: vm) { parkedFolder = shared }
         }
@@ -291,23 +307,34 @@ enum Reconfigure {
             }
         }
 
+        // UTM 5.0.6+ can quit by itself after `update configuration` (`UTMFixes.mayQuitAfterUpdate`);
+        // `updateConfiguration` holds it open, and if it quits anyway has launched it again and sent
+        // the change once more by the time this is set.
+        var utmQuitItself = false
         if changes.changesHardware {
             progress("Changing \(vm)'s configuration…")
             let applied: UTMScripting.Applied
             switch UTMScripting.updateConfiguration(vm: vm, cpuCores: changes.cpuCores,
                                                     memoryMB: changes.memoryMB, display: changes.display) {
-            case .failure(let error):
-                let failure = WinbarError("UTM didn't accept the change", error.description)
+            case .failure(let failed):
+                // Quitting by itself after the change is not UTM refusing it, and isn't called that:
+                // the error says what is known, that the change was sent and couldn't be read back.
+                let failure = failed.utmQuitItself
+                    ? failed.error : WinbarError("UTM didn't accept the change", failed.error.description)
                 // 1001–1003 are the script's own checks, raised before `update configuration` is sent:
-                // nothing changed, so nothing is owed. Anything else may have landed part way.
-                let untouched = AppleScriptRunner.errorNumber(in: error.detail).map { (1001...1003).contains($0) } ?? false
-                if untouched || changes.display == nil {
-                    if changes.display != nil { Config.pendingUTMRestart = restartBefore }
+                // nothing changed, so nothing is owed. Anything else may have landed part way, which
+                // only matters where a display change owes UTM its restart: without that, starting
+                // the VM again is safe whatever landed.
+                let untouched = !failed.utmQuitItself
+                    && (AppleScriptRunner.errorNumber(in: failed.error.detail).map { (1001...1003).contains($0) } ?? false)
+                if untouched || !restartsUTM {
+                    if restartsUTM { Config.pendingUTMRestart = restartBefore }
                     return .failure(startAgain(after: failing(failure)))
                 }
                 return .failure(failing(WinbarError(failure.title, failure.detail + " " + restartOwed(vm))))
             case .success(let result):
                 applied = result
+                utmQuitItself = result.utmQuitItself
             }
             var mismatches: [String] = []
             if let want = changes.cpuCores, applied.cpuCores != want { mismatches.append("vCPUs \(applied.cpuCores.map(String.init) ?? "?") (wanted \(want))") }
@@ -319,11 +346,17 @@ enum Reconfigure {
             }
             if let count = applied.displayCount { Config.rememberConsoleEnabled(count > 0, for: vm) }
             guard mismatches.isEmpty else {
-                let detail = mismatches.joined(separator: "; ") + (changes.display != nil ? ". " + restartOwed(vm) : "")
+                // After UTM quit by itself this is the relaunched UTM's word, so say whose it is, and
+                // that Winbar already sent the change a second time: it isn't worth trying again
+                // straight away.
+                let detail = (applied.sentAgain ? "UTM quit by itself before saving the change, Winbar sent it again, "
+                              + "and UTM now reports: "
+                              : utmQuitItself ? "UTM quit by itself after the change, and once started again it reports: " : "")
+                    + mismatches.joined(separator: "; ") + (restartsUTM ? ". " + restartOwed(vm) : "")
                 return .failure(failing(WinbarError("UTM didn't apply everything", detail)))
             }
         }
-        if changes.display != nil {
+        if restartsUTM {
             // UTM (4.7.5 through 5.0.5) keeps a stopped VM's display window and reuses it on the next
             // start. Its SPICE delegate then reads `displays[0]` of the *new* configuration, and with the
             // list emptied that's an out-of-bounds trap: UTM crashes about two seconds after QEMU starts
@@ -332,7 +365,7 @@ enum Reconfigure {
             // this treatment, not only console → headless. (UTM.start refuses too, until this is done.)
             if let refusal = otherVMsRefusal(vm, changed: true) { return .failure(failing(refusal)) }
             progress("Restarting UTM so it forgets the old display window…")
-            if case .failure(let error) = UTM.quit() {
+            if case .failure(let error) = UTM.quit(progress: progress) {
                 // Not through `failing`: UTM is still up and owes a restart, so writing the folder
                 // back now would hand the next UTM a bookmark it can't use. Say where it went instead.
                 return .failure(WinbarError("The configuration changed, but UTM has to restart before \(vm) starts again",
@@ -351,14 +384,22 @@ enum Reconfigure {
                 changes.sharedFolder = .folder(folder)
             }
             if let error = restoreParked() { return .failure(error) }
+        } else if utmQuitItself {
+            // Not Winbar's restart but UTM's own quit (5.0.6+), and it costs the same: the bookmark
+            // behind a scripted shared folder went with the UTM that held it. Same remedy at the
+            // same moment, while the VM is still stopped.
+            if let folder = SharedFolder.reestablish(vm: vm, progress: progress) {
+                changes.sharedFolder = .folder(folder)
+            }
         }
-        // A vCPU or RAM change doesn't restart UTM, so nothing has invalidated the folder and it can
-        // go back as soon as the change has landed.
+        // A vCPU or RAM change doesn't restart UTM (nor, on 5.0.6+, does a display change), so unless
+        // UTM quit by itself, handled just above, nothing has invalidated the folder and it can go
+        // back as soon as the change has landed.
         if let error = restoreParked() { return .failure(error) }
 
         if wasRunning {
             progress("Starting \(vm)…")
-            if case .failure(let error) = UTM.start(vm) {
+            if case .failure(let error) = UTM.start(vm, progress: progress) {
                 return .failure(WinbarError("The configuration changed, but \(vm) didn't start again", error.description))
             }
         }
@@ -373,11 +414,16 @@ enum Reconfigure {
     /// cannot resolve, so the change fails naming a folder nobody asked about. Parking avoids that.
     /// It is only ever right for a folder Winbar wrote: a picked one does not cause the failure, and
     /// clearing it would trade the person's durable share for a fragile copy.
+    ///
+    /// `durable`: Winbar wrote it under UTM 5.0.6+, which stores the same kind of bookmark the
+    /// picker does (`UTMFixes.scriptedShareDurable`), so it is left in place exactly as a picked one
+    /// is. One written under 4.x is still parked on 5.0.6, and the put-back rewrites it as the
+    /// durable kind.
     static func parksSharedFolder(requestedShare: SharedFolder.Setting?, current: String?,
-                                  remembered: String?, wasOurs: Bool) -> Bool {
+                                  remembered: String?, wasOurs: Bool, durable: Bool = false) -> Bool {
         // A request that carries its own shared-folder change already writes the folder before the
         // configuration change and again after UTM restarts; parking would fight it.
-        guard requestedShare == nil, let current else { return false }
+        guard requestedShare == nil, !durable, let current else { return false }
         return SharedFolder.stillOurs(read: current, remembered: remembered, wasOurs: wasOurs)
     }
 

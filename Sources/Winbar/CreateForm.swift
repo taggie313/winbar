@@ -516,12 +516,16 @@ extension CreateCopy {
     static func wUTMUntested(version: String, tested: String) -> String {
         "UTM \(version) hasn't been tested with winbar create (tested: \(tested)). Carrying on."
     }
-    /// The pre-release sentence says both halves of what is known, because the vague one threw the
-    /// better half away: UTM 5's source was read and the parts Winbar drives are unchanged
-    /// (docs/internal/specs/utm5-support.md §2) — and nothing has been run on a UTM 5.
+    /// The newer-major sentence (W_UTM_PRERELEASE, the key kept so bug reports stay comparable) says
+    /// both halves of what is known, because the vague one threw the better half away: UTM 5's source
+    /// was read and the scripting create uses reads the same (`CreateScripts`, re-read at 5.0.6) — and
+    /// nothing has been run on a UTM 5. It claims nothing about UTM's own tags: "a pre-release" is
+    /// true of every 5.x today and would be wrong on the day one ships stable, which create can't
+    /// check offline (the critique of docs/internal/specs/utm5-support.md §3.2).
     static func wUTMPrerelease(version: String, tested: String) -> String {
-        "UTM \(version) is a pre-release, and winbar create has only been run against \(tested). The parts Winbar "
-            + "uses are the same in UTM 5.0.5's source, but nothing has been run on a UTM 5. Carrying on."
+        "UTM \(version) is a major version ahead of anything winbar create has been run against (tested: \(tested)). "
+            + "The scripting it uses reads the same in UTM 5.0.6's source, but nothing has been run on a UTM 5. "
+            + "Carrying on."
     }
     static func wSpace(diskGB: Int, freeGB: Int) -> String {
         "The VM's disk can grow to \(diskGB) GB, but your Mac has \(freeGB) GB free. That's enough to install, but "

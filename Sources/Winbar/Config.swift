@@ -327,6 +327,11 @@ enum Config {
         /// restarts. A folder picked on UTM's own VM details screen has a durable bookmark instead,
         /// which a scripted rewrite would quietly downgrade — so that one is left alone.
         static let sharedFolderByWinbar = "sharedFolderByWinbar"
+        /// The folder Winbar wrote is the durable kind: a UTM that stores a real bookmark for it wrote
+        /// it (`UTMFixes.scriptedShareDurable`). Then a UTM restart doesn't kill it, and there's
+        /// nothing to set aside or write again. Recorded per write, not read off today's UTM, because
+        /// a share written by 4.7.5 stays the fragile kind after the update to 5.0.6.
+        static let sharedFolderDurable = "sharedFolderDurable"
         /// Setup offered a shared folder for this VM and the answer was no. Asked once, then left
         /// alone: nobody needs one, and `winbar share <folder>` is there whenever they change their mind.
         static let declinedSharedFolder = "declinedSharedFolder"
@@ -336,11 +341,21 @@ enum Config {
         /// UTM must quit before a VM starts again: a display change was sent to these UTM processes.
         /// See `UTMRestart`.
         static let pendingUTMRestart = "pendingUTMRestart"
+        /// Winbar turned off UTM's own "auto terminate" (quit when the last window closes) around an
+        /// `update configuration` on UTM 5.0.6+ and hasn't turned it back on yet. Written before the
+        /// change is sent, so a Winbar killed half way still puts UTM's setting back next time
+        /// (`UTMOpenHold`). Not per-VM: it is UTM's setting, not a VM's.
+        static let utmHeldOpen = "utmHeldOpen"
         /// When Winbar last asked GitHub whether there is a newer release, and the newest version
         /// that answer named. The whole of what `UpdateCheck` remembers: no history, no counters,
         /// and nothing about the Mac. Not per-VM — they describe this copy of Winbar.
         static let lastUpdateCheck = "lastUpdateCheck"
         static let lastSeenVersion = "lastSeenVersion"
+        /// UTM's stable release and the beta Winbar may offer, as the last check of UTM's GitHub
+        /// releases read them, and when (`UTMChannels.Saved`, as JSON). Written only while UTM was
+        /// being installed; used for a day as it is, and for a week when GitHub can't be asked. Not
+        /// per-VM: it describes UTM's releases, not a VM.
+        static let utmReleases = "utmReleases"
         /// The name a VM was last seen under, kept inside its own record so that a record filed under
         /// an id can still be found by someone holding only the name (`winbar config --vm NAME`,
         /// `--forget NAME`, neither of which asks UTM). Bookkeeping rather than a setting, so it is
@@ -381,8 +396,8 @@ enum Config {
                           savedPCOtherAccountUser, savedPCConnectedHost, passwordCheckedFor,
                           keepBitLocker, noVisualTweaks,
                           declinedAutologon, declinedRemoteDesktop, declinedTuning,
-                          sharedFolder, sharedFolderUTM, sharedFolderByWinbar, declinedSharedFolder, backupExclusionConfirmed, pendingUTMRestart,
-                          lastUpdateCheck, lastSeenVersion, recordedName, settingsMigrated, savedPCAccountsMigrated,
+                          sharedFolder, sharedFolderUTM, sharedFolderByWinbar, sharedFolderDurable, declinedSharedFolder, backupExclusionConfirmed, pendingUTMRestart,
+                          utmHeldOpen, lastUpdateCheck, lastSeenVersion, utmReleases, recordedName, settingsMigrated, savedPCAccountsMigrated,
                           setupWizardShown, armieHidden,
                           declinedMoveToApplications, launchAtLoginDecided, startWindowsAtLaunch,
                           menuBarIconIntroduced]
@@ -394,7 +409,7 @@ enum Config {
                             savedPCConnectedHost,
                             keepBitLocker, noVisualTweaks,
                             declinedAutologon, declinedRemoteDesktop, declinedTuning,
-                            sharedFolder, sharedFolderUTM, sharedFolderByWinbar, declinedSharedFolder]
+                            sharedFolder, sharedFolderUTM, sharedFolderByWinbar, sharedFolderDurable, declinedSharedFolder]
 
         /// Everything one VM's namespace holds: its settings, and the name it was last seen under.
         static let record = perVM + [recordedName]
@@ -649,6 +664,12 @@ enum Config {
         set { setFlag(newValue, Key.sharedFolderByWinbar) }
     }
 
+    /// See `Key.sharedFolderDurable`.
+    static var sharedFolderDurable: Bool {
+        get { flag(Key.sharedFolderDurable) }
+        set { setFlag(newValue, Key.sharedFolderDurable) }
+    }
+
     /// Records what UTM reported for `vm`, and only for the VM Winbar looks after: these keys say
     /// what the menu and doctor describe, so another VM's folder must not land in them.
     ///
@@ -659,16 +680,20 @@ enum Config {
         guard UTM.shouldCacheSettings(vm: vm, selected: vmName, asked: true) else { return }
         if !SharedFolder.stillOurs(read: path, remembered: sharedFolder, wasOurs: sharedFolderByWinbar) {
             sharedFolderByWinbar = false
+            sharedFolderDurable = false
             sharedFolderUTM = []
         }
         sharedFolder = path
     }
 
-    /// Winbar has just written this folder into UTM's registry itself.
-    static func rememberSharedFolderWritten(_ path: String?, for vm: String) {
+    /// Winbar has just written this folder into UTM's registry itself. `durable` is whether the UTM
+    /// that took it stores the kind of bookmark that outlives it (`UTMFixes.scriptedShareDurable`).
+    static func rememberSharedFolderWritten(_ path: String?, for vm: String,
+                                            durable: Bool = UTMFixes.scriptedShareDurable(UTM.version)) {
         guard UTM.shouldCacheSettings(vm: vm, selected: vmName, asked: true) else { return }
         sharedFolder = path
         sharedFolderByWinbar = path != nil
+        sharedFolderDurable = path != nil && durable
         sharedFolderUTM = []   // written, but not yet seen working
     }
 
@@ -735,6 +760,30 @@ enum Config {
     static var lastSeenVersion: String? {
         get { nonEmpty(defaults.string(forKey: Key.lastSeenVersion)) }
         set { set(newValue, Key.lastSeenVersion) }
+    }
+
+    /// The last UTM channel check's answer (`UTMChannels.current`). nil when there isn't one, or it
+    /// doesn't read back: a check that can't be trusted is simply asked again.
+    static var utmReleases: UTMChannels.Saved? {
+        get {
+            guard let text = defaults.string(forKey: Key.utmReleases) else { return nil }
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            return try? decoder.decode(UTMChannels.Saved.self, from: Data(text.utf8))
+        }
+        set {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.sortedKeys]
+            let text = newValue.flatMap { try? encoder.encode($0) }.map { String(decoding: $0, as: UTF8.self) }
+            set(text, Key.utmReleases)
+        }
+    }
+
+    /// See `Key.utmHeldOpen`.
+    static var utmHeldOpen: Bool {
+        get { defaults.bool(forKey: Key.utmHeldOpen) }
+        set { if newValue { defaults.set(true, forKey: Key.utmHeldOpen) } else { defaults.removeObject(forKey: Key.utmHeldOpen) } }
     }
 
     static var pendingUTMRestart: UTMRestart? {

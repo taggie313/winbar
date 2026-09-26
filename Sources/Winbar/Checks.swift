@@ -71,6 +71,9 @@ final class Context {
         var noVisualTweaks = false
         var keepBitLocker = false
         var display: UTMScripting.DisplayMode?
+        /// `winbar setup --utm-channel`: which UTM a fresh install gets, chosen outright rather than
+        /// asked. Read only while UTM is missing (`DependencySetup.offer`).
+        var utmChannel: UTMChannel?
         /// Whether the self-test behind C3 and C4 probes the Remote Desktop port. doctor and
         /// diagnose report the answer; the setup window leaves the port alone
         /// (`SetupRunner.contextOptions`).
@@ -253,11 +256,13 @@ final class Context {
         // its registry held at the previous start, so without it the survey can't tell "Windows has
         // this folder" from "Windows still has the one before" (see SharedFolder).
         var markerFolder: String?
+        var marker: SharedFolder.Marker?
         if case .success(let folder?) = sharedFolder, SharedFolder.inspect(folder) == .folder {
-            sharedFolderMarker = SharedFolder.writeMarker(in: folder, named: traces.marker)
-            if sharedFolderMarker != nil { markerFolder = folder }
+            marker = SharedFolder.writeMarker(in: folder, named: traces.marker)
+            sharedFolderMarker = marker?.token
+            if marker != nil { markerFolder = folder }
         }
-        defer { if let markerFolder { SharedFolder.removeMarker(in: markerFolder, named: traces.marker) } }
+        defer { if let markerFolder, let marker { SharedFolder.removeMarker(in: markerFolder, named: marker.name) } }
         // The piece that asks the person's own session about their drive letter is a file of its own.
         let asksSession = markerFolder != nil && traces.asksSession
         if asksSession {
@@ -267,7 +272,7 @@ final class Context {
         // The password cache is keyed by the guest's own COMPUTER\user, so it applies whichever VM this is.
         let script = GuestScripts.survey(user: isConfiguredVM ? Config.rdpUser : nil,
                                          passwordChecked: Config.passwordCheckedFor,
-                                         marker: sharedFolderMarker == nil ? "" : traces.marker,
+                                         marker: marker?.name ?? "",
                                          userDrive: asksSession)
         switch GuestAgent.run(vm: vmName, script, timeout: 180) {
         case .failure(let error):

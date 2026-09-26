@@ -203,7 +203,7 @@ final class SetupRunner {
                 return true
             case .installUTM:
                 return SetupRunner.actionable(Dependencies.windowPlan(for: .utm, state: facts.utm, brew: facts.homebrew,
-                                                                      brewHasCask: facts.utmFromHomebrew))
+                                                                      brewCask: facts.utmCask))
             case .installWindowsApp:
                 if case .appStore? = Dependencies.windowPlan(for: .windowsApp, state: facts.windowsApp,
                                                              brew: facts.homebrew) { return true }
@@ -303,10 +303,10 @@ final class SetupRunner {
     /// and with Homebrew here the terminal's row says "setup can ask Homebrew to install it" — which
     /// the window never does. Pure.
     static func dependencyRow(_ dependency: Dependency, state: DependencyState, brew: String?,
-                              brewHasCask: Bool = false) -> Status {
+                              brewCask: String? = nil) -> Status {
         Recipe.dependencyStatus(dependency, state: state,
                                 plan: Dependencies.windowPlan(for: dependency, state: state, brew: brew,
-                                                              brewHasCask: brewHasCask))
+                                                              brewCask: brewCask))
     }
 
     /// The rows a snapshot builds itself, from states it has just read, rather than asking the check:
@@ -317,7 +317,7 @@ final class SetupRunner {
     static func row(for id: String, readings: Readings) -> Status? {
         switch id {
         case "H1": return dependencyRow(.utm, state: readings.utm, brew: readings.homebrew,
-                                        brewHasCask: readings.utmFromHomebrew)
+                                        brewCask: readings.utmCask)
         case "C1": return dependencyRow(.windowsApp, state: readings.windowsApp, brew: readings.homebrew)
         default: return nil
         }
@@ -1065,7 +1065,9 @@ extension SetupRunner {
     struct Readings {
         var utm: DependencyState = .missing
         var homebrew: String?
-        var utmFromHomebrew = false
+        var utmCask: String?
+        /// nil unless UTM is missing (`UTMChannels.current`).
+        var utmChannels: UTMChannels.Offer?
         /// nil: utmctl wasn't asked (UTM not running, or not to be asked yet).
         var utmAnswers: UTM.CtlAnswer?
         var utmConsent: Automation.Consent = .decided
@@ -1124,7 +1126,8 @@ extension SetupRunner {
         var facts = SetupFlow.Facts()
         facts.utm = readings.utm
         facts.homebrew = readings.homebrew
-        facts.utmFromHomebrew = readings.utmFromHomebrew
+        facts.utmCask = readings.utmCask
+        facts.utmChannels = readings.utmChannels
         facts.utmAnswers = readings.utmAnswers
         facts.utmConsent = readings.utmConsent
         facts.utmQuarantined = readings.utmQuarantined

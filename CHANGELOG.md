@@ -7,6 +7,102 @@ as its GitHub release notes.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-26
+
+### Added
+
+- **Which UTM?** While UTM's next major version is a beta (UTM 5 today), installing UTM offers a
+  choice: the **stable** release (recommended, and what Winbar is tested with) or **the beta**, each
+  with its version and download size, and for the beta what it changes, that it's still a beta, and
+  whether Winbar has been tested with it yet. Set Up Winbar's **Look around** shows both with stable
+  already chosen; `winbar setup` asks `[1] stable (recommended) [2] beta`, where Return is stable.
+  `--yes` always picks stable, and the new `winbar setup --utm-channel stable|beta` chooses without
+  asking. With Homebrew the beta comes from the `utm@beta` cask; without it, from the beta's own
+  release on GitHub, checked against GitHub's checksum before Apple's notarization and UTM's
+  signature are. It's for a fresh install only: a UTM that's already there is never switched. To
+  know whether there's a beta worth offering, Winbar asks GitHub for UTM's releases as soon as setup
+  finds UTM isn't installed, before it offers to install it (one anonymous request; a good answer is
+  remembered for a day; while Winbar's app stays open a failed one is retried at most every ten
+  minutes, and each `winbar setup` run asks afresh); if GitHub can't be
+  reached it uses what it heard in the last week or what Homebrew's casks say, and failing both it
+  says it couldn't check and installs stable. When UTM's next version ships stable, the choice goes away by itself.
+- Without Homebrew, a stable UTM is now fetched from its own tagged release when GitHub could be
+  asked, checked against GitHub's checksum as well, and the download size said is that release's.
+
+### Changed
+
+- **UTM 5.0.6 is a tested version** alongside 4.7.5: doctor no longer calls it a pre-release, and the UTM choice's
+  beta option says Winbar has been tested with it. Checked live on a daily VM before release: the screen switched off
+  with only the VM's own window open, a shared folder after one start, a paused VM resumed, and Connect.
+- Updating a UTM that's too old goes through the Homebrew cask that installed it, so a UTM from
+  `utm@beta` is updated by `utm@beta` rather than refused by `brew upgrade --cask utm`.
+- `winbar create`'s warning for a UTM 5 no longer calls it a pre-release, which Winbar can't check
+  offline: it says it's a major version ahead of anything create has been run against, and that the
+  scripting create uses reads the same in UTM 5.0.6's source.
+- With UTM 5.0.6 or later, turning Windows' screen off or on no longer restarts UTM. UTM 5.0.6
+  fixed the crash that restart was there to avoid (utmapp/UTM#7882), so Winbar restarts only the
+  VM, other VMs running in UTM no longer stand in the way of **Run in the Background…** (in the menu
+  or on Set Up Winbar's Finish step), `winbar display` or the end of `winbar create`, and neither
+  the menu's question nor the Finish step says UTM restarts any more. UTM 4.x and 5.0.0 to 5.0.5
+  are unchanged: Winbar still restarts UTM after the change, and still finishes a restart an earlier
+  change left owing.
+- The README says Winbar works with UTM 5.0.6 as well as 4.7.5, lists what Winbar does differently
+  there (no UTM restart for a screen change, a shared folder that arrives at the first start and
+  stays, UTM kept running while it saves a change so its window needn't stay open, its What's New
+  window, no suspend to disk), and says a shared folder takes two restarts and needs writing again
+  after UTM restarts only before 5.0.6.
+
+### Fixed
+
+- `winbar create` no longer ends with "Windows didn't answer within three minutes of starting again"
+  when Windows came back at once. After taking the install discs off and starting the VM again,
+  Winbar looked for the VM by its UTM id where it expected the VM's name, found nothing running and
+  waited out all three minutes; it now looks for it by both, and moves on as soon as Windows answers.
+- UTM 5.0.6 quit by itself, before saving, when Winbar changed a VM's settings with UTM's own window
+  closed (its fix for the crash closes the VM's window, and that was UTM's last one), so turning the
+  screen off or on, a vCPU or RAM change from setup, and create's last steps were lost. Winbar now
+  tells UTM to keep running while it makes the change (UTM's own "quit when the last window closes"
+  setting, switched off for the moment and straight back on, and only when it was on), so UTM's
+  window no longer has to stay open. If UTM quits anyway, Winbar opens it again and sends the change
+  once more, and says what UTM then reports rather than that UTM didn't accept it. UTM 4.x is asked
+  nothing new.
+- UTM 5.0.6 says a VM that's off is "pausing" or "resuming" while it works on the VM's disks (for
+  snapshots and saved states). Starting that VM or changing its settings now waits for UTM to
+  finish, for up to two minutes, and then says UTM is busy with it; Set Up Winbar's list of VMs says
+  the VM is off and UTM is busy, rather than starting or stopping.
+- Winbar reads UTM's version from disk each time instead of remembering the first one it saw, so
+  replacing UTM while Winbar's menu is open doesn't leave it with the old version.
+- The shared folder check could say Windows was "still serving the folder it had before" and ask
+  for another restart while Z: was working (doctor's G11, `winbar share`, setup's summary). Every
+  check wrote the same hidden file, and Windows can answer a second look at a file from its own
+  cache, so a check read the one before it. Each check now writes a file of its own.
+- With UTM 5.0.6 or later, a shared folder Winbar sets is the kind that lasts, and Windows gets it at
+  the first start. So a change there restarts the VM once, not twice; the folder is no longer set
+  aside and written again around a screen or vCPU/RAM change or after UTM restarts; and nothing says
+  a change "can take two restarts". A folder set under UTM 4.x keeps the old treatment until Winbar
+  next writes it. UTM 4.x is unchanged.
+- `winbar start` said "already running" to a VM paused in UTM and left it paused, and the menu's
+  **Connect** waited on it until it gave up. Both now resume it (as UTM's own start does, on every
+  UTM version) and say so, as do `winbar connect` and `winbar create --resume`; a resume UTM refuses
+  is reported as a failure.
+- `winbar create --cancel` no longer refuses while the `winbar create` that started the install (or
+  Winbar's menu bar app) is still watching it. It asks that Winbar to stop the VM and delete it,
+  waits for it, and says what was done; if nothing answers, nothing is touched and it says the one
+  thing to do. A cancelled install's record (`Create/create-*/`) is removed once the cancel has
+  finished, instead of waiting for the next install or launch to sweep it.
+- When UTM refused to quit because one of its windows was up (UTM 5.0.6's What's New window, the
+  first time it runs after an update), Winbar waited half a minute and then forced UTM to quit, which
+  left that window to refuse the next quit too. Now Winbar says to close the window in UTM and asks
+  again once, 30 seconds later; if UTM still refuses it says so and forces nothing.
+- `winbar connect` said "Opened the saved PC in Windows App" when it had only pressed the saved PC
+  and no session window followed (seen once with Windows App already running from an earlier
+  connection). It now says so only when Windows App shows a new window; otherwise it says it asked,
+  and to double-click the PC in Windows App if its desktop doesn't show up.
+- Doctor and setup's check that utmctl works counted any exit 0 as an answer, but utmctl exits 0
+  when UTM refuses something and says so only as "Error from event: …" (as UTM 5.0.6 does when asked
+  to save the state of a VM with GPU acceleration, which Winbar's VMs have). That now counts as a
+  failure, as it already did everywhere else Winbar runs utmctl.
+
 ## [0.4.0] - 2026-09-24
 
 ### Added
@@ -674,6 +770,7 @@ generalised so it works on any Apple silicon Mac and any Windows 11 VM in UTM.
   the pinned UTM Guest Tools installer `create` downloads at run time and never redistributes, and
   the CLDR-derived time zone table.
 
+[0.5.0]: https://github.com/taggie313/winbar/releases/tag/v0.5.0
 [0.4.0]: https://github.com/taggie313/winbar/releases/tag/v0.4.0
 [0.3.0]: https://github.com/taggie313/winbar/releases/tag/v0.3.0
 [0.2.0]: https://github.com/taggie313/winbar/releases/tag/v0.2.0

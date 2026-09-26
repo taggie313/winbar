@@ -76,6 +76,20 @@ struct CreateCancelResult: Equatable, Sendable {
     /// The saved PC this job made in Windows App is gone too. False when there never was one, and
     /// when Windows App was open and wouldn't let it go.
     var deletedSavedPC = false
+
+    var steps: CancelSteps {
+        CancelSteps(vmGone: vmGone, stopped: stopped, deletedVM: deletedVM, removedInstallDisks: removedInstallDisks,
+                    deletedSetupDisk: deletedSetupDisk, deletedSavedPC: deletedSavedPC)
+    }
+}
+
+extension CreateCancelResult {
+    /// The result a cancel carried out by another process recorded in the job's state.
+    init(state: CreateJobState, steps: CancelSteps) {
+        self.init(state: state, vmGone: steps.vmGone, stopped: steps.stopped, deletedVM: steps.deletedVM,
+                  removedInstallDisks: steps.removedInstallDisks, deletedSetupDisk: steps.deletedSetupDisk,
+                  deletedSavedPC: steps.deletedSavedPC)
+    }
 }
 
 final class CreateRun {
@@ -161,6 +175,10 @@ final class CreateRun {
             throw CreateJobError.unavailable("E_JOB_FOLDER", "Couldn't open the install's folder", "\(error)")
         }
         log = state.logPath.map { CreateLog(url: URL(fileURLWithPath: $0)) } ?? CreateLog(vmName: state.plan.vmName)
+        // A request left by a `--cancel` that was itself stopped while it waited, with nobody
+        // watching to take it: carrying on is a fresh decision, and an old request firing now would
+        // delete the VM the person just chose to carry on with.
+        CreateJob.withdrawCancelRequest(in: media.directory)
         self.state = state
         self.state.watched = true
         self.state.failure = nil
@@ -283,6 +301,7 @@ final class CreateRun {
     /// A poll point: Ctrl-C, or the window's Cancel Install…. Both leave the run; only the cancel
     /// touches the VM, and it does that here, inside the process that holds the lock.
     private func checkInterrupt() throws {
+        takeCancelFromOutside()
         if let deleteVM = CreateJob.cancelRequest.deleteVM { throw cancelHere(deleteVM: deleteVM) }
         guard CreateJob.interrupt.raised else { return }
         if state.stage.number < CreateStage.vm.number || state.vmID == nil {
@@ -300,6 +319,20 @@ final class CreateRun {
         state.watched = false
         save()
         throw CreateJob.interruptedWatching(vmName)
+    }
+
+    /// A `winbar create --cancel` run elsewhere can't take the lock this run holds, so it leaves a
+    /// request in the job's folder (`CreateJob.askToCancel`) and this run, at its next poll point,
+    /// carries it out as it would the window's Cancel Install…. Before this, `--cancel` refused while
+    /// a create watched the install and told the person to Ctrl-C it first (spike row 1).
+    /// Returns whether a cancel is now pending, for the waits that poll it.
+    @discardableResult
+    private func takeCancelFromOutside() -> Bool {
+        if let deleteVM = CreateJob.takeCancelRequest(in: media.directory) {
+            log.write("cancel requested by another Winbar (\(deleteVM ? "delete the VM" : "keep the VM"))")
+            CreateJob.cancelRequest.raise(deleteVM: deleteVM)
+        }
+        return CreateJob.cancelRequest.deleteVM != nil
     }
 
     /// Carries out a `CreateJob.requestCancel` while this run still holds the lock, and hands back
@@ -438,7 +471,10 @@ final class CreateRun {
             throw CreateJobError.input("E_NAME_TAKEN", ChoiceProblem.nameTaken(vmName).description)
         }
         let others = list.filter { $0.isRunning }.map(\.name)
-        if !others.isEmpty, plan.inSetupWindow != true, !plan.keepConsole {
+        // Only where going headless restarts UTM (before 5.0.6, `UTMFixes`): with the #7882 fix it
+        // stops nothing else, so there is nothing to warn about.
+        if !others.isEmpty, plan.inSetupWindow != true, !plan.keepConsole,
+           UTMFixes.displayChangeRestartsUTM(UTM.version) {
             message("N_OTHER_VMS", "When Windows is installed, Winbar restarts UTM once to take the VM headless. "
                     + "Close your other VMs by then (\(others.joined(separator: ", "))), or the VM keeps its window.")
         }
@@ -733,13 +769,25 @@ final class CreateRun {
         guard let vmID = state.vmID else {
             throw CreateJobError.unavailable("E_VM_GONE", "Winbar doesn't know which VM this install belongs to", "")
         }
+        let paused: Bool
+        if case .success(let info?) = UTMScripting.vm(named: vmName), info.status == "paused" { paused = true } else { paused = false }
         if let running = VMProcesses.find(vmName, id: state.vmID) {
+            // Paused in UTM keeps its QEMU process, so without the resume this took over a frozen
+            // Windows and watched it until the stage timed out. The process is the same one either
+            // way, so it is taken over as it is (its bytes-written count still means something).
+            if paused {
+                message("N_RESUME_SUSPENDED", "The VM was suspended. Resuming it; Windows carries on where it was.")
+                if case .failure(let error) = UTM.resumeIfPaused(vmName, id: vmID) {
+                    throw CreateJobError.unavailable(CreatePreflight.startFailureCode(error), "Couldn't resume \(vmName)",
+                                                     error.description)
+                }
+            }
             qemuStartedAt = ProcessInfo.processInfo.systemUptime
             tookOverRunningVM = true
             log.write("the VM is already running (pid \(running.pid)); taking it over as it is")
             return
         }
-        if case .success(let info?) = UTMScripting.vm(named: vmName), info.status == "paused" {
+        if paused {
             message("N_RESUME_SUSPENDED", "The VM was suspended. Resuming it; Windows carries on where it was.")
         } else if state.stage.number >= CreateStage.devices.number {
             // Setup had already written its boot loader, so the disk boots and Windows carries on. A
@@ -752,7 +800,8 @@ final class CreateRun {
                     + "starts that over.")
         }
         detail("Starting the VM…")
-        switch UTM.start(vmName, id: state.vmID, cacheSettings: plan.select) {
+        switch UTM.start(vmName, id: state.vmID, cacheSettings: plan.select,
+                        progress: { _ = message("N_UTM_WINDOW", $0) }) {
         case .success(let process):
             qemuStartedAt = ProcessInfo.processInfo.systemUptime
             // A new QEMU process counts from zero, so what the last one had written says nothing
@@ -1118,7 +1167,7 @@ final class CreateRun {
             // Up to ten minutes of waiting, so the flag is checked throughout it: Ctrl-C here leaves
             // the job at stage `finish`, which a later `--resume` picks up as it is.
             guard let stopped = UTM.stop(vmName, force: false, timeout: 600,
-                                         abort: { CreateJob.interrupt.raised || CreateJob.cancelRequest.deleteVM != nil })
+                                         abort: { CreateJob.interrupt.raised || self.takeCancelFromOutside() })
             else {
                 log.write("stopped waiting for Windows to shut down (Ctrl-C); Windows carries on shutting down")
                 try checkInterrupt()
@@ -1292,7 +1341,10 @@ final class CreateRun {
     /// Returns whether the VM ended up headless.
     @discardableResult
     private func goHeadlessOrNot(vmID: String, status: InstallStatus?, readiness: RDP.Readiness) throws -> Bool {
-        let others = (try? UTM.otherRunningVMs(than: vmName).get()) ?? ["(unknown)"]
+        // Other VMs only stand in the way where going headless restarts UTM (`UTMFixes`): on 5.0.6+
+        // UTM closes the stale window itself and nothing else stops, so none are counted.
+        let restartsUTM = UTM.displayChangeRestartsUTM(tracing: "create \(vmName)")
+        let others = restartsUTM ? ((try? UTM.otherRunningVMs(than: vmName).get()) ?? ["(unknown)"]) : []
         let decision = CreateRun.headlessDecision(plan: plan, status: status, readiness: readiness, otherVMsRunning: others)
         log.write("headless: \(decision.go ? "yes" : "no — \(decision.why)")")
         guard decision.go else {
@@ -1302,13 +1354,20 @@ final class CreateRun {
             return false
         }
         detail("Turning the VM's display off…")
-        UTM.ensureRunning()
-        UTM.recordPendingRestart(for: vmName)
+        if restartsUTM {
+            UTM.ensureRunning()
+            UTM.recordPendingRestart(for: vmName)
+        }
         var headless = false
         switch UTMScripting.updateConfiguration(vm: vmName, cpuCores: nil, memoryMB: nil, display: .headless) {
-        case .failure(let error):
+        case .failure(let failed) where failed.utmQuitItself:
+            // 5.0.6+ only: the change went, UTM quit by itself, and the relaunched UTM couldn't say
+            // whether it took. Not a refusal, so not called one.
+            message("N_KEPT_CONSOLE", "The VM may still have its UTM window: \(failed.error.description). "
+                    + "Check with winbar doctor, and turn it off later with winbar display off if it's still there.")
+        case .failure(let failed):
             message("N_KEPT_CONSOLE", "The VM keeps its UTM window: UTM didn't accept the display change "
-                    + "(\(error.description)). Turn it off later with winbar display off.")
+                    + "(\(failed.error.description)). Turn it off later with winbar display off.")
         case .success(let applied):
             guard applied.displayCount == 0 else {
                 message("N_KEPT_CONSOLE", "The VM keeps its UTM window: UTM still reports "
@@ -1317,6 +1376,9 @@ final class CreateRun {
                 break
             }
             headless = true
+            // UTM 5.0.6+ closed the stale window itself: nothing to restart, and so nothing that
+            // could stop somebody else's VM.
+            guard restartsUTM else { break }
             // The display change can take UTM a minute or two to answer, and a VM the person started
             // in the meantime would go down with UTM — the very thing N_OTHER_VMS warned about at
             // preflight. So ask again, now, and fail closed: no answer counts as "something is
@@ -1327,7 +1389,7 @@ final class CreateRun {
                 log.write("headless: not quitting UTM — \(restart.why)")
                 return keptUTMRunning(because: restart.why)
             }
-            if case .failure(let error) = UTM.quit() {
+            if case .failure(let error) = UTM.quit(progress: { _ = message("N_UTM_WINDOW", $0) }) {
                 throw CreateJobError.install("E_RESTART", "Windows is installed, but UTM had to restart and didn't "
                                              + "(\(error.title)).", error.detail, nextStep: "winbar start")
             }
@@ -1361,17 +1423,27 @@ final class CreateRun {
         return true
     }
 
+    /// The wait after the finish restart: the VM by its name and by UTM's id for it, which is what
+    /// `UTM.waitForGuestAgent` matches. It once got the id in the name's place, matched no process,
+    /// and waited out all three minutes before recording W_SLOW_BOOT for a Windows that had answered
+    /// in seconds. `isRunning` and `answers` default to the real questions; a test passes its own.
+    static func windowsAnswersAfterRestart(vmName: String, vmID: String, timeout: TimeInterval = 180,
+                                           isRunning: (String, String?) -> Bool = { VMProcesses.isRunning($0, id: $1) },
+                                           answers: (String) -> Bool = UTM.guestAgentAnswers) -> Bool {
+        UTM.waitForGuestAgent(vmName, id: vmID, timeout: timeout, isRunning: isRunning, answers: answers)
+    }
+
     /// Brings the VM back up after finish, and waits for Windows far enough to prove it works.
     private func startAgain(vmID: String) throws {
         detail("Starting Windows…")
-        if case .failure(let error) = UTM.start(vmName, id: state.vmID) {
+        if case .failure(let error) = UTM.start(vmName, id: state.vmID, progress: { _ = message("N_UTM_WINDOW", $0) }) {
             throw CreateJobError.install("E_RESTART", "Windows is installed, but the VM didn't start again after Winbar "
                                          + "detached its install disks from UTM (\(error.title)).", error.detail,
                                          nextStep: "winbar start")
         }
         // The install disks are off by now; this is the stage's long part, so say it is, and how long.
         detail("Windows is starting. Winbar waits for it to answer, up to three minutes…")
-        if UTM.waitForGuestAgent(vmID, timeout: 180) {
+        if CreateRun.windowsAnswersAfterRestart(vmName: vmName, vmID: vmID) {
             log.write("✓ \(CreateStage.finish.doneTitle)")
         } else {
             message("W_SLOW_BOOT", "Windows didn't answer within three minutes of starting again. It's probably still "
@@ -1539,6 +1611,7 @@ final class CreateRun {
         state.watched = false
         state.detail = nil
         state.stalled = nil
+        state.cancelSteps = done.steps
         try? CreateJob.writeState(state, in: directory)
         log.write("job cancelled")
         done.state = state
@@ -1593,11 +1666,23 @@ enum CreatePreflight {
     /// The exact versions `winbar create` has been *run* against, never a range and never "5.0.x".
     /// A version joins this list only after the live list in
     /// `docs/internal/specs/utm5-support.md` §5 has passed on it.
-    static let testedVersions = ["4.7.5"]
+    ///
+    /// **The release step's one switch for UTM 5.0.6.** Winbar 0.5.0 carries every fix the UTM 5.0.6
+    /// spike asked for (`UTMFixes`), but 5.0.6 goes in here only once the owner's live check on it
+    /// has passed: then this line becomes `["4.7.5", "5.0.6"]` and nothing else has to change. Doctor's
+    /// H1, create's untested/pre-release warnings and the UTM channel choice's "tested with" sentence
+    /// all read this list, and no test pins its contents beyond 4.7.5 staying in it, so the flip is
+    /// one line. Flipped for 0.5.0 on 2026-09-26, after the owner's live check on UTM 5.0.6 passed: a
+    /// daily VM's screen switched off with only its own window open, a shared folder after one start,
+    /// a paused VM resumed by Start, and Connect to the desktop.
+    static let testedVersions = ["4.7.5", "5.0.6"]
 
-    /// UTM 5 has never had a stable release. Checked 2026-09-20: v5.0.0–v5.0.5 are all marked
-    /// pre-release on GitHub, and /releases/latest is v4.7.5. When a 5.x ships as a full release this
-    /// goes away (see docs/internal/specs/utm5-support.md §7).
+    /// The first major version no tested version shares, and so the one create warns about as a
+    /// step beyond what was run. UTM 5 has never had a stable release: checked 2026-09-25, v5.0.0–
+    /// v5.0.6 are all marked pre-release on GitHub and /releases/latest is v4.7.5. The warning's words
+    /// say only "a major version ahead" (`CreateCopy.wUTMPrerelease`), so they stay true the day a 5.x
+    /// ships stable; installing UTM reads the releases live instead (`UTMChannels`). Retire this when
+    /// a 5.x is tested (see docs/internal/specs/utm5-support.md §7).
     static let prereleaseMajor = 5
 
     /// How far the installed UTM is from one create has been run against. Three answers, because a
