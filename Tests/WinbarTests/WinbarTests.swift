@@ -144,6 +144,7 @@ import Testing
             GuestScripts.applyRemoteDesktop(),
             GuestScripts.applyCertificate(host: "win.local", ip: "192.168.64.2"),
             GuestScripts.allowPasswordSignIn(),
+            GuestScripts.applyRemoteDesktopGraphics(),
             GuestScripts.openOnDesktop(user: nil, executable: "netplwiz.exe", arguments: "", elevated: true),
             GuestScripts.waitForAutologon(seconds: 90),
             GuestScripts.bitLockerStatus(),

@@ -386,8 +386,9 @@ enum SetupFlow {
         case .vm: return ["H2"]
         // G0 before G5 before G6: Windows has to answer before anything in it can change, and
         // Remote Desktop's protections would lock out an account with no password. The fixes keep
-        // `Setup.fixPass`'s order. H3 and H4 last: they're only staged here, for the restart.
-        case .tune: return ["G0", "G5", "G1", "G2", "G3", "G4", "G6", "G7", "G8", "G9", "G10", "H6", "H8", "H3", "H4"]
+        // `Setup.fixPass`'s order. G12 beside G6 and G7, Remote Desktop's other rows, and before G8,
+        // which G9 has to follow. H3 and H4 last: they're only staged here, for the restart.
+        case .tune: return ["G0", "G5", "G1", "G2", "G3", "G4", "G6", "G7", "G12", "G8", "G9", "G10", "H6", "H8", "H3", "H4"]
         // After tune, because there's no certificate to trust before G7 makes one.
         case .certificate: return ["H7"]
         case .savedPC: return ["C1", "C2"]
@@ -581,6 +582,13 @@ enum SetupFlow {
     enum PreviousChoice: Equatable, Sendable {
         /// Deleted or renamed in UTM since it was chosen: "UTM no longer has a VM named …".
         case gone(String)
+        /// Deleted in UTM, and a VM made since under the same name: its id is none UTM lists, though
+        /// the name is (H2). Said apart from `gone`, or the step would say UTM has no VM by a name
+        /// it lists just below.
+        case madeAgain(String)
+        /// Renamed in UTM, and another VM given its old name since: its id is listed under `to`, and
+        /// the name under another id (H2). Said apart from `gone` for the same reason.
+        case renamed(from: String, to: String)
         /// An Apple Virtualization VM, which Winbar can't manage (H2).
         case notQEMU(String)
     }
@@ -593,6 +601,12 @@ enum SetupFlow {
             if let chosen = facts.chosen {
                 if chosen.backend == "qemu" { return facts.vmRunning ? .ready(chosen) : .stopped(chosen) }
                 previous = .notQEMU(name)
+            } else if let id = facts.chosenID, list.contains(where: { $0.name == name }) {
+                if let byID = list.first(where: { $0.id == id }) {
+                    previous = .renamed(from: name, to: byID.name)
+                } else {
+                    previous = .madeAgain(name)
+                }
             } else {
                 previous = .gone(name)
             }

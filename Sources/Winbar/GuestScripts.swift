@@ -489,6 +489,28 @@ try {
   $agent = $apps | Where-Object { $_.DisplayName -like 'QEMU guest agent*' } | Select-Object -First 1
   if ($agent) { Emit 'G10_AGENT' $agent.DisplayVersion }
 } catch { Emit 'G10_ERROR' $_.Exception.Message }
+
+# G12 Remote Desktop graphics. Whether UTM's 3D driver is installed, not only whether it's bound: with the
+# screen off there's no display device for it, and turning the screen back on binds it again.
+try {
+  $gpu3D = Test-Path -LiteralPath ('HKLM:\SYSTEM\CurrentControlSet\Services\' + $wbGpuService)
+  Emit 'G12_3D' $gpu3D
+  Emit 'G12_POLICY' (RegValue $wbGraphicsPolicy $wbGraphicsName)
+  Emit 'G12_POLICY_KIND' (RegKind $wbGraphicsPolicy $wbGraphicsName)
+  Emit 'G12_PENDING' (Test-Path -LiteralPath ('HKLM:\' + $wbGraphicsMarker))
+  # Last and on its own: whether the driver has a device only changes what the row says, so a probe that
+  # fails (the PnpDevice module not loading, say) leaves G12_BOUND out rather than failing the row.
+  if ($gpu3D) {
+    try {
+      $bound = $false
+      foreach ($gpu in @(Get-PnpDevice -Class Display -PresentOnly -ErrorAction SilentlyContinue)) {
+        $gpuService = (Get-PnpDeviceProperty -InstanceId $gpu.InstanceId -KeyName 'DEVPKEY_Device_Service' -ErrorAction SilentlyContinue).Data
+        if ("$gpuService" -eq $wbGpuService) { $bound = $true }
+      }
+      Emit 'G12_BOUND' $bound
+    } catch { }
+  }
+} catch { Emit 'G12_ERROR' $_.Exception.Message }
 """#
         return GuestScript(body: body, params: userParams(user) + [
             ("wbPasswordChecked", passwordChecked.joined(separator: "|")),
@@ -501,6 +523,10 @@ try {
             ("wbRemap", "0"),   // doctor reports; setup and `winbar share` are what change things
             ("wbUserDrivePath", userDrivePath),
             ("wbUserDriveAnswer", userDriveAnswer),
+            ("wbGpuService", Tuning.gpu3DService),
+            ("wbGraphicsPolicy", Tuning.rdpGraphicsPolicyKey),
+            ("wbGraphicsName", Tuning.rdpGraphicsPolicyName),
+            ("wbGraphicsMarker", Tuning.rdpGraphicsMarkerKey),
         ])
     }
 
@@ -643,6 +669,30 @@ if (-not (Test-Path -LiteralPath $key)) { New-Item -Path $key -Force | Out-Null 
 Set-ItemProperty -Path $key -Name 'DevicePasswordLessBuildVersion' -Value 0 -Type DWord
 Emit 'APPLIED' '1'
 """#)
+    }
+
+    /// G12. Remote Desktop draws with Windows' own renderer instead of trying UTM's 3D driver first,
+    /// which can't find its GPU from a Remote Desktop session. Takes effect the next time Windows starts,
+    /// so it leaves a volatile marker (`Tuning.rdpGraphicsMarkerKey`) for the survey to say so until then.
+    /// Each write stops on failure, so a refused one reaches the Fix as Windows' own message.
+    static func applyRemoteDesktopGraphics() -> GuestScript {
+        GuestScript(body: #"""
+# The marker first, so one that can't be made leaves nothing changed. Volatile: Windows drops it when it
+# next starts, which is when the policy takes effect.
+[Microsoft.Win32.Registry]::LocalMachine.CreateSubKey($wbGraphicsMarker, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree, [Microsoft.Win32.RegistryOptions]::Volatile).Close()
+# A key at a time, each only where it's missing: New-Item -Force would make the whole path at once, but
+# on a key that already exists it replaces it, and every policy in it goes too.
+$parts = $wbGraphicsPolicy.Split('\')
+$path = $parts[0]
+foreach ($part in @($parts | Select-Object -Skip 1)) {
+  $path += '\' + $part
+  if (-not (Test-Path -LiteralPath $path)) { New-Item -Path $path -ErrorAction Stop | Out-Null }
+}
+Set-ItemProperty -Path $wbGraphicsPolicy -Name $wbGraphicsName -Value ([int]$wbGraphicsValue) -Type DWord -ErrorAction Stop
+Emit 'APPLIED' '1'
+"""#, params: [("wbGraphicsPolicy", Tuning.rdpGraphicsPolicyKey), ("wbGraphicsName", Tuning.rdpGraphicsPolicyName),
+                ("wbGraphicsValue", String(Tuning.rdpGraphicsPolicyValue)),
+                ("wbGraphicsMarker", Tuning.rdpGraphicsMarkerKey)])
     }
 
     /// Opens a program on the signed-in user's desktop. The agent's own processes live in session 0

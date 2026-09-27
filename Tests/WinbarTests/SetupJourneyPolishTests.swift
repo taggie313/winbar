@@ -919,11 +919,11 @@ struct TuneListModelTests {
 
 @MainActor @Suite("Tune, drawn: the headline and the folded list")
 struct TuneListDrawnTests {
-    @Test("All verified: the page says Windows is tuned, and the fifteen rows are one folded line")
+    @Test("All verified: the page says Windows is tuned, and the sixteen rows are one folded line")
     func tuned() throws {
         let lines = try ocr(render(JourneyFixtures.page(.tune), .light))
         #expect(lines.contains { $0.contains("Windows is tuned") }, "\(lines)")
-        #expect(lines.contains { $0.contains(SetupCopy.Tune.alreadyRight(15)) }, "\(lines)")
+        #expect(lines.contains { $0.contains(SetupCopy.Tune.alreadyRight(16)) }, "\(lines)")
         #expect(!lines.contains { $0.contains("Windows edition") }, "a verified row is drawn open: \(lines)")
         #expect(!lines.contains { $0.contains("recipe") }, "\(lines)")
     }
@@ -935,7 +935,7 @@ struct TuneListDrawnTests {
         let row = try #require(Drawing.find("Backups and indexing", in: lines), "\(lines)")
         #expect(row.frame.maxY < 400)
         #expect(Drawing.find("I've Added the Folder", in: lines) != nil)
-        #expect(Drawing.find(SetupCopy.Tune.alreadyRight(12), in: lines) != nil, "\(lines)")
+        #expect(Drawing.find(SetupCopy.Tune.alreadyRight(13), in: lines) != nil, "\(lines)")
         #expect(Drawing.find("Left alone: you turned off performance tuning", in: lines) != nil, "\(lines)")
     }
 }

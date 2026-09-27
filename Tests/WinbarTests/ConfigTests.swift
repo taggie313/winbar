@@ -217,8 +217,8 @@ final class MemoryStore: SettingsStore {
         #expect(VMSettings.recordedName(of: "id-1", in: store) == "winlab")
     }
 
-    /// `winbar config --vm NAME` never asks UTM, so it has no id — and must still find the record
-    /// the menu filed under one.
+    /// `winbar config --vm NAME` has no id when UTM can't name exactly one VM for it (no answer, none
+    /// by that name, or several) — and must still find the record the menu filed under one.
     @Test func aNameAloneStillFindsAnIDsRecord() {
         let store = winlab01()
         VMSettings.select(name: "winlab01", id: "id-1", in: store)

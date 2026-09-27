@@ -778,8 +778,15 @@ enum CLI {
                 // No VM chosen, and nothing forgotten: choosing it again brings its settings back.
                 Config.vmName = nil
                 Config.vmID = nil
-            } else if let previous = Config.selectVM(vm) {
-                print("Now looking after \(vm). What Winbar remembers about \(previous) is kept for it.")
+            } else {
+                // UTM's id for the name wherever UTM answers: by name alone, a VM made again under the
+                // same name found the deleted one's record (`Config.listedID`).
+                let listed = UTM.isInstalled ? (try? UTMScripting.listVMs().get()) : nil
+                let chosen = Config.listedID(for: vm, in: listed, current: Config.vmID)
+                if let previous = Config.selectVM(vm, id: chosen.id) {
+                    print("Now looking after \(vm). What Winbar remembers about \(previous) is kept for it.")
+                }
+                if let note = chosen.note { print(note) }
             }
         }
         // Every setting below belongs to a VM, so there has to be one. They used to land in a single

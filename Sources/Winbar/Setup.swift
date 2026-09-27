@@ -4,9 +4,10 @@ import Foundation
 ///
 /// Order matters: Windows must answer (G0) before anything in it can change; the account needs a
 /// password (G5) before Remote Desktop's protections go on (G6), or they'd lock it out; the guest
-/// fixes need no restart; H7 trusts the certificate G7 just made; the other manual steps come next;
-/// and every change that needs the VM off (vCPUs, RAM, display) is batched into one restart at the
-/// end. Re-running changes nothing that's already right.
+/// fixes need no VM restart (G12's waits for Windows' next start, and its row says so until then); H7
+/// trusts the certificate G7 just made; the other manual steps come next; and every change that needs
+/// the VM off (vCPUs, RAM, display) is batched into one restart at the end. Re-running changes nothing
+/// that's already right.
 enum Setup {
     static func run(options: Context.Options) -> Int32 {
         let ctx = Context(options: options)
@@ -62,8 +63,9 @@ enum Setup {
         // What create's checklist already answered: said once, then left alone.
         reportDeclined(ctx)
 
-        // Changes inside Windows; none needs a restart. G11 is the drive mapping the Guest Tools
-        // normally make, and only appears when a folder is shared without one.
+        // Changes inside Windows; none needs the VM restarted. G12's takes effect the next time Windows
+        // starts, and the closing report says to restart it when nothing below does. G11 is the drive
+        // mapping the Guest Tools normally make, and only appears when a folder is shared without one.
         var changedGuest = false
         for id in fixPass where declined(id, ctx) == nil {
             if offer(id, ctx) { changedGuest = true }
@@ -110,10 +112,13 @@ enum Setup {
     // Changing either order here changes the terminal conversation, and SetupFlowTests will say
     // which of the wizard's steps now disagrees.
 
-    /// Changes inside Windows, none of them needing a restart, offered after G0 and G5 have been
-    /// walked. G11 is the drive mapping the Guest Tools normally make, and only appears when a folder
-    /// is shared without one.
-    static let fixPass = ["G1", "G2", "G3", "G4", "G6", "G7", "G8", "G11"]
+    /// Changes inside Windows, none of them needing the VM off, offered after G0 and G5 have been
+    /// walked. G12's takes effect the next time Windows starts, and its row is manual until then; it
+    /// isn't in `manualPass`, because a Windows restart walked in the middle of that pass would leave
+    /// the steps after it reading a Windows that isn't back yet, so the closing report says it instead.
+    /// G11 is the drive mapping the Guest Tools normally make, and only appears when a folder is
+    /// shared without one.
+    static let fixPass = ["G1", "G2", "G3", "G4", "G6", "G7", "G12", "G8", "G11"]
 
     /// The manual steps, after BitLocker and H7. H9 first: a utmctl that isn't answering is the
     /// reason every row below it would fail. G8 and G11 are here as well as in the fix pass: fix it
@@ -161,7 +166,12 @@ enum Setup {
             return true
         }
         if let name = ctx.vmName {
-            if list.contains(where: { $0.name == name }) { return true }
+            if list.contains(where: { $0.name == name }) {
+                // Chosen by an id UTM no longer lists: a VM made again under the same name. H2 offers
+                // to switch to the one UTM has now; declined, every row that needs the VM says so.
+                offer("H2", ctx)
+                return true
+            }
             print("UTM no longer has a VM named \(name).")
         }
         let candidates = ctx.candidates

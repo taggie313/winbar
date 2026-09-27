@@ -79,9 +79,13 @@ enum VMSettings {
         return id
     }
 
-    /// The id-keyed record of a VM the caller knows only by name, which is all `winbar config --vm`
-    /// and `--forget` have — neither asks UTM for its list. nil when the name is its own namespace or
-    /// there is no record at all, so the caller falls back to the name.
+    /// The id-keyed record of a VM the caller knows only by name, which is all `winbar config
+    /// --forget` has, and `--vm` whenever UTM can't name exactly one VM for it (no answer, none by
+    /// that name, or several). nil when the name is its own namespace or there is no record at all,
+    /// so the caller falls back to the name.
+    ///
+    /// The first record with that name, so after a VM is made again under the same name it can be
+    /// the deleted one's. That is why `--vm` asks UTM first (`Config.listedID`).
     static func id(forName name: String, in store: SettingsStore) -> String? {
         guard !name.isEmpty, !hasRecord(name, in: store) else { return nil }
         return tokens(in: store).first { $0 != name && recordedName(of: $0, in: store) == name }
@@ -357,9 +361,10 @@ enum Config {
         /// per-VM: it describes UTM's releases, not a VM.
         static let utmReleases = "utmReleases"
         /// The name a VM was last seen under, kept inside its own record so that a record filed under
-        /// an id can still be found by someone holding only the name (`winbar config --vm NAME`,
-        /// `--forget NAME`, neither of which asks UTM). Bookkeeping rather than a setting, so it is
-        /// not one of `perVM`: a VM with nothing but this is a VM nothing is remembered about.
+        /// an id can still be found by someone holding only the name (`winbar config --forget NAME`,
+        /// which doesn't ask UTM, and `--vm NAME` whenever UTM can't name exactly one VM for it).
+        /// Bookkeeping rather than a setting, so it is not one of `perVM`: a VM with nothing but this
+        /// is a VM nothing is remembered about.
         static let recordedName = "name"
         /// Set once the one global set of settings 0.1.0 kept has been moved into the selected VM's
         /// namespace. See `VMSettings.migrate`.
@@ -471,6 +476,38 @@ enum Config {
         vmID = VMSettings.select(name: name, id: id, in: defaults).id
         vmName = name
         return previous == name ? nil : previous
+    }
+
+    /// The id `winbar config --vm NAME` chooses the VM by, from UTM's list, and a line to say when
+    /// the list can't give one. `listed` is nil when UTM didn't answer; `current` is the id of the VM
+    /// Winbar looks after now. Pure.
+    ///
+    /// By name alone the id is the first record with that name (`VMSettings.id(forName:in:)`). Live,
+    /// that was a deleted VM's: the owner had made a VM again under the same name, the old record came
+    /// first, and every check that needed the VM said there was none. So UTM's own id goes in
+    /// wherever UTM has exactly one VM by the name. With none, or several, the choice still goes by
+    /// the name, and that lookup can still attach a record's id, a deleted VM's included, which is
+    /// why H2 looks for an id UTM no longer lists (`Recipe.vmStatus`). None keeps a VM choosable
+    /// before it is made. Several, one of them the VM Winbar already looks after, keeps that one
+    /// rather than trade its id for whichever record the name finds first. A UTM that didn't answer
+    /// changes nothing.
+    static func listedID(for name: String, in listed: [VMInfo]?,
+                         current: String? = nil) -> (id: String?, note: String?) {
+        guard let listed else { return (nil, nil) }
+        let named = listed.filter { $0.name == name }
+        switch named.count {
+        case 0:
+            return (nil, "UTM has no VM named \(name) yet. Once it has, run winbar setup.")
+        case 1:
+            return (nonEmpty(named[0].id), nil)
+        default:
+            if let current = nonEmpty(current), named.contains(where: { $0.id == current }) {
+                return (current, "UTM has \(named.count) VMs named \(name); Winbar goes on looking after the one it was. "
+                    + "To choose another, give each a name of its own in UTM, then run winbar config --vm again.")
+            }
+            return (nil, "UTM has \(named.count) VMs named \(name), so Winbar can't tell which one you mean. "
+                + "Give each a name of its own in UTM, then run winbar config --vm again.")
+        }
     }
 
     /// Forgets everything remembered about a VM: `winbar config --forget NAME`, and `winbar create

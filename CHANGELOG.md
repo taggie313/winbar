@@ -7,6 +7,42 @@ as its GitHub release notes.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-27
+
+### Added
+
+- **Remote Desktop graphics**, a new check (G12) in Set Up Winbar's **Tune** step, `winbar setup`
+  and `winbar doctor`. It matters for Windows that has UTM's 3D graphics driver installed, typically
+  a VM you made yourself in UTM 5 with its experimental 3D acceleration on (seen on UTM 5.0.6). There
+  the Windows desktop in Windows App comes up blank grey: the driver looks for its GPU among the
+  session's display adapters, and a Remote Desktop session has only its own. Where the driver is
+  installed, Winbar offers to turn off Windows' "Use hardware graphics adapters for all Remote Desktop
+  Services sessions" (`bEnumerateHWBeforeSW` 0), so Remote Desktop draws with Windows' own renderer;
+  3D apps still get the GPU in UTM's window. The change takes effect the next time Windows starts, so
+  until then the row asks for a restart of Windows, and the **Tune** step waits for it rather than
+  sending you on to a blank desktop at **Connect**. It's checked with Windows' screen off too, since
+  the driver stays installed and is used again once the screen is back on. VMs `winbar create` makes
+  use UTM's GPU-accelerated display with Windows' display-only driver, not the 3D one, so the check
+  passes for them without changing anything.
+
+  If Windows App shows you a blank grey desktop, run `winbar setup` (or Set Up Winbar's **Tune**
+  step), accept **Remote Desktop graphics**, then restart Windows from its Start menu in UTM's window.
+
+### Fixed
+
+- When the VM Winbar looks after is deleted in UTM and another is made under the same name, H2 (the
+  VM check) now says Winbar still points at an earlier VM that UTM no longer has, and `winbar setup`
+  offers to switch to the one UTM has now. Before, H2 said ✓ while the checks that need the VM said
+  "needs a VM (H2)". Set Up Winbar's VM step says the same, instead of saying UTM has no VM by that
+  name. The deleted VM's settings are kept, as every VM's are.
+- `winbar config --vm NAME` now asks UTM which VM has that name and chooses it by UTM's own id
+  (opening UTM if it isn't running), rather than possibly finding the settings of a deleted VM that
+  had the same name. When UTM has none by that name it says so and chooses it by name, as before;
+  when it has several it says so (keeping the VM it looks after if that's one of them) and asks you
+  to give each a name of its own. When UTM can't be asked, it chooses by name as before.
+- A VM renamed in UTM, with its old name given to another VM since, no longer gets a ✓ from H2:
+  it names both VMs and says how to keep the one Winbar looks after or choose the other.
+
 ## [0.5.0] - 2026-09-26
 
 ### Added
@@ -770,6 +806,7 @@ generalised so it works on any Apple silicon Mac and any Windows 11 VM in UTM.
   the pinned UTM Guest Tools installer `create` downloads at run time and never redistributes, and
   the CLDR-derived time zone table.
 
+[0.5.1]: https://github.com/taggie313/winbar/releases/tag/v0.5.1
 [0.5.0]: https://github.com/taggie313/winbar/releases/tag/v0.5.0
 [0.4.0]: https://github.com/taggie313/winbar/releases/tag/v0.4.0
 [0.3.0]: https://github.com/taggie313/winbar/releases/tag/v0.3.0

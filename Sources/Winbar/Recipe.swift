@@ -31,29 +31,15 @@ enum Recipe {
                   case .failure(let error): return .error("couldn't ask UTM for its VMs: \(error)")
                   case .success(let vms): list = vms
                   }
-                  guard let name = ctx.vmName else {
-                      let candidates = ctx.candidates
-                      if candidates.count == 1 { return .fixable("none chosen; \(candidates[0].name) is the only Windows VM") }
-                      if candidates.isEmpty { return .manual("UTM has no Windows VMs", how: "Create a Windows 11 ARM64 VM in UTM, then run winbar setup.") }
-                      return .manual("none chosen", how: "winbar config --vm <name>   (UTM has: \(candidates.map(\.name).joined(separator: ", ")))")
-                  }
-                  guard let vm = list.first(where: { $0.name == name }) else {
-                      let names = list.map(\.name).joined(separator: ", ")
-                      return .manual("UTM has no VM named \(name)", how: "winbar config --vm <name>   (UTM has: \(names.isEmpty ? "none" : names))")
-                  }
-                  guard vm.backend == "qemu" else {
-                      return .error("\(name) uses UTM's Apple Virtualization backend; Winbar manages QEMU VMs")
-                  }
-                  var detail = "\(name), \(vm.isRunning ? vm.status : "stopped")"
-                  if !vm.architecture.isEmpty && vm.architecture != "aarch64" { detail += " (emulated \(vm.architecture): slow)" }
-                  return .ok(detail)
+                  return Recipe.vmStatus(name: ctx.vmName, id: ctx.vmID, in: list)
               },
               apply: { ctx in
-                  guard ctx.vmName == nil, ctx.candidates.count == 1 else { return .failure(WinbarError("No single VM to choose")) }
-                  let chosen = ctx.candidates[0]
-                  let name = chosen.name
-                  Config.selectVM(name, id: chosen.id)
-                  ctx.vmName = name
+                  guard case .success(let list) = ctx.vms,
+                        let chosen = Recipe.vmToChoose(name: ctx.vmName, id: ctx.vmID, in: list) else {
+                      return .failure(WinbarError("No single VM to choose"))
+                  }
+                  Config.selectVM(chosen.name, id: chosen.id)
+                  ctx.adoptSelection(name: chosen.name, id: Config.vmID)
                   ctx.refreshAll()
                   return .success(())
               }),
@@ -481,6 +467,16 @@ enum Recipe {
                   // theirs is the one they open.
                   return SharedFolder.remapUserDrive(vm: vm, user: ctx.configuredUser, folder: folder)
               }),
+
+        Check(id: "G12", section: .guest, title: "Remote Desktop graphics",
+              why: "UTM's 3D graphics driver (viogpu3d, from UTM's experimental 3D acceleration) can't be used from a Remote "
+                  + "Desktop session yet: it looks for its GPU among the session's display adapters, and a Remote Desktop session "
+                  + "has only its own. With Windows' default of trying hardware graphics first, the Windows desktop comes up "
+                  + "blank in Windows App. Turning off “Use hardware graphics adapters for all Remote Desktop Services sessions” "
+                  + "has Remote Desktop draw with Windows' own renderer; 3D apps get the GPU only in UTM's window. Takes effect "
+                  + "the next time Windows starts.",
+              evaluate: { ctx in guestStatus(ctx) { out in remoteDesktopGraphicsStatus(out) } },
+              apply: { ctx in applyInGuest(ctx, GuestScripts.applyRemoteDesktopGraphics()) }),
     ]
 
     // MARK: - Client
@@ -624,6 +620,75 @@ enum Recipe {
         }
     }
 
+    /// H2's row once UTM has listed its VMs: the VM chosen, by name and by the id Winbar has for it
+    /// when it has one, against that list. Pure, so every case can be checked without UTM.
+    ///
+    /// An id UTM no longer lists, beside a VM that has the name, is a VM deleted and made again under
+    /// the same name. Live, this row said ✓ by the name while every check after it looked for the
+    /// deleted VM's id, found nothing and said "needs a VM (H2)". It is fixable when one QEMU VM has
+    /// the name (`vmToChoose`); with several, only the person can say which. An id UTM lists under
+    /// another name is the VM renamed, with another VM given its old name since: the same symptom,
+    /// and only the person can say which of the two they mean.
+    ///
+    /// So the row is ✓ only for the VM `Context.vm` finds: the name's, and the id's when there is one.
+    static func vmStatus(name: String?, id: String?, in list: [VMInfo]) -> Status {
+        guard let name else {
+            let candidates = Context.candidates(in: list)
+            if candidates.count == 1 { return .fixable("none chosen; \(candidates[0].name) is the only Windows VM") }
+            if candidates.isEmpty { return .manual("UTM has no Windows VMs", how: "Create a Windows 11 ARM64 VM in UTM, then run winbar setup.") }
+            return .manual("none chosen", how: "winbar config --vm <name>   (UTM has: \(candidates.map(\.name).joined(separator: ", ")))")
+        }
+        let named = list.filter { $0.name == name }
+        guard !named.isEmpty else {
+            let names = list.map(\.name).joined(separator: ", ")
+            return .manual("UTM has no VM named \(name)", how: "winbar config --vm <name>   (UTM has: \(names.isEmpty ? "none" : names))")
+        }
+        let vm: VMInfo
+        if let id {
+            guard let byID = list.first(where: { $0.id == id }) else {
+                let earlier = "Winbar still points at an earlier VM called \(name) that UTM no longer has"
+                guard named.count == 1 else {
+                    return .manual("\(earlier), and UTM has \(named.count) VMs by that name",
+                                   how: "Give each a name of its own in UTM, then run winbar config --vm <name>.")
+                }
+                // Switching to a VM Winbar can't manage would only trade this row for the one below.
+                guard named[0].backend == "qemu" else { return notQEMU(name) }
+                return .fixable("\(earlier); setup can switch to the one UTM has now")
+            }
+            guard byID.name == name else {
+                return .manual("Winbar looks after the VM UTM now calls \(byID.name); \(name) is another VM",
+                               how: "winbar config --vm \"\(byID.name)\" to keep it, "
+                                   + "or winbar config --vm \"\(name)\" for the other one.")
+            }
+            vm = byID
+        } else {
+            // By the name alone, as `Context.vm` finds it: the first UTM lists.
+            vm = named[0]
+        }
+        guard vm.backend == "qemu" else { return notQEMU(name) }
+        var detail = "\(name), \(vm.isRunning ? vm.status : "stopped")"
+        if !vm.architecture.isEmpty && vm.architecture != "aarch64" { detail += " (emulated \(vm.architecture): slow)" }
+        return .ok(detail)
+    }
+
+    /// The VM H2's fix chooses: with none chosen, the only Windows VM; with one chosen by an id UTM
+    /// no longer lists, the one VM that has its name now, when it is one Winbar can manage. nil
+    /// whenever there isn't exactly one — the rows `vmStatus` doesn't call fixable. The record under
+    /// the old id is kept, as every record is (`Config.forget`). Pure.
+    static func vmToChoose(name: String?, id: String?, in list: [VMInfo]) -> VMInfo? {
+        guard let name else {
+            let candidates = Context.candidates(in: list)
+            return candidates.count == 1 ? candidates[0] : nil
+        }
+        guard let id, !list.contains(where: { $0.id == id }) else { return nil }
+        let named = list.filter { $0.name == name }
+        return named.count == 1 && named[0].backend == "qemu" ? named[0] : nil
+    }
+
+    private static func notQEMU(_ name: String) -> Status {
+        .error("\(name) uses UTM's Apple Virtualization backend; Winbar manages QEMU VMs")
+    }
+
     /// The row's own words for a dependency's state. Pure.
     static func dependencyDetail(_ dependency: Dependency, state: DependencyState,
                                  tested: [String] = CreatePreflight.testedVersions) -> String {
@@ -659,6 +724,33 @@ enum Recipe {
     /// '' (ok) or refused it only by policy (1327, ERROR_ACCOUNT_RESTRICTION).
     static func blankPassword(_ out: GuestOutput) -> Bool {
         out["G5_SOURCE"] == "Local" && ["ok", "1327"].contains(out["G5_LOGON"] ?? "")
+    }
+
+    /// G12's row from the survey. It goes by the 3D driver being installed, not only bound: a VM with
+    /// its screen off has no display device for it, and turning the screen back on binds it again.
+    /// Pure, so every state can be checked without a VM.
+    ///
+    /// The policy works only from the next time Windows starts, so a value set since then (the fix's
+    /// volatile marker, G12_PENDING) is a restart still to do, not a pass: the tune step waits on it,
+    /// or Connect would open the same blank desktop. Not with the screen off, though: turning it back
+    /// on restarts the VM, and that is the start the policy needs. A probe that didn't say (no
+    /// G12_BOUND) counts as bound, so nobody is told it's done when it isn't.
+    static func remoteDesktopGraphicsStatus(_ out: GuestOutput) -> Status {
+        if Tuning.homeEditions.contains(out["EDITION"] ?? "") { return .info("Windows Home can't host Remote Desktop (G0)") }
+        if let error = out["G12_ERROR"] { return .error(error) }
+        guard let installed = out.bool("G12_3D") else { return .info("unknown") }
+        guard installed else { return .ok("nothing to change: UTM's 3D graphics driver isn't installed") }
+        let unbound = out.bool("G12_BOUND") == false
+        // Windows reads the policy as a DWORD; the fix's Set-ItemProperty rewrites any other type.
+        if out.int("G12_POLICY") == Tuning.rdpGraphicsPolicyValue && out["G12_POLICY_KIND"] == "DWord" {
+            guard out.bool("G12_PENDING") == true, !unbound else { return .ok("Remote Desktop set to draw with Windows' own renderer") }
+            return .manual("set, but until Windows restarts the Windows desktop still comes up blank in Windows App",
+                           how: "Restart Windows from its Start menu (console window), then run this again.")
+        }
+        return .fixable(unbound
+            ? "Remote Desktop would try UTM's 3D graphics driver first once the console window is back (winbar display on), "
+                + "which leaves the Windows desktop blank in Windows App"
+            : "Remote Desktop would try UTM's 3D graphics driver first, which leaves the Windows desktop blank in Windows App")
     }
 
     /// G11's row, from the three facts it needs: the folder UTM shares (nil = none), what Windows

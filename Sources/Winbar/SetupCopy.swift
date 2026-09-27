@@ -828,6 +828,12 @@ enum SetupCopy {
             switch previous {
             case .gone(let name):
                 return fill("UTM no longer has a VM named “\(name)”, the one Winbar was looking after.")
+            case .madeAgain(let name):
+                return fill("UTM no longer has the VM named “\(name)” that Winbar was looking after. "
+                    + "The “\(name)” it has now is a different VM, made since.")
+            case .renamed(let name, let now):
+                return fill("The VM Winbar was looking after is called “\(now)” in UTM now. "
+                    + "The “\(name)” it has is a different VM.")
             case .notQEMU(let name):
                 return fill("“\(name)” uses UTM's Apple Virtualization backend, which Winbar can't manage.")
             }
@@ -935,6 +941,11 @@ enum SetupCopy {
             case "G7":
                 return "Windows App checks the certificate Windows shows it. Windows' own is made out to a different "
                     + "name, so Winbar makes one for the name your Mac uses, which the Certificate step approves."
+            case "G12":
+                return "UTM can give Windows a graphics driver for 3D apps, but Remote Desktop can't use it yet: trying "
+                    + "it first leaves the Windows desktop blank in Windows App. So Winbar has Remote Desktop draw with "
+                    + "Windows' own graphics, and 3D apps keep UTM's 3D graphics on Windows' screen in UTM. This takes "
+                    + "effect the next time Windows starts."
             case "G8":
                 return "When Windows signs in by itself at startup, Connect picks up the session that's already "
                     + "running, apps and all. Windows keeps the password protected, not as plain text."
@@ -988,6 +999,8 @@ enum SetupCopy {
             ("Hello-only sign-in hides the netplwiz setting that turns it on", "Windows Hello sign-in hides the setting that turns it on"),
             ("In the netplwiz window setup opens in Windows,", "In the window Winbar opens in Windows,"),
             ("press OK,", "choose OK,"),
+            ("Windows' own renderer", "Windows' own graphics"),
+            ("once the console window is back (winbar display on)", "once Windows' screen is back on"),
         ]
 
         /// `text` with `windowWords` put in and its check codes taken out. Pure.
@@ -1101,7 +1114,13 @@ enum SetupCopy {
         /// open a page on the Windows desktop.
         static func bGuide(_ id: String) -> String { id == "H6" ? "Open Time Machine Settings…" : "Open in Windows…" }
         /// A manual row's **Done**, as what Ben says he did. "Done" alone read as "close this".
-        static func bDone(_ id: String) -> String { id == "H6" ? "I've Added the Folder" : "I've Done It" }
+        static func bDone(_ id: String) -> String {
+            switch id {
+            case "H6": return "I've Added the Folder"
+            case "G12": return "I've Restarted Windows"
+            default: return "I've Done It"
+            }
+        }
 
         /// What VoiceOver says for a row's button: the button and the row it acts on, since every row
         /// has a **Skip** and several a **Fix**, and "Skip, button" five times over says nothing.

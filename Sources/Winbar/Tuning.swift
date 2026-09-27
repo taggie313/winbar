@@ -102,4 +102,24 @@ enum Tuning {
 
     /// Windows editions that can't host Remote Desktop at all.
     static let homeEditions: Set<String> = ["Core", "CoreN", "CoreSingleLanguage", "CoreCountrySpecific"]
+
+    // MARK: Guest Remote Desktop graphics (G12)
+
+    /// "Use hardware graphics adapters for all Remote Desktop Services sessions", off. With UTM's 3D driver
+    /// installed and this unset or on, the Windows desktop drew blank over Remote Desktop (UTM 5.0.6): the
+    /// driver looks for its GPU among the session's display adapters, and a Remote Desktop session has only
+    /// its own. Measured with Windows restarted after the change; whether a reconnect alone picks it up isn't.
+    static let rdpGraphicsPolicyKey = #"HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"#
+    static let rdpGraphicsPolicyName = "bEnumerateHWBeforeSW"
+    static let rdpGraphicsPolicyValue = 0
+
+    /// A volatile key G12's fix makes, under HKLM. Windows drops volatile keys when it starts, so while this
+    /// one is there the policy was set since Windows last started and isn't in effect yet. One level, straight
+    /// under SOFTWARE: no stable key can be made under a volatile one, so a volatile SOFTWARE\Winbar would
+    /// trip up anything that wrote there later.
+    static let rdpGraphicsMarkerKey = #"SOFTWARE\Winbar-RemoteDesktopGraphics"#
+
+    /// The Windows service of UTM's DirectX driver (viogpu3d.inf), which UTM 5 installs for a VM with 3D
+    /// acceleration on. Winbar's own VMs get the display-only driver instead.
+    static let gpu3DService = "VioGpu3D"
 }

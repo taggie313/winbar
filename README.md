@@ -122,7 +122,9 @@ the size of it did not.
 - **Not for 3D games or GPU work.** The VM has no graphics card: UTM gives Windows a display-only
   adapter, so Direct3D falls back to Microsoft's software renderer and runs on the emulated CPU.
   Office, browsers, developer tools and line-of-business software are fine. Games, CAD and anything
-  that expects a GPU are not.
+  that expects a GPU are not. A VM made in UTM with its experimental 3D acceleration on has a 3D
+  driver, but only UTM's own window can use it: over Remote Desktop, Winbar has Windows draw in
+  software.
 - **Windows App** (Microsoft's Remote Desktop app). `winbar setup` offers to install this one too:
   with Homebrew, or by opening its Mac App Store page — Microsoft ships it through the App Store,
   and an App Store app can't be installed for you, so the Get button stays yours to press. By
@@ -357,7 +359,9 @@ Setup first prints a checklist (✓ fine, ! Winbar can fix it, ? needs you, · f
 
 1. Makes sure it can reach Windows, and that your Windows account has a password. Remote
    Desktop's sign-in protections would lock a blank-password account out, so they wait for this.
-2. Fixes what it can inside Windows, asking **y/N** for each change. None of these needs a restart.
+2. Fixes what it can inside Windows, asking **y/N** for each change. None of these needs the VM
+   restarted, though the Remote Desktop graphics fix (only on a VM with UTM's 3D acceleration on)
+   takes effect the next time Windows starts.
 3. Offers to turn BitLocker off ([why](#security-defaults)).
 4. Trusts the VM's Remote Desktop certificate on the Mac (macOS asks you to approve).
 5. Walks you through the other steps it can't do for you: it opens the right window, waits while
@@ -377,6 +381,7 @@ Run it again any time. When everything is already right, it changes nothing.
 | Trusts the VM's Remote Desktop certificate (macOS asks you to approve) | Turns off transparency and animations (skip with `--no-visual-tweaks`) |
 | | Turns on Remote Desktop, with Network Level Authentication (once your account has a password) |
 | | Gives Remote Desktop a certificate named for the address your Mac uses |
+| | When UTM's 3D graphics driver is installed, has Remote Desktop draw with Windows' own renderer, since the Windows desktop is otherwise blank in Windows App (from the next time Windows starts) |
 | | Decrypts BitLocker when the VM's disk is on an encrypted volume ([why](#security-defaults); keep it with `--keep-bitlocker`) |
 
 VM settings are changed through UTM's own scripting interface, with the VM shut down, so UTM
@@ -837,6 +842,7 @@ a measurement, the way the rest of the recipe does.
    | Visual effects | *Settings > Personalization > Colors > Transparency effects*, *Settings > Accessibility > Visual effects > Animation effects*, and *System > About > Advanced system settings > Performance > Let Windows choose* (as your user) |
    | Automatic sign-in | Run `netplwiz` and tick *Users must enter a user name and password* again |
    | Remote Desktop | *Settings > System > Remote Desktop*, off |
+   | Remote Desktop graphics | Only set where UTM's 3D graphics driver is installed. `Remove-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' bEnumerateHWBeforeSW`, then restart Windows (the Windows desktop in Windows App goes blank again) |
    | The certificate | Harmless to leave. To remove it: `certlm.msc` > Personal > Certificates |
    | BitLocker | *Control Panel > BitLocker Drive Encryption > Turn on BitLocker* (and save the new recovery key) |
    | Local account | *Settings > Accounts > Your info > Sign in with a Microsoft account instead* |

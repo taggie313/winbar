@@ -196,6 +196,24 @@ Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' LimitBlankPassword
   Network). A **Bridged** VM is reachable from your whole network on port 3389; if you bridge,
   consider restricting these firewall rules to your Mac's address.
 
+**Only if the VM was made with UTM's experimental 3D acceleration on** (Windows then has UTM's 3D
+driver: `Test-Path HKLM:\SYSTEM\CurrentControlSet\Services\VioGpu3D` says `True`), also have
+Remote Desktop draw without it. Windows (admin), then restart Windows:
+
+```powershell
+$p = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+if (-not (Test-Path $p)) { New-Item -Path $p -Force | Out-Null }   # -Force only where it's missing (step 6)
+Set-ItemProperty $p bEnumerateHWBeforeSW 0 -Type DWord
+```
+
+- *Why:* the driver looks for its GPU among the session's display adapters, and a Remote Desktop
+  session has only its own. With *Use hardware graphics adapters for all Remote Desktop Services
+  sessions* not configured (Windows' default) or on, the Windows desktop in Windows App came up
+  blank grey (UTM 5.0.6). Off, Remote Desktop draws with Windows' own renderer; 3D apps still get
+  the GPU in UTM's window.
+- *Why restart:* it was measured with Windows restarted after the change. Whether reconnecting
+  alone picks it up hasn't been checked.
+
 ### 6. Visual effects off
 
 As **you** (not admin), then sign out and back in:
