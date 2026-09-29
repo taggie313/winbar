@@ -7,6 +7,29 @@ as its GitHub release notes.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-29
+
+### Fixed
+
+- When Windows can't be asked to shut down through its guest agent, Winbar falls back to UTM's
+  power-button press, and a Windows that has been idle a few minutes, with its screen off or its
+  display blanked, lets that press go by. Shutting Windows down (the menu's **Shut Down** and
+  **Restart**, `winbar stop` and `winbar restart`, and changes that need the VM off: turning the
+  screen off or on, vCPUs, RAM and the shared folder) then waited two minutes and asked whether to
+  force it off, and create's last step waited ten minutes and stopped with the install disks still
+  in place. Winbar now presses a second time if the VM is still running 15 seconds after the first.
+  Measured on Windows 11 25H2 with UTM 5.0.6: an idle Windows that let the first press go by shut
+  down cleanly at a second, and a second press while it was already shutting down did no harm.
+- When the VM Winbar looks after has been deleted in UTM and another made under the same name, and
+  you say no to `winbar setup`'s offer to switch to the one UTM has now, setup stops there, before
+  starting a VM. Before, it went on by the name alone: it offered to start the VM that has the name
+  now if it was stopped, waited for its Windows, and then the checks that need the VM said "needs a
+  VM (H2)". The same happened with a VM renamed in UTM whose old name has since gone to another VM,
+  where only you can say which you mean. Setup now ends with what H2 says and what to do next: let
+  it switch the next time, or, where it can't, choose the VM with `winbar config --vm`. Set Up
+  Winbar's VM step already asked you to choose. And when setup starts the VM, it now starts it by
+  UTM's id where Winbar has one, as Set Up Winbar does, rather than by a name another VM may share.
+
 ## [0.5.1] - 2026-09-27
 
 ### Added
@@ -806,6 +829,7 @@ generalised so it works on any Apple silicon Mac and any Windows 11 VM in UTM.
   the pinned UTM Guest Tools installer `create` downloads at run time and never redistributes, and
   the CLDR-derived time zone table.
 
+[0.5.2]: https://github.com/taggie313/winbar/releases/tag/v0.5.2
 [0.5.1]: https://github.com/taggie313/winbar/releases/tag/v0.5.1
 [0.5.0]: https://github.com/taggie313/winbar/releases/tag/v0.5.0
 [0.4.0]: https://github.com/taggie313/winbar/releases/tag/v0.4.0

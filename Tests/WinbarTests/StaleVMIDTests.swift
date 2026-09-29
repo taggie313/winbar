@@ -298,3 +298,135 @@ struct StaleVMIDRecords {
         #expect(VMSettings.recordedName(of: "Windows 11", in: store) == nil)
     }
 }
+
+/// Found by the 0.5.1 merge review: H2's switch declined, `winbar setup` went on by the name alone,
+/// offered to start the other VM with that name and waited for its Windows, after which the checks
+/// that need the VM said "needs a VM (H2)". `Setup.chosenVM` is asked before H2's offer, and
+/// `Setup.endsAtVM` after it; `chooseVM` only follows them, and can't be run here (it asks UTM and
+/// writes the settings of the Mac). Setup goes on only with a VM `Context.vm` finds.
+@Suite("winbar setup stops at a VM it can't be sure of")
+struct StaleVMIDSetup {
+    private let h2 = Recipe.check("H2")!
+    private let stopped = "Setup has stopped without starting a VM: "
+
+    /// What `chooseVM` asks after H2's offer, when UTM has answered with `list`.
+    private func ends(_ name: String?, _ id: String?, in list: [VMInfo], switched: Bool = false) -> [String]? {
+        Setup.endsAtVM(name: name, id: id, in: .success(list), switched: switched, check: h2,
+                       status: Recipe.vmStatus(name: name, id: id, in: list))
+    }
+
+    @Test("An id UTM no longer has, the switch declined: setup stops, saying how to go on")
+    func declined() {
+        #expect(Setup.chosenVM(name: "Windows 11", id: staleID, in: [other, live]) == .anotherVM)
+        // H2's offer has just shown the row, so what follows is only what to do. The same when the
+        // switch was taken and failed: nothing was chosen, and the offer has said why.
+        #expect(ends("Windows 11", staleID, in: [other, live]) == [stopped + "run winbar setup again and let it switch, "
+            + "or choose a VM with winbar config --vm <name>, then run winbar setup again."])
+    }
+
+    @Test("An id UTM no longer has, the switch accepted: setup goes on with the VM UTM has now")
+    func accepted() {
+        let chosen = Recipe.vmToChoose(name: "Windows 11", id: staleID, in: [other, live])
+        #expect(chosen == live)
+        guard let chosen else { return }
+        #expect(Setup.chosenVM(name: chosen.name, id: chosen.id, in: [other, live]) == .found)
+        #expect(ends(chosen.name, chosen.id, in: [other, live], switched: true) == nil)
+    }
+
+    /// The switch reads UTM's list again, and this time nothing comes back. UTM listed the VM a
+    /// moment before and it is the one just chosen, so setup goes on with it, as it did before,
+    /// rather than ask for that choice again.
+    @Test("The switch made, then UTM not answering: setup goes on with the VM just chosen")
+    func switchedThenNoAnswer() {
+        let noAnswer: Result<[VMInfo], WinbarError> = .failure(WinbarError("AppleEvent timed out", timedOut: true))
+        let row = Status.manual("UTM didn't answer", how: "Open UTM, then run winbar setup again.")
+        #expect(Setup.endsAtVM(name: "Windows 11", id: liveID, in: noAnswer, switched: true, check: h2, status: row) == nil)
+    }
+
+    /// A declined or failed switch leaves UTM's answer as it was, so this is decided rather than
+    /// reached: H2's row, its how when it has one, then try again.
+    @Test("UTM not answering and no switch made: setup stops, with H2's row")
+    func noAnswerNoSwitch() {
+        let noAnswer: Result<[VMInfo], WinbarError> = .failure(WinbarError("AppleEvent timed out", timedOut: true))
+        let manual = Status.manual("UTM didn't answer", how: "Open UTM, then run winbar setup again.")
+        #expect(Setup.endsAtVM(name: "Windows 11", id: staleID, in: noAnswer, switched: false, check: h2, status: manual)
+            == ["\(manual.symbol) H2 VM: UTM didn't answer", "   how: Open UTM, then run winbar setup again.",
+                stopped + "once that's done, run winbar setup again."])
+        let error = Status.error("couldn't ask UTM for its VMs: it quit")
+        #expect(Setup.endsAtVM(name: "Windows 11", id: staleID, in: noAnswer, switched: false, check: h2, status: error)
+            == ["\(error.symbol) H2 VM: couldn't ask UTM for its VMs: it quit", stopped + "run winbar setup again."])
+    }
+
+    @Test("No id remembered: setup goes on by the name, as before")
+    func noID() {
+        #expect(Setup.chosenVM(name: "Windows 11", id: nil, in: [other, live]) == .found)
+        #expect(ends("Windows 11", nil, in: [other, live]) == nil)
+        #expect(Setup.chosenVM(name: "Windows 11", id: liveID, in: [other, live]) == .found)
+        #expect(ends("Windows 11", liveID, in: [other, live]) == nil)
+    }
+
+    /// H2 has no switch to offer here, so its row and its how come first, in its own words.
+    @Test("Renamed, and its old name given to another VM: setup stops, with H2's row and how")
+    func renamedAndReplaced() {
+        #expect(Setup.chosenVM(name: "Windows 11", id: staleID, in: [renamed, live]) == .anotherVM)
+        let status = Recipe.vmStatus(name: "Windows 11", id: staleID, in: [renamed, live])
+        guard case .manual(let detail, let how) = status else {
+            Issue.record("expected manual, got \(status.detail)")
+            return
+        }
+        #expect(ends("Windows 11", staleID, in: [renamed, live]) == ["\(status.symbol) H2 VM: " + detail,
+            "   how: " + how, stopped + "once that's done, run winbar setup again."])
+    }
+
+    /// The other rows H2 has no switch for: its row, its how when it has one, then what to do.
+    @Test("An id UTM no longer has, beside two VMs with the name or only an Apple one: setup stops")
+    func noSwitch() {
+        #expect(Setup.chosenVM(name: "Windows 11", id: staleID, in: [live, twin]) == .anotherVM)
+        let twins = Recipe.vmStatus(name: "Windows 11", id: staleID, in: [live, twin])
+        if case .manual(let detail, let how) = twins {
+            #expect(ends("Windows 11", staleID, in: [live, twin]) == ["\(twins.symbol) H2 VM: " + detail,
+                "   how: " + how, stopped + "once that's done, run winbar setup again."])
+        } else {
+            Issue.record("expected manual, got \(twins.detail)")
+        }
+
+        #expect(Setup.chosenVM(name: "Windows 11", id: staleID, in: [apple]) == .anotherVM)
+        let notQEMU = Recipe.vmStatus(name: "Windows 11", id: staleID, in: [apple])
+        #expect(ends("Windows 11", staleID, in: [apple]) == ["\(notQEMU.symbol) H2 VM: " + notQEMU.detail,
+            stopped + "choose a VM with winbar config --vm <name>, then run winbar setup again."])
+    }
+
+    @Test("No VM by that name: the VMs UTM has are offered, as before")
+    func nameAbsent() {
+        for id in [nil, staleID, liveID] {
+            #expect(Setup.chosenVM(name: "Windows 11", id: id, in: [other]) == .gone)
+            #expect(Setup.chosenVM(name: "Windows 11", id: id, in: []) == .gone)
+        }
+    }
+
+    /// Over the same lists as H2's own grid: setup goes on after H2's offer exactly where every check
+    /// after it finds the VM, whatever the offer did; the offer comes only where setup makes it; a
+    /// switch always lands on a VM setup goes on with; and a ✓ from H2 is never a stop.
+    @Test("Setup goes on after H2 only with a VM every check after it finds")
+    func agreesWithH2() {
+        for list in StaleVMIDStatus.lists {
+            for name in StaleVMIDStatus.names.compactMap({ $0 }) {
+                for id in StaleVMIDStatus.ids {
+                    let status = Recipe.vmStatus(name: name, id: id, in: list)
+                    let stands = Setup.chosenVM(name: name, id: id, in: list)
+                    let label = "\(name) \(id ?? "no id") in \(list.map(\.name))"
+                    if status.isFixable { #expect(stands == .anotherVM, "\(label)") }
+                    if status.isOK { #expect(stands == .found, "\(label)") }
+                    if stands == .gone { #expect(status.detail == "UTM has no VM named \(name)", "\(label)") }
+                    let found = Context.vm(named: name, id: id, in: list) != nil
+                    for switched in [false, true] {
+                        #expect((ends(name, id, in: list, switched: switched) == nil) == found, "\(label) \(switched)")
+                    }
+                    if let chosen = Recipe.vmToChoose(name: name, id: id, in: list) {
+                        #expect(ends(chosen.name, chosen.id, in: list, switched: true) == nil, "\(label)")
+                    }
+                }
+            }
+        }
+    }
+}

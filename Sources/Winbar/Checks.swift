@@ -160,7 +160,13 @@ final class Context {
 
     var vm: VMInfo? {
         guard let vmName, case .success(let list) = vms else { return nil }
-        return list.first { $0.name == vmName && (vmID == nil || vmID == $0.id) }
+        return Context.vm(named: vmName, id: vmID, in: list)
+    }
+
+    /// The rule itself, pure, so `winbar setup` can tell whether every check after H2 will find the
+    /// VM it was given (`Setup.chosenVM`): the name's, and the id's when Winbar has one.
+    static func vm(named name: String, id: String?, in list: [VMInfo]) -> VMInfo? {
+        list.first { $0.name == name && (id == nil || id == $0.id) }
     }
 
     /// Live, and cheap: a process-table scan.

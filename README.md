@@ -90,7 +90,7 @@ differ, but every comparison was made like-for-like.
 | **Running in the background (headless) costs less — but far less than this table used to claim.** UTM's virtual GPU is display-only, so frames Windows draws are copied by the Mac's CPU, and with no display device that work isn't done. | Guest idle, host CPU per minute, **median of 30 one-minute samples**: **0.5 s** headless (QEMU 0.53, UTM 0.00) against **1.7 s** with the window open (QEMU 0.66, UTM 1.01) — about two thirds less, and both a small fraction of one core. Idle cost is **bursty**: three quarters of minutes sit near 0.5 s and the rest jump to several seconds, so the median is quoted; the mean swung between 0.8 and 2.7 across two runs and is not a number to rely on. The **59.8 s** published here before could not be reproduced at idle — see below. |
 | **More vCPUs isn't better.** On an M5 Max (6 "Super" cores plus 12 "Performance" cores), a fixed workload was run at 4, 6 and 8 vCPUs. | **6 was cheapest** in host CPU and fastest. **8 cost 28% more** host CPU (37.8 vs 29.6 CPU-s) for no speed gain; 4 was slower and no cheaper. Winbar sets vCPUs to your Mac's top-tier core count, kept between 4 and 8. |
 | **Converting the disk image (qcow2 to raw) isn't worth it.** | The Mac writes 2 GiB to the image file in 0.17 s; Windows takes 2.2 s for the same write. **~93% of the cost is the virtual disk device path**, not the image format. |
-| **"Stop" has to go through Windows.** UTM's stop button presses a virtual ACPI power button. Once Windows has blanked its display, it treats that press as *wake* (event log: Kernel-Power 566) and never shuts down. | Winbar asks Windows itself to shut down, through UTM's guest agent, and only falls back to the power button. |
+| **"Stop" has to go through Windows.** UTM's stop button presses a virtual ACPI power button. Once Windows has blanked its display, it treats that press as *wake* (event log: Kernel-Power 566) and shuts down only at a second press. | Winbar asks Windows itself to shut down, through UTM's guest agent, and only falls back to the power button, pressed a second time if Windows is still running 15 s later. |
 | **Balanced beats Ultimate Performance.** Ultimate Performance disables core parking, and parked vCPUs are what let the Mac's cores sleep. | Balanced with a fast ramp-up kept both speed and idle efficiency. |
 | **The menu bar app itself is cheap.** | The prototype measured 0.05 CPU-seconds per minute idle. |
 
@@ -735,8 +735,11 @@ fail. If Windows App can't connect, turn on *Allow Local Network Access* in Tail
 Exit Node menu, or turn the exit node off.
 
 **UTM's own Stop button does nothing.** That's the ACPI problem from [Why](#why-what-was-measured):
-once Windows has blanked its display, the virtual power button only wakes it. Use Winbar's Shut
-Down. If Windows is still going after two minutes, Winbar asks whether to keep waiting (the
+once Windows has blanked its display, the first press of the virtual power button only wakes it.
+Use Winbar's Shut Down, which asks Windows itself. When Windows can't be asked that way, Winbar
+presses the power button, and presses it again if the VM is still running 15 seconds later: in
+testing (Windows 11 25H2, UTM 5.0.6), an idle Windows that let the first press go by shut down at
+the second. If Windows is still going after two minutes, Winbar asks whether to keep waiting (the
 default), force it off or give up: Windows may be installing updates, which it doesn't show while
 it runs in the background, and powering off then can damage it. If it's waiting on an app with unsaved work,
 connect and deal with it, or use ⌥ Force Stop (a hard power-off, like pulling the plug).

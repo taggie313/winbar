@@ -36,10 +36,12 @@ enum Setup {
         guard chooseVM(ctx), let vm = ctx.vmName else { return 1 }
         rememberOptOuts(options)
 
-        if !VMProcesses.isRunning(vm) {
+        // The id goes in with the name, as in the set-up window: utmctl then starts the VM the checks
+        // look at, not whichever has its name.
+        if !VMProcesses.isRunning(vm, id: ctx.vmID) {
             if Term.confirm("\(vm) is stopped. Start it so Windows can be checked and tuned?", assumeYes: options.assumeYes) {
                 Term.note("Starting \(vm)…")
-                switch UTM.start(vm, progress: { Term.note($0) }) {
+                switch UTM.start(vm, id: ctx.vmID, progress: { Term.note($0) }) {
                 case .failure(let error):
                     Term.error("\(error)")
                 case .success:
@@ -166,13 +168,27 @@ enum Setup {
             return true
         }
         if let name = ctx.vmName {
-            if list.contains(where: { $0.name == name }) {
-                // Chosen by an id UTM no longer lists: a VM made again under the same name. H2 offers
-                // to switch to the one UTM has now; declined, every row that needs the VM says so.
-                offer("H2", ctx)
+            switch chosenVM(name: name, id: ctx.vmID, in: list) {
+            case .found:
                 return true
+            case .anotherVM:
+                // The name, but not under the id Winbar has: a VM made again under the same name, which
+                // H2 offers to switch to, or one renamed with its old name given to another since, which
+                // only the person can settle. Unless the switch is made, setup ends here: going on by the
+                // name would offer to start the other VM and wait for its Windows, and then the checks
+                // that need the VM would say "needs a VM (H2)". `endsAtVM` decides; this only follows it.
+                let switched = offer("H2", ctx)
+                guard let check = Recipe.check("H2") else { return false }
+                if let lines = endsAtVM(name: ctx.vmName, id: ctx.vmID, in: ctx.vms, switched: switched,
+                                        check: check, status: ctx.status(of: check)) {
+                    print("")
+                    lines.forEach { print($0) }
+                    return false
+                }
+                return true
+            case .gone:
+                print("UTM no longer has a VM named \(name).")
             }
-            print("UTM no longer has a VM named \(name).")
         }
         let candidates = ctx.candidates
         switch candidates.count {
@@ -192,6 +208,54 @@ enum Setup {
             select(candidates[index])
             return true
         }
+    }
+
+    /// Where setup stands with the VM chosen before it ran, by its name and the id Winbar has for it,
+    /// against UTM's list.
+    enum ChosenVM: Equatable {
+        /// UTM lists the VM every check after H2 looks for (`Context.vm`): setup goes on with it.
+        case found
+        /// UTM lists the name, but not under the id Winbar has: a VM made again under the same name,
+        /// or renamed with its old name given to another since. Only H2's switch lets setup go on.
+        case anotherVM
+        /// UTM has no VM by the name: setup offers the ones it has, as it always did.
+        case gone
+    }
+
+    /// Asked before H2's offer, and by `endsAtVM` after it, when the id may be the one UTM has now.
+    /// Pure, so each case can be checked without UTM.
+    static func chosenVM(name: String, id: String?, in list: [VMInfo]) -> ChosenVM {
+        if Context.vm(named: name, id: id, in: list) != nil { return .found }
+        return list.contains { $0.name == name } ? .anotherVM : .gone
+    }
+
+    /// After H2's offer at `.anotherVM`: nil when setup goes on, or the lines it ends with. It goes on
+    /// with a VM every check after H2 finds, and, when UTM didn't answer the second time it was asked,
+    /// with the one H2 has just switched to: UTM listed it a moment before. Otherwise H2's row and its
+    /// how, in H2's own words, unless the offer has just shown the row (declined, or the switch
+    /// failed), then what to do next. `chooseVM` follows this and does nothing else, since it can't
+    /// be run without UTM and the settings of the Mac. Pure.
+    static func endsAtVM(name: String?, id: String?, in vms: Result<[VMInfo], WinbarError>, switched: Bool,
+                         check: Check, status: Status) -> [String]? {
+        switch vms {
+        case .success(let list):
+            if let name, chosenVM(name: name, id: id, in: list) == .found { return nil }
+        case .failure:
+            if switched { return nil }
+        }
+        let stopped = "Setup has stopped without starting a VM: "
+        if status.isFixable {
+            return [stopped + "run winbar setup again and let it switch, or choose a VM with winbar config --vm <name>, "
+                + "then run winbar setup again."]
+        }
+        let row = "\(status.symbol) \(check.id) \(check.title): \(status.detail)"
+        if case .manual(_, let how) = status {
+            return [row, "   how: " + how, stopped + "once that's done, run winbar setup again."]
+        }
+        // UTM didn't answer, which the row says; or the only VM with the name is one Winbar can't
+        // manage, so another has to be chosen.
+        guard case .success = vms else { return [row, stopped + "run winbar setup again."] }
+        return [row, stopped + "choose a VM with winbar config --vm <name>, then run winbar setup again."]
     }
 
     /// `--keep-bitlocker` and `--no-visual-tweaks` stick to the VM (after choosing it: they are

@@ -480,7 +480,11 @@ enum UTM {
     ///
     /// Graceful goes through Windows itself. UTM's own "request" stop is an ACPI power-button press, and
     /// once Windows has blanked its display that press only wakes it (Kernel-Power 566 "0→1", then
-    /// "1→3") and the VM never stops. `force` is a hard power-off, like pulling the cord.
+    /// "1→3"); the VM stops only at a second press, so a stop that fell back to it presses once more,
+    /// `secondPressAfter` into the wait. `force` is a hard power-off, like pulling the cord.
+    ///
+    /// Measured 2026-09-27 on 25H2: an idle Windows, display blanked or headless, let a first press go
+    /// by and shut down cleanly at a second, and a second press while it was shutting down did no harm.
     static func stop(_ vm: String, force: Bool, timeout: TimeInterval? = nil) -> Result<Void, WinbarError> {
         stop(vm, force: force, timeout: timeout, abort: { false }) ?? .success(())
     }
@@ -492,12 +496,20 @@ enum UTM {
     static func stop(_ vm: String, force: Bool, timeout: TimeInterval? = nil,
                      abort: () -> Bool) -> Result<Void, WinbarError>? {
         guard VMProcesses.isRunning(vm) else { return .success(()) }
-        let result = force ? ctl(["stop", "--force", vm], timeout: 30) : requestShutdown(vm)
+        let (result, asked) = force ? (ctl(["stop", "--force", vm], timeout: 30), StopRequest.forced) : requestShutdown(vm)
         guard result.ok else {
             return .failure(Automation.explain(result.output, else: WinbarError("Couldn't stop \(vm)", result.output)))
         }
+        let again = asked.pressAgainAfter.map { after in
+            (after: after, press: {
+                let press = pressPowerButton(vm)
+                Debug.log("stop: \(vm) still running \(Int(after)) s after UTM's power-button press; pressed it again: "
+                          + "status=\(press.status) timedOut=\(press.timedOut) output=\(press.output.prefix(200))")
+            })
+        }
         guard let stopped = waitForStop(deadline: Date().addingTimeInterval(timeout ?? (force ? 30 : 120)),
-                                        every: 2, stopped: { !VMProcesses.isRunning(vm) }, abort: abort)
+                                        every: 2, stopped: { !VMProcesses.isRunning(vm) }, abort: abort,
+                                        pressAgain: again)
         else { return nil }
         guard !stopped else { return .success(()) }
         return .failure(WinbarError("\(vm) didn't shut down",
@@ -506,14 +518,20 @@ enum UTM {
 
     /// The wait after a stop request: `stopped` and `abort` are asked in turn until one says yes or
     /// the deadline passes. nil means `abort` said to give up waiting — nothing was done to the VM,
-    /// which is still shutting down. Takes its two questions as closures so it can be tested without
-    /// one.
-    static func waitForStop(deadline: Date, every interval: TimeInterval, stopped: () -> Bool,
-                            abort: () -> Bool) -> Bool? {
+    /// which is still shutting down. `pressAgain`, when given, is done once, the first time the VM is
+    /// still running that many seconds into the wait. Takes its questions as closures so it can be
+    /// tested without one.
+    static func waitForStop(deadline: Date, every interval: TimeInterval, stopped: () -> Bool, abort: () -> Bool,
+                            pressAgain: (after: TimeInterval, press: () -> Void)? = nil) -> Bool? {
+        var again = pressAgain.map { (at: Date().addingTimeInterval($0.after), press: $0.press) }
         while true {
             if stopped() { return true }
             if abort() { return nil }
             guard Date() < deadline else { return false }
+            if let due = again, Date() >= due.at {
+                again = nil
+                due.press()
+            }
             pause(interval)
         }
     }
@@ -548,10 +566,30 @@ enum UTM {
             + "app with unsaved work. Force stop is like pulling the power cord."
     }
 
-    /// Asks Windows to shut down via the guest agent, falling back to UTM's ACPI request.
-    static func requestShutdown(_ vm: String) -> CommandResult {
-        let guest = ctl(["exec", vm, "--cmd", "cmd.exe", "/c", "shutdown /s /t 0"], timeout: 30)
-        return guest.ok ? guest : ctl(["stop", "--request", vm], timeout: 30)
+    /// How a stop was put to the VM: through Windows' guest agent, UTM's power-button press, or a
+    /// forced power-off.
+    enum StopRequest {
+        case guestAgent, powerButton, forced
+
+        /// How far into the wait the power button is pressed once more, or nil for never: only the
+        /// press can go unheard, by a Windows that has been idle.
+        var pressAgainAfter: TimeInterval? { self == .powerButton ? UTM.secondPressAfter : nil }
+    }
+
+    /// Twice the 7 s a heard press took to end the VM; a press while Windows was shutting down did no harm.
+    static let secondPressAfter: TimeInterval = 15
+
+    /// Asks Windows to shut down via the guest agent, falling back to UTM's ACPI request, and says
+    /// which it used. `run` is utmctl, so a test can hand in its own.
+    static func requestShutdown(_ vm: String, run: ([String]) -> CommandResult = { ctl($0, timeout: 30) })
+        -> (result: CommandResult, asked: StopRequest) {
+        let guest = run(["exec", vm, "--cmd", "cmd.exe", "/c", "shutdown /s /t 0"])
+        return guest.ok ? (guest, .guestAgent) : (pressPowerButton(vm, run: run), .powerButton)
+    }
+
+    /// UTM's ACPI power-button press: a graceful stop's fallback, and its second press.
+    static func pressPowerButton(_ vm: String, run: ([String]) -> CommandResult = { ctl($0, timeout: 30) }) -> CommandResult {
+        run(["stop", "--request", vm])
     }
 
     // MARK: Guest agent

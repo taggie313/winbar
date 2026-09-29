@@ -55,7 +55,7 @@ utmctl exec "<VM>" --cmd cmd.exe /c "shutdown /s /t 0"
 
 - *Why not UTM's Stop button, or `utmctl stop --request`:* both press a virtual ACPI power
   button. Once Windows has blanked its display, it treats that press as *wake* (event log:
-  Kernel-Power 566, power state "0 to 1" and then "1 to 3") and never shuts down.
+  Kernel-Power 566, power state "0 to 1" and then "1 to 3") and shuts down only at a second press.
 - *Why never plain `utmctl stop`:* it defaults to `--force`, a hard power-off. It caused four
   "unexpected shutdown" events during testing (no damage, but no reason to risk it).
 
